@@ -16,6 +16,12 @@ import (
 	"github.com/gopacket/gopacket/pcap"
 )
 
+type TCPF struct {
+	tcpF       iterator.Iterator[conf.TCPF]
+	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
+	mu         sync.RWMutex
+}
+
 type SendHandle struct {
 	handle     *pcap.Handle
 	srcIP4     conf.Addr
@@ -25,8 +31,7 @@ type SendHandle struct {
 	ackOptions []layers.TCPOption
 	time       uint32
 	tsCounter  uint32
-	tcpF       iterator.Iterator[conf.TCPF]
-	cTCPF      map[uint64]*iterator.Iterator[conf.TCPF]
+	tcpF       TCPF
 	ethPool    sync.Pool
 	ipv4Pool   sync.Pool
 	ipv6Pool   sync.Pool
@@ -65,8 +70,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		srcPort:    uint16(cfg.Port),
 		synOptions: synOptions,
 		ackOptions: ackOptions,
-		tcpF:       iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF},
-		cTCPF:      make(map[uint64]*iterator.Iterator[conf.TCPF]),
+		tcpF:       TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
 		time:       uint32(time.Now().UnixNano() / int64(time.Millisecond)),
 		ethPool: sync.Pool{
 			New: func() any {
@@ -158,13 +162,6 @@ func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
 	return tcp
 }
 
-func (h *SendHandle) getTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
-	if ff := h.cTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
-		return ff.Next()
-	}
-	return h.tcpF.Next()
-}
-
 func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr) error {
 	buf := h.bufPool.Get().(gopacket.SerializeBuffer)
 	ethLayer := h.ethPool.Get().(*layers.Ethernet)
@@ -177,7 +174,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr) error {
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
-	f := h.getTCPF(dstIP, dstPort)
+	f := h.getClientTCPF(dstIP, dstPort)
 	tcpLayer := h.buildTCPHeader(dstPort, f)
 	defer h.tcpPool.Put(tcpLayer)
 
@@ -203,6 +200,22 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr) error {
 		return err
 	}
 	return h.handle.WritePacketData(buf.Bytes())
+}
+
+func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
+	h.tcpF.mu.RLock()
+	defer h.tcpF.mu.RUnlock()
+	if ff := h.tcpF.clientTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
+		return ff.Next()
+	}
+	return h.tcpF.tcpF.Next()
+}
+
+func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
+	a := *addr.(*net.UDPAddr)
+	h.tcpF.mu.Lock()
+	h.tcpF.clientTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
+	h.tcpF.mu.Unlock()
 }
 
 func (h *SendHandle) Close() {

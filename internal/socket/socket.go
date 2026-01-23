@@ -8,8 +8,6 @@ import (
 	"os"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/hash"
-	"paqet/internal/pkg/iterator"
 	"sync/atomic"
 	"time"
 )
@@ -156,6 +154,5 @@ func (c *PacketConn) SetDSCP(dscp int) error {
 }
 
 func (c *PacketConn) SetClientTCPF(addr net.Addr, f []conf.TCPF) {
-	a := *addr.(*net.UDPAddr)
-	c.sendHandle.cTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
+	c.sendHandle.setClientTCPF(addr, f)
 }
