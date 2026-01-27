@@ -33,9 +33,7 @@ While `paqet` includes built-in encryption via KCP, it is more complex to config
 
 The system operates in three layers: raw TCP packet injection, encrypted transport (KCP), and application-level connection multiplexing.
 
-KCP provides reliable, encrypted communication with aggressive retransmission and forward error correction optimized for high-loss networks. It uses symmetric encryption with a shared secret key and offers multiple congestion control modes with SMUX multiplexing.
-
-KCP is optimized for real-time applications, gaming, or unpredictable network conditions where low latency and simple setup are preferred.
+KCP provides reliable, encrypted communication optimized for high-loss or unpredictable networks, using aggressive retransmission, forward error correction, and symmetric encryption with a shared secret key. It is especially well-suited for real-time applications and gaming where low latency are critical.
 
 ## Getting Started
 
@@ -245,7 +243,7 @@ sudo ./paqet <command> [arguments]
 
 paqet uses a unified YAML configuration that works for both clients and servers. The `role` field must be explicitly set to either `"client"` or `"server"`.
 
-**📁 For complete parameter documentation, see the example files:**
+**For complete parameter documentation, see the example files:**
 
 - [`example/client.yaml.example`](example/client.yaml.example) - Client configuration reference
 - [`example/server.yaml.example`](example/server.yaml.example) - Server configuration reference
