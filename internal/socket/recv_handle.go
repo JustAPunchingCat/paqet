@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"paqet/internal/conf"
+	"runtime"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
@@ -20,8 +21,11 @@ func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
 	}
 
-	if err := handle.SetDirection(pcap.DirectionIn); err != nil {
-		return nil, fmt.Errorf("failed to set pcap direction in: %v", err)
+	// SetDirection is not fully supported on Windows Npcap, so skip it
+	if runtime.GOOS != "windows" {
+		if err := handle.SetDirection(pcap.DirectionIn); err != nil {
+			return nil, fmt.Errorf("failed to set pcap direction in: %v", err)
+		}
 	}
 
 	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)

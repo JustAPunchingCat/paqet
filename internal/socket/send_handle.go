@@ -7,6 +7,7 @@ import (
 	"paqet/internal/conf"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/pkg/iterator"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,8 +46,11 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
 	}
 
-	if err := handle.SetDirection(pcap.DirectionOut); err != nil {
-		return nil, fmt.Errorf("failed to set pcap direction out: %v", err)
+	// SetDirection is not fully supported on Windows Npcap, so skip it
+	if runtime.GOOS != "windows" {
+		if err := handle.SetDirection(pcap.DirectionOut); err != nil {
+			return nil, fmt.Errorf("failed to set pcap direction out: %v", err)
+		}
 	}
 
 	synOptions := []layers.TCPOption{
