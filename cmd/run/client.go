@@ -37,7 +37,7 @@ func startClient(cfg *conf.Conf) {
 		if err != nil {
 			flog.Fatalf("Failed to initialize SOCKS5: %v", err)
 		}
-		if err := s.Start(ctx, ss.Listen.String()); err != nil {
+		if err := s.Start(ctx, ss); err != nil {
 			flog.Fatalf("SOCKS5 encountered an error: %v", err)
 		}
 	}
