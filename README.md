@@ -120,7 +120,7 @@ network:
 
 # Server connection settings
 server:
-  addr: "SERVER_IP:9999" # CHANGE ME: paqet server address and port
+  addr: "10.0.0.100:9999" # CHANGE ME: paqet server address and port
 
 # Transport protocol configuration
 transport:
@@ -322,7 +322,7 @@ Security depends entirely on proper key management. Use the `secret` command to 
 
 This work draws inspiration from the research and implementation in the [gfw_resist_tcp_proxy](https://github.com/GFW-knocker/gfw_resist_tcp_proxy) project by GFW-knocker, which explored the use of raw sockets to circumvent certain forms of network filtering. This project serves as a Go-based exploration of those concepts.
 
-- Uses [pcap](https://github.com/gopacket/gopacket/pcap) for low-level packet capture and injection
+- Uses [pcap](https://github.com/the-tcpdump-group/libpcap) for low-level packet capture and injection
 - Uses [gopacket](https://github.com/gopacket/gopacket) for raw packet crafting and decoding
 - Uses [kcp-go](https://github.com/xtaci/kcp-go) for reliable transport with encryption
 - Uses [smux](https://github.com/xtaci/smux) for connection multiplexing

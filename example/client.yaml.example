@@ -43,7 +43,7 @@ network:
 
 # Server connection settings
 server:
-  addr: "SERVER_IP:9999"  # CHANGE ME: paqet server address and port
+  addr: "10.0.0.100:9999"  # CHANGE ME: paqet server address and port
 
 # Transport protocol configuration
 transport:
