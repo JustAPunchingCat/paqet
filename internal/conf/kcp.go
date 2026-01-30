@@ -1,8 +1,6 @@
 package conf
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"slices"
 )
@@ -16,8 +14,7 @@ type KCP struct {
 	Pshard int    `yaml:"pshard"`
 
 	Block string `yaml:"block"`
-	Kkey  string `yaml:"key"`
-	Key   []byte `yaml:"-"`
+	Key   string `yaml:"key"`
 
 	Smuxbuf   int `yaml:"smuxbuf"`
 	Streambuf int `yaml:"streambuf"`
@@ -84,20 +81,7 @@ func (k *KCP) validate() []error {
 		errors = append(errors, fmt.Errorf("KCP sndwnd must be between 1-32768"))
 	}
 
-	// Encryption validation
-	validBlocks := []string{
-		"none",
-		"aes",
-		"blowfish",
-		"cast5",
-		"sm4",
-		"salsa20",
-		"simplexor",
-		"tea",
-		"tripledes",
-		"twofish",
-		"xtea",
-	}
+	validBlocks := []string{"aes", "aes-128", "aes-128-gcm", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none"}
 	if !slices.Contains(validBlocks, k.Block) {
 		errors = append(errors, fmt.Errorf("KCP encryption block must be one of: %v", validBlocks))
 	}
@@ -109,14 +93,8 @@ func (k *KCP) validate() []error {
 		errors = append(errors, fmt.Errorf("KCP streambuf must be >= 1024 bytes"))
 	}
 
-	if k.Block != "none" && len(k.Kkey) == 0 {
+	if k.Block != "none" && len(k.Key) == 0 {
 		errors = append(errors, fmt.Errorf("KCP encryption key is required"))
-	}
-	if decoded, err := hex.DecodeString(k.Kkey); err == nil && len(decoded) == 32 {
-		k.Key = decoded
-	} else {
-		hash := sha256.Sum256([]byte(k.Kkey))
-		k.Key = hash[:]
 	}
 
 	return errors

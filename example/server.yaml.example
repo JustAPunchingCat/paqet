@@ -46,7 +46,7 @@ transport:
     sndwnd: 1024           # Send window size (default for server)
     
     # Encryption settings  
-    block: "aes"                    # Encryption: none, aes, blowfish, cast5, sm4, salsa20, etc.
+    block: "aes"                    # Encryption: aes, aes-128, aes-128-gcm, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none.
     key: "your-secret-key-here"     # CHANGE ME: Secret key (must match client)
     
     # Buffer settings (optional)
