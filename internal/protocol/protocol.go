@@ -3,8 +3,8 @@ package protocol
 import (
 	"encoding/gob"
 	"io"
-	"net"
 	"paqet/internal/conf"
+	"paqet/internal/tnet"
 )
 
 type PType = byte
@@ -19,7 +19,7 @@ const (
 
 type Proto struct {
 	Type PType
-	Addr *net.UDPAddr
+	Addr *tnet.Addr
 	TCPF []conf.TCPF
 }
 
