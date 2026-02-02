@@ -67,6 +67,7 @@ jobs:
                   fi
 
                   go build -v -a -trimpath \
+                    -gcflags "all=-l=4" \
                     -ldflags "-s -w -buildid= \
                     -X 'paqet/cmd/version.Version=${VERSION}' \
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
@@ -135,6 +136,7 @@ jobs:
                   export BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
                   go build -v -a -trimpath \
+                    -gcflags "all=-l=4" \
                     -ldflags "-s -w -buildid= \
                     -X 'paqet/cmd/version.Version=${VERSION}' \
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
@@ -193,6 +195,7 @@ jobs:
                   export BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
                   go build -v -a -trimpath \
+                    -gcflags "all=-l=4" \
                     -ldflags "-s -w -buildid= \
                     -X 'paqet/cmd/version.Version=${VERSION}' \
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
