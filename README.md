@@ -86,10 +86,10 @@ You'll need to find your network interface name, local IP, and the MAC address o
 
 **On Windows:**
 
-1. **Find Interface and Local IP:** Run `ipconfig /all` and note your active network adapter (Ethernet or Wi-Fi), along with:
-   - Its **IPv4 Address**
-   - The **Gateway** IP
-2. **Find Interface device GUID:** Windows requires the Npcap device GUID. In PowerShell, run: `Get-NetAdapter | Select-Object Name, InterfaceGuid`: Note the **InterfaceGuid** of your active network interface. (Format it as: `\Device\NPF_{GUID}`)
+1. **Find Interface and Local IP:** Run `ipconfig /all` and note your active network adapter (Ethernet or Wi-Fi):
+   - Its **IP Address**
+   - The **Gateway IP Address**
+2. **Find Interface device GUID:** Windows requires the Npcap device GUID. In PowerShell, run `Get-NetAdapter | Select-Object Name, InterfaceGuid`. Note the **Name** and **InterfaceGuid** of your active network interface, and format the GUID as `\Device\NPF_{GUID}`.
 3. **Find Gateway MAC Address:** Run: `arp -a <gateway_ip>`. Note the MAC address for the gateway.
 
 #### Client Configuration - SOCKS5 Proxy Mode
@@ -109,6 +109,12 @@ log:
 # SOCKS5 proxy configuration (client mode)
 socks5:
   - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
+
+# Port forwarding configuration (can be used alongside SOCKS5)
+# forward:
+#   - listen: "127.0.0.1:8080"  # Local port to listen on
+#     target: "127.0.0.1:80"    # Target to forward to (via server)
+#     protocol: "tcp"           # Protocol (tcp/udp)
 
 # Network interface settings
 network:

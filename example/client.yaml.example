@@ -12,9 +12,9 @@ socks5:
     username: ""                # Optional SOCKS5 authentication
     password: ""                # Optional SOCKS5 authentication
 
-# Alternative: Port forwarding configuration (instead of SOCKS5)
+# Port forwarding configuration (can be used alongside SOCKS5)
 # forward:
-#   - listen: "127.0.0.1:8080"  # Local port to listen on  
+#   - listen: "127.0.0.1:8080"  # Local port to listen on
 #     target: "127.0.0.1:80"    # Target to forward to (via server)
 #     protocol: "tcp"           # Protocol (tcp/udp)
 
@@ -52,7 +52,7 @@ transport:
 
   # KCP protocol settings
   kcp:
-    mode: "fast"            # KCP mode: normal, fast, fast2, fast3, manual
+    mode: "fast"              # KCP mode: normal, fast, fast2, fast3, manual
 
     # Manual mode parameters (only used when mode="manual")
     # nodelay: 1              # 0=disable, 1=enable
@@ -63,9 +63,9 @@ transport:
                               # Lower values increase responsiveness but raise CPU usage
 
     # resend: 2               # Fast retransmit trigger (0-2)
-                              # 0 = disabled (wait for timeout)
-                              # 1 = fast retransmit after 1 skipped ACK
-                              # 2 = very fast retransmit after 2 skipped ACKs (recommended for lossy networks)
+                              # 0 = disabled (wait for timeout only)
+                              # 1 = most aggressive (retransmit after 1 ACK skip)
+                              # 2 = aggressive (retransmit after 2 ACK skips)
 
     # nocongestion: 1         # Congestion control: 0=enabled, 1=disabled
                               # 0 = TCP-like fair congestion control (slow start, congestion avoidance)
