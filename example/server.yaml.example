@@ -8,7 +8,9 @@ log:
 
 # Server listen configuration
 listen:
-  addr: ":9999"  # CHANGE ME: Server listen port (must match network.ipv4.addr port)
+  addr: ":9999"   # CHANGE ME: Server listen port (must match network.ipv4.addr port)
+                  # WARNING: Do not use standard ports (80, 443, etc.) as iptables rules
+                  # can affect outgoing server connections.
 
 # Network interface settings
 network:

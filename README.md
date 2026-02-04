@@ -148,7 +148,7 @@ log:
 
 # Server listen configuration
 listen:
-  addr: ":9999" # CHANGE ME: Server listen port (must match network.ipv4.addr port)
+  addr: ":9999" # CHANGE ME: Server listen port (must match network.ipv4.addr port), WARNING: Do not use standard ports (80, 443, etc.) as iptables rules can affect outgoing server connections.
 
 # Network interface settings
 network:
@@ -195,6 +195,10 @@ sudo iptables -t filter -A OUTPUT -p tcp --sport <PORT> -j ACCEPT
 ```
 
 These rules ensure that only the application handles traffic for the connection port.
+
+> **⚠️ Important - Avoid Standard Ports:**
+>
+> Do not use ports 80, 443, or any other standard ports, because iptables rules can also affect outgoing connections from the server. Choose non-standard ports (e.g., 9999, 8888, or other high-numbered ports) for your server configuration.
 
 ### 3. Run `paqet`
 
