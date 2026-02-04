@@ -49,9 +49,11 @@ func startClient(cfg *conf.Conf) {
 					flog.Errorf("Failed to initialize SOCKS5: %v", err)
 					continue
 				}
-				if err := s.Start(ctx, ss); err != nil {
-					flog.Errorf("SOCKS5 encountered an error: %v", err)
-				}
+				go func(ss conf.SOCKS5) {
+					if err := s.Start(ctx, ss); err != nil {
+						flog.Errorf("SOCKS5 encountered an error on %v: %v", ss.Listen, err)
+					}
+				}(ss)
 			}
 			for _, ff := range subCfg.Forward {
 				f, err := forward.New(client, ff.Listen.String(), ff.Target.String())
@@ -59,9 +61,11 @@ func startClient(cfg *conf.Conf) {
 					flog.Errorf("Failed to initialize Forward: %v", err)
 					continue
 				}
-				if err := f.Start(ctx, ff.Protocol); err != nil {
-					flog.Infof("Forward encountered an error: %v", err)
-				}
+				go func(ff conf.Forward) {
+					if err := f.Start(ctx, ff.Protocol); err != nil {
+						flog.Errorf("Forward encountered an error on %v: %v", ff.Listen, err)
+					}
+				}(ff)
 			}
 
 			// Wait for context cancellation

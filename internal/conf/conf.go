@@ -97,6 +97,8 @@ func (c *Conf) validate() error {
 			allErrors = append(allErrors, fmt.Errorf("no servers configured"))
 		}
 
+		usedAddrs := make(map[string]string)
+
 		for i := range c.Servers {
 			srv := &c.Servers[i]
 			if len(srv.SOCKS5) == 0 && len(srv.Forward) == 0 {
@@ -111,11 +113,23 @@ func (c *Conf) validate() error {
 				for _, err := range errs {
 					allErrors = append(allErrors, fmt.Errorf("server[%d].socks5[%d] %v", i, j, err))
 				}
+				addr := fmt.Sprint(srv.SOCKS5[j].Listen)
+				if owner, ok := usedAddrs[addr]; ok {
+					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].socks5[%d]", addr, owner, i, j))
+				} else {
+					usedAddrs[addr] = fmt.Sprintf("server[%d].socks5[%d]", i, j)
+				}
 			}
 			for j := range srv.Forward {
 				errs := srv.Forward[j].validate()
 				for _, err := range errs {
 					allErrors = append(allErrors, fmt.Errorf("server[%d].forward[%d] %v", i, j, err))
+				}
+				addr := fmt.Sprint(srv.Forward[j].Listen)
+				if owner, ok := usedAddrs[addr]; ok {
+					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].forward[%d]", addr, owner, i, j))
+				} else {
+					usedAddrs[addr] = fmt.Sprintf("server[%d].forward[%d]", i, j)
 				}
 			}
 
