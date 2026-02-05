@@ -26,51 +26,7 @@ func startClient(cfg *conf.Conf) {
 		wg.Add(1)
 		go func(srvCfg conf.ServerConfig) {
 			defer wg.Done()
-
-			// Create a sub-configuration for this specific server connection
-			subCfg := *cfg
-			subCfg.Server = srvCfg.Server
-			subCfg.SOCKS5 = srvCfg.SOCKS5
-			subCfg.Forward = srvCfg.Forward
-			subCfg.Transport = srvCfg.Transport
-
-			client, err := client.New(&subCfg)
-			if err != nil {
-				flog.Errorf("Failed to initialize client for %s: %v", srvCfg.Server.Addr, err)
-				return
-			}
-			if err := client.Start(ctx); err != nil {
-				flog.Infof("Client for %s encountered an error: %v", srvCfg.Server.Addr, err)
-			}
-
-			for _, ss := range subCfg.SOCKS5 {
-				s, err := socks.New(client)
-				if err != nil {
-					flog.Errorf("Failed to initialize SOCKS5: %v", err)
-					continue
-				}
-				go func(ss conf.SOCKS5) {
-					if err := s.Start(ctx, ss); err != nil {
-						flog.Errorf("SOCKS5 encountered an error on %v: %v", ss.Listen, err)
-					}
-				}(ss)
-			}
-			for _, ff := range subCfg.Forward {
-				f, err := forward.New(client, ff.Listen.String(), ff.Target.String())
-				if err != nil {
-					flog.Errorf("Failed to initialize Forward: %v", err)
-					continue
-				}
-				go func(ff conf.Forward) {
-					if err := f.Start(ctx, ff.Protocol); err != nil {
-						flog.Errorf("Forward encountered an error on %v: %v", ff.Listen, err)
-					}
-				}(ff)
-			}
-
-			// Wait for context cancellation
-			<-ctx.Done()
-			// Perform any specific cleanup here if necessary (e.g., client.Close())
+			runInstance(ctx, cfg, srvCfg)
 		}(srvCfg)
 	}
 
@@ -79,4 +35,39 @@ func startClient(cfg *conf.Conf) {
 	cancel()
 	wg.Wait()
 	flog.Infof("Shutdown complete.")
+}
+
+func runInstance(ctx context.Context, base *conf.Conf, srv conf.ServerConfig) {
+	sub := *base
+	sub.Server = srv.Server
+	sub.SOCKS5 = srv.SOCKS5
+	sub.Forward = srv.Forward
+	sub.Transport = srv.Transport
+
+	c, err := client.New(&sub)
+	if err != nil {
+		flog.Errorf("Client init failed for %s: %v", srv.Server.Addr, err)
+		return
+	}
+	if err := c.Start(ctx); err != nil {
+		flog.Infof("Client start error %s: %v", srv.Server.Addr, err)
+	}
+
+	for _, ss := range sub.SOCKS5 {
+		go func(ss conf.SOCKS5) {
+			s, _ := socks.New(c)
+			if err := s.Start(ctx, ss); err != nil {
+				flog.Errorf("SOCKS5 error %v: %v", ss.Listen, err)
+			}
+		}(ss)
+	}
+	for _, ff := range sub.Forward {
+		go func(ff conf.Forward) {
+			f, _ := forward.New(c, ff.Listen.String(), ff.Target.String())
+			if err := f.Start(ctx, ff.Protocol); err != nil {
+				flog.Errorf("Forward error %v: %v", ff.Listen, err)
+			}
+		}(ff)
+	}
+	<-ctx.Done()
 }
