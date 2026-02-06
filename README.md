@@ -1,4 +1,4 @@
-# paqet - Ferries Packets Across Forbidden Boundaries 👀
+# paqet - Same paqet but supports multiple servers and port hopping
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -125,8 +125,9 @@ servers:
     hopping:
       enabled: false      # Enable port hopping
       interval: 30        # Interval in seconds to change ports
-      min: 20000          # Minimum port number of the range
-      max: 30000          # Maximum port number of the range
+      ports:              # List of single ports or ranges
+        - "80"
+        - "20000-30000"
 
     socks5:
       - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
@@ -160,8 +161,9 @@ listen:
 hopping:
   enabled: false      # Enable port hopping support
   interval: 30        # Interval (unused on server, but good to keep consistent)
-  min: 20000          # Minimum port number to capture
-  max: 30000          # Maximum port number to capture
+  ports:              # List of single ports or ranges to capture
+    - "80"
+    - "20000-30000"
 
 # Network interface settings
 network:
@@ -285,7 +287,7 @@ No encryption and no protocol header, data is transmitted in raw form without an
 
 `paqet` includes a Port Hopping feature to evade traffic analysis that targets long-lived connections on fixed ports.
 
-- **Dynamic Rotation:** The client automatically rotates the destination port within a user-configured range (e.g., `20000-30000`) at a specified interval (e.g., every 30 seconds). This prevents the connection from looking like a single persistent flow.
+- **Dynamic Rotation:** The client automatically rotates the destination port across user-configured ports or ranges (e.g., `80`, `443`, `20000-30000`) at a specified interval. This prevents the connection from looking like a single persistent flow.
 - **Server Range Listening:** The server uses `pcap` filters to capture traffic across the entire port range without needing to bind thousands of sockets.
 - **Port Echoing:** To ensure stability with NAT devices and stateful firewalls, the server replies from the exact port the client used for that specific packet, rather than a single fixed listen port.
 

@@ -46,8 +46,9 @@ servers:
       hopping:
         enabled: false      # Enable port hopping
         interval: 30        # Interval in seconds to change ports
-        min: 20000          # Minimum port number of the range
-        max: 30000          # Maximum port number of the range
+        ports:              # List of single ports or ranges
+          - "80"
+          - "20000-30000"
 
       socks5:
         - listen: "127.0.0.1:1080"

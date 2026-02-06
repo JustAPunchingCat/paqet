@@ -17,8 +17,9 @@ listen:
 hopping:
   enabled: false      # Enable port hopping support
   interval: 30        # Interval (unused on server, but good to keep consistent)
-  min: 20000          # Minimum port number to capture
-  max: 30000          # Maximum port number to capture
+  ports:              # List of single ports or ranges to capture
+    - "80"
+    - "20000-30000"
 
 # Network interface settings
 network:

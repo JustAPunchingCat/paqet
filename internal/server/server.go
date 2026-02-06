@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -53,7 +54,14 @@ func (s *Server) Start() error {
 	defer listener.Close()
 	listenInfo := fmt.Sprintf(":%d", s.cfg.Listen.Addr.Port)
 	if s.cfg.Hopping.Enabled {
-		listenInfo = fmt.Sprintf("range %d-%d", s.cfg.Hopping.Min, s.cfg.Hopping.Max)
+		ranges, err := s.cfg.Hopping.GetRanges()
+		if err == nil && len(ranges) > 0 {
+			var parts []string
+			for _, r := range ranges {
+				parts = append(parts, fmt.Sprintf("%d-%d", r.Min, r.Max))
+			}
+			listenInfo = fmt.Sprintf("ranges [%s]", strings.Join(parts, ", "))
+		}
 	}
 	flog.Infof("Server started - listening for packets on %s", listenInfo)
 

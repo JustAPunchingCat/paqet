@@ -5,6 +5,7 @@ import (
 	"os"
 	"paqet/internal/flog"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/goccy/go-yaml"
@@ -167,11 +168,57 @@ func writeErr(allErrors []error) error {
 	return nil
 }
 
+type PortRange struct {
+	Min int
+	Max int
+}
+
 type Hopping struct {
-	Enabled  bool `yaml:"enabled"`
-	Interval int  `yaml:"interval"`
-	Min      int  `yaml:"min"`
-	Max      int  `yaml:"max"`
+	Enabled  bool     `yaml:"enabled"`
+	Interval int      `yaml:"interval"`
+	Min      int      `yaml:"min"`   // Legacy: single range min
+	Max      int      `yaml:"max"`   // Legacy: single range max
+	Ports    []string `yaml:"ports"` // New: list of ports or ranges ("80", "1000-2000")
+}
+
+func (h *Hopping) GetRanges() ([]PortRange, error) {
+	var ranges []PortRange
+	// Support legacy Min/Max
+	if h.Min > 0 && h.Max > 0 {
+		ranges = append(ranges, PortRange{Min: h.Min, Max: h.Max})
+	}
+
+	for _, p := range h.Ports {
+		p = strings.TrimSpace(p)
+		if strings.Contains(p, "-") {
+			parts := strings.Split(p, "-")
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid port range format: %s", p)
+			}
+			min, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+			max, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err1 != nil || err2 != nil {
+				return nil, fmt.Errorf("invalid port numbers in range: %s", p)
+			}
+			if min <= 0 || max <= 0 {
+				return nil, fmt.Errorf("ports must be > 0: %s", p)
+			}
+			if min >= max {
+				return nil, fmt.Errorf("min port must be < max port: %s", p)
+			}
+			ranges = append(ranges, PortRange{Min: min, Max: max})
+		} else {
+			port, err := strconv.Atoi(p)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port format: %s", p)
+			}
+			if port <= 0 {
+				return nil, fmt.Errorf("port must be > 0: %s", p)
+			}
+			ranges = append(ranges, PortRange{Min: port, Max: port})
+		}
+	}
+	return ranges, nil
 }
 
 func (h *Hopping) validate() []error {
@@ -182,11 +229,13 @@ func (h *Hopping) validate() []error {
 	if h.Interval <= 0 {
 		errs = append(errs, fmt.Errorf("hopping interval must be > 0"))
 	}
-	if h.Min <= 0 || h.Max <= 0 {
-		errs = append(errs, fmt.Errorf("hopping ports must be > 0"))
+
+	ranges, err := h.GetRanges()
+	if err != nil {
+		errs = append(errs, err)
+	} else if len(ranges) == 0 {
+		errs = append(errs, fmt.Errorf("hopping enabled but no ports or ranges configured"))
 	}
-	if h.Min >= h.Max {
-		errs = append(errs, fmt.Errorf("hopping min port must be < max port"))
-	}
+
 	return errs
 }

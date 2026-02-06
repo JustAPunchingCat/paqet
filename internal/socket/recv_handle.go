@@ -5,6 +5,7 @@ import (
 	"net"
 	"paqet/internal/conf"
 	"runtime"
+	"strings"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
@@ -30,7 +31,18 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 
 	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)
 	if hopping != nil && hopping.Enabled {
-		filter = fmt.Sprintf("tcp and dst portrange %d-%d", hopping.Min, hopping.Max)
+		ranges, err := hopping.GetRanges()
+		if err == nil && len(ranges) > 0 {
+			var parts []string
+			for _, r := range ranges {
+				if r.Min == r.Max {
+					parts = append(parts, fmt.Sprintf("dst port %d", r.Min))
+				} else {
+					parts = append(parts, fmt.Sprintf("dst portrange %d-%d", r.Min, r.Max))
+				}
+			}
+			filter = fmt.Sprintf("tcp and (%s)", strings.Join(parts, " or "))
+		}
 	}
 	if err := handle.SetBPFFilter(filter); err != nil {
 		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
