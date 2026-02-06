@@ -40,7 +40,7 @@ func (s *Server) Start() error {
 		cancel()
 	}()
 
-	pConn, err := socket.New(ctx, &s.cfg.Network)
+	pConn, err := socket.NewWithHopping(ctx, &s.cfg.Network, &s.cfg.Hopping, false)
 	if err != nil {
 		return fmt.Errorf("could not create raw packet conn: %w", err)
 	}
@@ -51,7 +51,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("could not start KCP listener: %w", err)
 	}
 	defer listener.Close()
-	flog.Infof("Server started - listening for packets on :%d", s.cfg.Listen.Addr.Port)
+	listenInfo := fmt.Sprintf(":%d", s.cfg.Listen.Addr.Port)
+	if s.cfg.Hopping.Enabled {
+		listenInfo = fmt.Sprintf("range %d-%d", s.cfg.Hopping.Min, s.cfg.Hopping.Max)
+	}
+	flog.Infof("Server started - listening for packets on %s", listenInfo)
 
 	s.wg.Go(func() {
 		s.listen(ctx, listener)

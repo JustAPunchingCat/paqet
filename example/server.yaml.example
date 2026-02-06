@@ -11,6 +11,14 @@ listen:
   addr: ":9999"   # CHANGE ME: Server listen port (must match network.ipv4.addr port)
                   # WARNING: Do not use standard ports (80, 443, etc.) as iptables rules
                   # can affect outgoing server connections.
+# Port Hopping Configuration (Optional)
+# Allows the server to receive connections across a range of ports.
+# Must match the client's configuration.
+hopping:
+  enabled: false      # Enable port hopping support
+  interval: 30        # Interval (unused on server, but good to keep consistent)
+  min: 20000          # Minimum port number to capture
+  max: 30000          # Maximum port number to capture
 
 # Network interface settings
 network:
@@ -86,6 +94,7 @@ transport:
     # smuxbuf: 4194304       # 4MB SMUX buffer
     # streambuf: 2097152     # 2MB stream buffer
 
+
 # Optional Forward Error Correction (FEC) - currently disabled
 # Use these only if you need FEC for very lossy networks:
 #   dshard: 10    # Data shards for FEC  
@@ -96,8 +105,10 @@ transport:
 # Since paqet uses pcap to bypass standard firewalls, you MUST configure
 # iptables on the server to prevent kernel interference:
 #
-# sudo iptables -t raw -A PREROUTING -p tcp --dport 9999 -j NOTRACK
-# sudo iptables -t raw -A OUTPUT -p tcp --sport 9999 -j NOTRACK  
-# sudo iptables -t mangle -A OUTPUT -p tcp --sport 9999 --tcp-flags RST RST -j DROP
+# sudo iptables -t raw -A PREROUTING -p tcp --dport 81 -j NOTRACK
+# sudo iptables -t raw -A OUTPUT -p tcp --sport 81 -j NOTRACK  
+# sudo iptables -t mangle -A OUTPUT -p tcp --sport 81 --tcp-flags RST RST -j DROP
 #
 # Replace 9999 with your actual listen port.
+# NOTE: If using Port Hopping, you must apply these rules to the entire port range 
+# (e.g., --dport 20000:30000).
