@@ -82,7 +82,15 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			flog.Errorf("failed to accept connection: %v", err)
 			continue
 		}
-		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), conn.LocalAddr())
+
+		localInfo := conn.LocalAddr().String()
+		if s.pConn != nil {
+			if actualPort := s.pConn.GetClientPort(conn.RemoteAddr()); actualPort > 0 {
+				localInfo = fmt.Sprintf("%s (via :%d)", conn.LocalAddr(), actualPort)
+			}
+		}
+
+		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), localInfo)
 
 		s.wg.Go(func() {
 			defer conn.Close()

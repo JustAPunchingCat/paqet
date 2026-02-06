@@ -53,7 +53,7 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 		flog.Debugf("TCP stream closed for %s -> %s", conn.RemoteAddr(), f.targetAddr)
 		defer strm.Close()
 	}()
-	flog.Infof("accepted TCP connection %s -> %s", conn.RemoteAddr(), f.targetAddr)
+	flog.Infof("accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), f.targetAddr, strm.RemoteAddr())
 
 	errCh := make(chan error, 2)
 	go func() {

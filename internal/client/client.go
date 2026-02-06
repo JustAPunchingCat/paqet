@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
@@ -27,14 +26,16 @@ func New(cfg *conf.Conf) (*Client, error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
-	for i := range c.cfg.Transport.Conn {
-		tc, err := newTimedConn(ctx, c.cfg)
-		if err != nil {
-			flog.Errorf("failed to establish connection %d: %v", i+1, err)
-			return err
+	for sIdx := range c.cfg.Servers {
+		srv := &c.cfg.Servers[sIdx]
+		for i := 0; i < srv.Transport.Conn; i++ {
+			tc, err := newTimedConn(ctx, c.cfg, srv)
+			if err != nil {
+				flog.Errorf("failed to establish connection to server %d (conn %d): %v", sIdx+1, i+1, err)
+				return err
+			}
+			c.iter.Items = append(c.iter.Items, tc)
 		}
-		flog.Debugf("client connection %d established successfully", i+1)
-		c.iter.Items = append(c.iter.Items, tc)
 	}
 	go c.ticker(ctx)
 
@@ -54,10 +55,6 @@ func (c *Client) Start(ctx context.Context) error {
 	if c.cfg.Network.IPv6.Addr != nil {
 		ipv6Addr = c.cfg.Network.IPv6.Addr.IP.String()
 	}
-	dst := c.cfg.Server.Addr.String()
-	if c.cfg.Hopping.Enabled {
-		dst = fmt.Sprintf("%s (hopping: %d-%d)", c.cfg.Server.Addr.IP, c.cfg.Hopping.Min, c.cfg.Hopping.Max)
-	}
-	flog.Infof("Client started: IPv4:%s IPv6:%s -> %s (%d connections)", ipv4Addr, ipv6Addr, dst, len(c.iter.Items))
+	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, len(c.cfg.Servers), len(c.iter.Items))
 	return nil
 }

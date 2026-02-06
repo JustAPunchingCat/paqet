@@ -12,15 +12,16 @@ import (
 )
 
 type timedConn struct {
-	cfg    *conf.Conf
-	conn   tnet.Conn
-	expire time.Time
-	ctx    context.Context
+	rootCfg *conf.Conf
+	srvCfg  *conf.ServerConfig
+	conn    tnet.Conn
+	expire  time.Time
+	ctx     context.Context
 }
 
-func newTimedConn(ctx context.Context, cfg *conf.Conf) (*timedConn, error) {
+func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
 	var err error
-	tc := timedConn{cfg: cfg, ctx: ctx}
+	tc := timedConn{rootCfg: rootCfg, srvCfg: srvCfg, ctx: ctx}
 	tc.conn, err = tc.createConn()
 	if err != nil {
 		return nil, err
@@ -30,8 +31,8 @@ func newTimedConn(ctx context.Context, cfg *conf.Conf) (*timedConn, error) {
 }
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
-	netCfg := tc.cfg.Network
-	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.cfg.Hopping, true)
+	netCfg := tc.rootCfg.Network
+	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true)
 	if err != nil {
 		return nil, fmt.Errorf("could not create raw packet conn: %w", err)
 	}
@@ -39,14 +40,14 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	// If hopping is enabled, the raw socket normalizes incoming packets to hopping.Min.
 	// We must tell KCP to expect packets from this normalized port, ignoring the
 	// static port defined in server.addr.
-	remoteAddr := tc.cfg.Server.Addr
-	if tc.cfg.Hopping.Enabled {
+	remoteAddr := tc.srvCfg.Server.Addr
+	if tc.srvCfg.Hopping.Enabled {
 		clone := *remoteAddr
-		clone.Port = tc.cfg.Hopping.Min
+		clone.Port = tc.srvCfg.Hopping.Min
 		remoteAddr = &clone
 	}
 
-	conn, err := kcp.Dial(remoteAddr, tc.cfg.Transport.KCP, pConn)
+	conn, err := kcp.Dial(remoteAddr, tc.srvCfg.Transport.KCP, pConn)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,7 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 	}
 	defer strm.Close()
 
-	p := protocol.Proto{Type: protocol.PTCPF, TCPF: tc.cfg.Network.TCP.RF}
+	p := protocol.Proto{Type: protocol.PTCPF, TCPF: tc.rootCfg.Network.TCP.RF}
 	err = p.Write(strm)
 	if err != nil {
 		return err

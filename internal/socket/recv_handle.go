@@ -40,46 +40,62 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 }
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
-	data, _, err := h.handle.ZeroCopyReadPacketData()
-	if err != nil {
-		return nil, nil, 0, err
-	}
+	for {
+		data, _, err := h.handle.ZeroCopyReadPacketData()
+		if err != nil {
+			return nil, nil, 0, err
+		}
 
-	addr := &net.UDPAddr{}
-	var dstPort int
-	p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
+		p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
 
-	netLayer := p.NetworkLayer()
-	if netLayer == nil {
-		return nil, addr, 0, nil
-	}
-	switch netLayer.LayerType() {
-	case layers.LayerTypeIPv4:
-		addr.IP = netLayer.(*layers.IPv4).SrcIP
-	case layers.LayerTypeIPv6:
-		addr.IP = netLayer.(*layers.IPv6).SrcIP
-	}
+		netLayer := p.NetworkLayer()
+		if netLayer == nil {
+			continue
+		}
 
-	trLayer := p.TransportLayer()
-	if trLayer == nil {
-		return nil, addr, 0, nil
-	}
-	switch trLayer.LayerType() {
-	case layers.LayerTypeTCP:
-		tcp := trLayer.(*layers.TCP)
-		addr.Port = int(tcp.SrcPort)
-		dstPort = int(tcp.DstPort)
-	case layers.LayerTypeUDP:
-		udp := trLayer.(*layers.UDP)
-		addr.Port = int(udp.SrcPort)
-		dstPort = int(udp.DstPort)
-	}
+		addr := &net.UDPAddr{}
+		switch netLayer.LayerType() {
+		case layers.LayerTypeIPv4:
+			src := netLayer.(*layers.IPv4).SrcIP
+			addr.IP = make(net.IP, len(src))
+			copy(addr.IP, src)
+		case layers.LayerTypeIPv6:
+			src := netLayer.(*layers.IPv6).SrcIP
+			addr.IP = make(net.IP, len(src))
+			copy(addr.IP, src)
+		default:
+			continue
+		}
 
-	appLayer := p.ApplicationLayer()
-	if appLayer == nil {
-		return nil, addr, 0, nil
+		trLayer := p.TransportLayer()
+		if trLayer == nil {
+			continue
+		}
+
+		var dstPort int
+		switch trLayer.LayerType() {
+		case layers.LayerTypeTCP:
+			tcp := trLayer.(*layers.TCP)
+			addr.Port = int(tcp.SrcPort)
+			dstPort = int(tcp.DstPort)
+		case layers.LayerTypeUDP:
+			udp := trLayer.(*layers.UDP)
+			addr.Port = int(udp.SrcPort)
+			dstPort = int(udp.DstPort)
+		default:
+			continue
+		}
+
+		if addr.Port == 0 {
+			continue
+		}
+
+		appLayer := p.ApplicationLayer()
+		if appLayer == nil {
+			continue
+		}
+		return appLayer.Payload(), addr, dstPort, nil
 	}
-	return appLayer.Payload(), addr, dstPort, nil
 }
 
 func (h *RecvHandle) Close() {
