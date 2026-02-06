@@ -19,6 +19,7 @@ type Conf struct {
 	Network   Network   `yaml:"network"`
 	Server    Server    `yaml:"server"`
 	Transport Transport `yaml:"transport"`
+	Hopping   Hopping   `yaml:"hopping"`
 }
 
 func LoadFromFile(path string) (*Conf, error) {
@@ -83,6 +84,7 @@ func (c *Conf) validate() error {
 
 	allErrors = append(allErrors, c.Network.validate()...)
 	allErrors = append(allErrors, c.Transport.validate()...)
+	allErrors = append(allErrors, c.Hopping.validate()...)
 	if c.Role == "server" {
 		allErrors = append(allErrors, c.Listen.validate()...)
 	} else {
@@ -109,4 +111,28 @@ func writeErr(allErrors []error) error {
 		return fmt.Errorf("validation failed:\n  - %s", strings.Join(messages, "\n  - "))
 	}
 	return nil
+}
+
+type Hopping struct {
+	Enabled  bool `yaml:"enabled"`
+	Interval int  `yaml:"interval"`
+	Min      int  `yaml:"min"`
+	Max      int  `yaml:"max"`
+}
+
+func (h *Hopping) validate() []error {
+	if !h.Enabled {
+		return nil
+	}
+	var errs []error
+	if h.Interval <= 0 {
+		errs = append(errs, fmt.Errorf("hopping interval must be > 0"))
+	}
+	if h.Min <= 0 || h.Max <= 0 {
+		errs = append(errs, fmt.Errorf("hopping ports must be > 0"))
+	}
+	if h.Min >= h.Max {
+		errs = append(errs, fmt.Errorf("hopping min port must be < max port"))
+	}
+	return errs
 }

@@ -31,12 +31,22 @@ func newTimedConn(ctx context.Context, cfg *conf.Conf) (*timedConn, error) {
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.cfg.Network
-	pConn, err := socket.New(tc.ctx, &netCfg)
+	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.cfg.Hopping, true)
 	if err != nil {
 		return nil, fmt.Errorf("could not create raw packet conn: %w", err)
 	}
 
-	conn, err := kcp.Dial(tc.cfg.Server.Addr, tc.cfg.Transport.KCP, pConn)
+	// If hopping is enabled, the raw socket normalizes incoming packets to hopping.Min.
+	// We must tell KCP to expect packets from this normalized port, ignoring the
+	// static port defined in server.addr.
+	remoteAddr := tc.cfg.Server.Addr
+	if tc.cfg.Hopping.Enabled {
+		clone := *remoteAddr
+		clone.Port = tc.cfg.Hopping.Min
+		remoteAddr = &clone
+	}
+
+	conn, err := kcp.Dial(remoteAddr, tc.cfg.Transport.KCP, pConn)
 	if err != nil {
 		return nil, err
 	}

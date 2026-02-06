@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
@@ -53,6 +54,10 @@ func (c *Client) Start(ctx context.Context) error {
 	if c.cfg.Network.IPv6.Addr != nil {
 		ipv6Addr = c.cfg.Network.IPv6.Addr.IP.String()
 	}
-	flog.Infof("Client started: IPv4:%s IPv6:%s -> %s (%d connections)", ipv4Addr, ipv6Addr, c.cfg.Server.Addr, len(c.iter.Items))
+	dst := c.cfg.Server.Addr.String()
+	if c.cfg.Hopping.Enabled {
+		dst = fmt.Sprintf("%s (hopping: %d-%d)", c.cfg.Server.Addr.IP, c.cfg.Hopping.Min, c.cfg.Hopping.Max)
+	}
+	flog.Infof("Client started: IPv4:%s IPv6:%s -> %s (%d connections)", ipv4Addr, ipv6Addr, dst, len(c.iter.Items))
 	return nil
 }

@@ -44,6 +44,17 @@ network:
 # Server connection settings
 server:
   addr: "10.0.0.100:9999"  # CHANGE ME: paqet server address and port
+                           # NOTE: If hopping is enabled, this port is ignored for transport
+                           # and the hopping range is used instead.
+# Port Hopping Configuration (Optional)
+# Periodically changes the destination port to evade detection on fixed ports.
+# The server must be configured with the same range.
+
+hopping:
+  enabled: false      # Enable port hopping
+  interval: 30        # Interval in seconds to change ports
+  min: 20000          # Minimum port number of the range
+  max: 30000          # Maximum port number of the range
 
 # Transport protocol configuration
 transport:
@@ -95,6 +106,7 @@ transport:
     # Buffer settings (optional)
     # smuxbuf: 4194304       # 4MB SMUX buffer
     # streambuf: 2097152     # 2MB stream buffer
+
 
 # Optional Forward Error Correction (FEC) - currently disabled
 # Use these only if you need FEC for very lossy networks:

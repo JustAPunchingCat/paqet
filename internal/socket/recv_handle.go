@@ -15,7 +15,7 @@ type RecvHandle struct {
 	handle *pcap.Handle
 }
 
-func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
+func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error) {
 	handle, err := newHandle(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
@@ -29,6 +29,9 @@ func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 	}
 
 	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)
+	if hopping != nil && hopping.Enabled {
+		filter = fmt.Sprintf("tcp and dst portrange %d-%d", hopping.Min, hopping.Max)
+	}
 	if err := handle.SetBPFFilter(filter); err != nil {
 		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
 	}
@@ -36,18 +39,19 @@ func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 	return &RecvHandle{handle: handle}, nil
 }
 
-func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
+func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	data, _, err := h.handle.ZeroCopyReadPacketData()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	addr := &net.UDPAddr{}
+	var dstPort int
 	p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
 
 	netLayer := p.NetworkLayer()
 	if netLayer == nil {
-		return nil, addr, nil
+		return nil, addr, 0, nil
 	}
 	switch netLayer.LayerType() {
 	case layers.LayerTypeIPv4:
@@ -58,20 +62,24 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 
 	trLayer := p.TransportLayer()
 	if trLayer == nil {
-		return nil, addr, nil
+		return nil, addr, 0, nil
 	}
 	switch trLayer.LayerType() {
 	case layers.LayerTypeTCP:
-		addr.Port = int(trLayer.(*layers.TCP).SrcPort)
+		tcp := trLayer.(*layers.TCP)
+		addr.Port = int(tcp.SrcPort)
+		dstPort = int(tcp.DstPort)
 	case layers.LayerTypeUDP:
-		addr.Port = int(trLayer.(*layers.UDP).SrcPort)
+		udp := trLayer.(*layers.UDP)
+		addr.Port = int(udp.SrcPort)
+		dstPort = int(udp.DstPort)
 	}
 
 	appLayer := p.ApplicationLayer()
 	if appLayer == nil {
-		return nil, addr, nil
+		return nil, addr, 0, nil
 	}
-	return appLayer.Payload(), addr, nil
+	return appLayer.Payload(), addr, dstPort, nil
 }
 
 func (h *RecvHandle) Close() {
