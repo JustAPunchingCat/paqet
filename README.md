@@ -189,16 +189,26 @@ You **must** configure `iptables` on the server to prevent the kernel from inter
 Run these commands as root on your server:
 
 ```bash
-# Replace <PORT> with your server listen port (e.g., 9999)
+# Replace <PORT> with your server listen port (e.g., 9999).
+# NOTE: If using Port Hopping, you must apply these rules to ALL configured ports 
+# and ranges. Repeat the commands for each port or range in your list.
+# For ranges, use the start:end syntax (e.g., 20000:30000).
 
-# 1. Bypass connection tracking (conntrack) for the connection port. This is essential.
+# 1. Bypass connection tracking (conntrack) for the connection port(s).
 # This tells the kernel's netfilter to ignore packets on this port for state tracking.
 sudo iptables -t raw -A PREROUTING -p tcp --dport <PORT> -j NOTRACK
 sudo iptables -t raw -A OUTPUT -p tcp --sport <PORT> -j NOTRACK
 
+# Example for a range:
+# sudo iptables -t raw -A PREROUTING -p tcp --dport 20000:30000 -j NOTRACK
+# sudo iptables -t raw -A OUTPUT -p tcp --sport 20000:30000 -j NOTRACK
+
 # 2. Prevent the kernel from sending TCP RST packets that would kill the session.
 # This drops any RST packets the kernel tries to send from the connection port.
 sudo iptables -t mangle -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP
+
+# Example for a range:
+# sudo iptables -t mangle -A OUTPUT -p tcp --sport 20000:30000 --tcp-flags RST RST -j DROP
 
 # An alternative for rule 2 if issues persist:
 sudo iptables -t filter -A INPUT -p tcp --dport <PORT> -j ACCEPT

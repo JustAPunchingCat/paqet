@@ -106,10 +106,10 @@ transport:
 # Since paqet uses pcap to bypass standard firewalls, you MUST configure
 # iptables on the server to prevent kernel interference:
 #
-# sudo iptables -t raw -A PREROUTING -p tcp --dport 81 -j NOTRACK
-# sudo iptables -t raw -A OUTPUT -p tcp --sport 81 -j NOTRACK  
-# sudo iptables -t mangle -A OUTPUT -p tcp --sport 81 --tcp-flags RST RST -j DROP
+# sudo iptables -t raw -A PREROUTING -p tcp --dport 9999 -j NOTRACK
+# sudo iptables -t raw -A OUTPUT -p tcp --sport 9999 -j NOTRACK  
+# sudo iptables -t mangle -A OUTPUT -p tcp --sport 9999 --tcp-flags RST RST -j DROP
 #
 # Replace 9999 with your actual listen port.
-# NOTE: If using Port Hopping, you must apply these rules to the entire port range 
-# (e.g., --dport 20000:30000).
+# NOTE: If using Port Hopping, you must apply these rules to ALL configured ports 
+# and ranges (e.g., --dport 20000:30000). Repeat for each entry in 'ports'.
