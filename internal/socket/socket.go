@@ -193,12 +193,26 @@ func (c *PacketConn) Close() error {
 }
 
 func (c *PacketConn) LocalAddr() net.Addr {
-	return nil
-	// return &net.UDPAddr{
-	// 	IP:   append([]byte(nil), c.cfg.PrimaryAddr().IP...),
-	// 	Port: c.cfg.PrimaryAddr().Port,
-	// 	Zone: c.cfg.PrimaryAddr().Zone,
-	// }
+	var ip net.IP
+	if c.cfg.IPv4.Addr != nil {
+		ip = c.cfg.IPv4.Addr.IP
+	} else if c.cfg.IPv6.Addr != nil {
+		ip = c.cfg.IPv6.Addr.IP
+	}
+	if ip == nil {
+		ip = net.IPv4(0, 0, 0, 0)
+	}
+	return &net.UDPAddr{
+		IP:   ip,
+		Port: c.cfg.Port,
+	}
+}
+
+func (c *PacketConn) GetClientPort(addr net.Addr) int {
+	if port, ok := c.clientPorts.Load(addr.String()); ok {
+		return port.(int)
+	}
+	return 0
 }
 
 func (c *PacketConn) SetDeadline(t time.Time) error {

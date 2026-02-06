@@ -29,7 +29,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	}
 
 	if new {
-		flog.Infof("SOCKS5 accepted UDP connection %s -> %s", addr, d.Address())
+		flog.Infof("SOCKS5 accepted UDP connection %s -> %s via %s", addr, d.Address(), strm.RemoteAddr())
 		go func() {
 			defer func() {
 				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, d.Address())

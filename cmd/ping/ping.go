@@ -41,10 +41,18 @@ func sendPacket() {
 	}
 	defer sendHandle.Close()
 
-	log.Printf("Sending packet from IPv4:%s IPv6:%s to %s via %s...", cfg.Network.IPv4.Addr, cfg.Network.IPv6.Addr, cfg.Server.Addr.String(), cfg.Network.Interface.Name)
+	if len(cfg.Servers) == 0 {
+		log.Fatalf("No servers configured")
+	}
+	targetServer := cfg.Servers[0].Server
+	if targetServer.Addr == nil {
+		log.Fatalf("Server address is not configured")
+	}
+
+	log.Printf("Sending packet from IPv4:%s IPv6:%s to %s via %s...", cfg.Network.IPv4.Addr, cfg.Network.IPv6.Addr, targetServer.Addr.String(), cfg.Network.Interface.Name)
 	log.Printf("Payload: \"%s\" (%d bytes)", payload, len(payload))
 
-	if err := sendHandle.Write([]byte(payload), cfg.Server.Addr, cfg.Network.Port); err != nil {
+	if err := sendHandle.Write([]byte(payload), targetServer.Addr, cfg.Network.Port); err != nil {
 		log.Fatalf("Failed to send packet: %v", err)
 	}
 	log.Printf("Packet sent successfully!")

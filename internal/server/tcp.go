@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
@@ -11,7 +12,13 @@ import (
 )
 
 func (s *Server) handleTCPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
-	flog.Infof("accepted TCP stream %d: %s -> %s", strm.SID(), strm.RemoteAddr(), p.Addr.String())
+	clientInfo := strm.RemoteAddr().String()
+	if s.pConn != nil {
+		if actualPort := s.pConn.GetClientPort(strm.RemoteAddr()); actualPort > 0 {
+			clientInfo = fmt.Sprintf("%s (via :%d)", strm.RemoteAddr(), actualPort)
+		}
+	}
+	flog.Infof("accepted TCP stream %d: %s -> %s", strm.SID(), clientInfo, p.Addr.String())
 	return s.handleTCP(ctx, strm, p.Addr.String())
 }
 
