@@ -1,4 +1,4 @@
-# paqet - Transport over Raw Packet
+# paqet - Ferries Packets Across Forbidden Boundaries 👀
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -106,16 +106,6 @@ role: "client"
 log:
   level: "info" # none, debug, info, warn, error, fatal
 
-# SOCKS5 proxy configuration (client mode)
-socks5:
-  - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
-
-# Port forwarding configuration (can be used alongside SOCKS5)
-# forward:
-#   - listen: "127.0.0.1:8080"  # Local port to listen on
-#     target: "127.0.0.1:80"    # Target to forward to (via server)
-#     protocol: "tcp"           # Protocol (tcp/udp)
-
 # Network interface settings
 network:
   interface: "en0" # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
@@ -124,16 +114,30 @@ network:
     addr: "192.168.1.100:0" # CHANGE ME: Local IP (use port 0 for random port)
     router_mac: "aa:bb:cc:dd:ee:ff" # CHANGE ME: Gateway/router MAC address
 
-# Server connection settings
-server:
-  addr: "10.0.0.100:9999" # CHANGE ME: paqet server address and port
+# Servers configuration
+# Define multiple servers, each with its own SOCKS5 and forwarding rules.
+servers:
+  - server:
+      addr: "10.0.0.100:9999" # CHANGE ME: First server address
+    
+    # Port Hopping Configuration (Optional)
+    # Periodically changes the destination port to evade detection on fixed ports.
+    hopping:
+      enabled: false      # Enable port hopping
+      interval: 30        # Interval in seconds to change ports
+      min: 20000          # Minimum port number of the range
+      max: 30000          # Maximum port number of the range
 
-# Transport protocol configuration
-transport:
-  protocol: "kcp" # Transport protocol (currently only "kcp" supported)
-  kcp:
-    block: "aes" # Encryption algorithm
-    key: "your-secret-key-here" # CHANGE ME: Secret key (must match server)
+    socks5:
+      - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
+
+    # Transport protocol configuration for this server
+    transport:
+      protocol: "kcp" 
+      conn: 1
+      kcp:
+        block: "aes" 
+        key: "your-secret-key-here" 
 ```
 
 #### Example Server Configuration (`config.yaml`)
@@ -149,6 +153,15 @@ log:
 # Server listen configuration
 listen:
   addr: ":9999" # CHANGE ME: Server listen port (must match network.ipv4.addr port), WARNING: Do not use standard ports (80, 443, etc.) as iptables rules can affect outgoing server connections.
+
+# Port Hopping Configuration (Optional)
+# Allows the server to receive connections across a range of ports.
+# Must match the client's configuration.
+hopping:
+  enabled: false      # Enable port hopping support
+  interval: 30        # Interval (unused on server, but good to keep consistent)
+  min: 20000          # Minimum port number to capture
+  max: 30000          # Maximum port number to capture
 
 # Network interface settings
 network:
@@ -267,6 +280,23 @@ No encryption is applied, but a protocol header is still present. The packet for
 
 **`null`** (Raw Data)
 No encryption and no protocol header, data is transmitted in raw form without any cryptographic framing. This offers the highest performance but is the least secure and most easily identified.
+
+### Port Hopping
+
+`paqet` includes a Port Hopping feature to evade traffic analysis that targets long-lived connections on fixed ports.
+
+- **Dynamic Rotation:** The client automatically rotates the destination port within a user-configured range (e.g., `20000-30000`) at a specified interval (e.g., every 30 seconds). This prevents the connection from looking like a single persistent flow.
+- **Server Range Listening:** The server uses `pcap` filters to capture traffic across the entire port range without needing to bind thousands of sockets.
+- **Port Echoing:** To ensure stability with NAT devices and stateful firewalls, the server replies from the exact port the client used for that specific packet, rather than a single fixed listen port.
+
+To enable, configure the `hopping` section in both client and server YAML files.
+
+### Multi-Server Support
+
+The client configuration now supports a `servers` list, allowing you to define multiple upstream servers.
+
+- **Redundancy & Distribution:** The client initializes connections to all configured servers simultaneously.
+- **Per-Server Configuration:** Each server entry can have its own transport settings, hopping configuration, and forwarding rules.
 
 ### Critical Configuration Points
 
