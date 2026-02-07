@@ -41,7 +41,7 @@ func (s *Server) Start() error {
 		cancel()
 	}()
 
-	pConn, err := socket.NewWithHopping(ctx, &s.cfg.Network, &s.cfg.Hopping, false)
+	pConn, err := socket.NewWithHopping(ctx, &s.cfg.Network, &s.cfg.Hopping, false, s.cfg.Transport.Padding)
 	if err != nil {
 		return fmt.Errorf("could not create raw packet conn: %w", err)
 	}

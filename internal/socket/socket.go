@@ -22,8 +22,8 @@ type PacketConn struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	hopping  *conf.Hopping
-	selector *PortSelector
+	hopping       *conf.Hopping
+	hoppingRanges []conf.PortRange
 
 	// Map to store the last destination port used by a remote client (for server echo)
 	clientPorts sync.Map // map[string]int (RemoteAddr -> LocalPort)
@@ -31,10 +31,10 @@ type PacketConn struct {
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
 func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
-	return NewWithHopping(ctx, cfg, nil, false)
+	return NewWithHopping(ctx, cfg, nil, false, 0)
 }
 
-func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool) (*PacketConn, error) {
+func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool, padding int) (*PacketConn, error) {
 	if cfg.Port == 0 {
 		cfg.Port = 32768 + rand.Intn(32768)
 	}
@@ -43,6 +43,7 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	if err != nil {
 		return nil, fmt.Errorf("failed to create send handle on %s: %v", cfg.Interface.Name, err)
 	}
+	sendHandle.SetPadding(padding)
 
 	// Only enable hopping on the receive handle if we are NOT hopping on writes (Server mode).
 	// Clients (writeHopping=true) must listen on their specific source port, not the destination range.
@@ -65,12 +66,11 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	}
 
 	if hopping != nil && hopping.Enabled && writeHopping {
-		selector, err := newPortSelector(hopping)
-		if err != nil {
+		if err := sendHandle.SetHopping(hopping); err != nil {
 			return nil, fmt.Errorf("invalid hopping configuration: %w", err)
 		}
-		conn.selector = selector
 		conn.hopping = hopping
+		conn.hoppingRanges, _ = hopping.GetRanges()
 	}
 
 	return conn, nil
@@ -101,9 +101,9 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 	// If hopping is enabled (Client mode), normalize the remote port to the Min port.
 	// This ensures KCP accepts the packet even if the server replies from a different
 	// port within the range (or if the user configured a different port in the range).
-	if c.selector != nil {
+	if c.hopping != nil && c.hopping.Enabled && len(c.hoppingRanges) > 0 {
 		if udpAddr, ok := addr.(*net.UDPAddr); ok {
-			if c.selector.IsInRange(udpAddr.Port) {
+			if c.isInRange(udpAddr.Port) {
 				udpAddr.Port = c.hopping.Min // Normalize to Min (or canonical if we had it)
 			}
 		}
@@ -119,6 +119,15 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 	n = copy(data, payload)
 
 	return n, addr, nil
+}
+
+func (c *PacketConn) isInRange(port int) bool {
+	for _, r := range c.hoppingRanges {
+		if port >= r.Min && port <= r.Max {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
@@ -144,13 +153,7 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 
 	srcPort := c.cfg.Port
-	if c.selector != nil {
-		targetPort := c.selector.GetPort()
-
-		newAddr := *daddr
-		newAddr.Port = targetPort
-		daddr = &newAddr
-	} else {
+	if c.hopping == nil {
 		// If not hopping (Server mode), try to reply from the port the client last contacted.
 		if lastPort, ok := c.clientPorts.Load(daddr.String()); ok {
 			srcPort = lastPort.(int)
@@ -223,75 +226,4 @@ func (c *PacketConn) SetDSCP(dscp int) error {
 
 func (c *PacketConn) SetClientTCPF(addr net.Addr, f []conf.TCPF) {
 	c.sendHandle.setClientTCPF(addr, f)
-}
-
-// PortSelector handles the logic for selecting random ports from configured ranges
-type PortSelector struct {
-	ranges   []conf.PortRange
-	current  int
-	lastHop  time.Time
-	interval time.Duration
-	mu       sync.Mutex
-}
-
-func newPortSelector(h *conf.Hopping) (*PortSelector, error) {
-	ranges, err := h.GetRanges()
-	if err != nil {
-		return nil, err
-	}
-	ps := &PortSelector{
-		ranges:   ranges,
-		interval: time.Duration(h.Interval) * time.Second,
-		lastHop:  time.Now(),
-	}
-	ps.current = ps.pickRandomPort()
-	return ps, nil
-}
-
-func (ps *PortSelector) pickRandomPort() int {
-	totalPorts := 0
-	for _, r := range ps.ranges {
-		totalPorts += (r.Max - r.Min + 1)
-	}
-	if totalPorts == 0 {
-		return 0
-	}
-
-	offset := rand.Intn(totalPorts)
-	currentOffset := 0
-	for _, r := range ps.ranges {
-		size := r.Max - r.Min + 1
-		if offset < currentOffset+size {
-			return r.Min + (offset - currentOffset)
-		}
-		currentOffset += size
-	}
-	return ps.ranges[0].Min
-}
-
-func (ps *PortSelector) GetPort() int {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	if ps.interval > 0 && time.Since(ps.lastHop) > ps.interval {
-		// Ensure we pick a different port than the current one
-		for i := 0; i < 10; i++ {
-			newPort := ps.pickRandomPort()
-			if newPort != ps.current {
-				ps.current = newPort
-				break
-			}
-		}
-		ps.lastHop = time.Now()
-	}
-	return ps.current
-}
-
-func (ps *PortSelector) IsInRange(port int) bool {
-	for _, r := range ps.ranges {
-		if port >= r.Min && port <= r.Max {
-			return true
-		}
-	}
-	return false
 }

@@ -22,6 +22,7 @@ type Network struct {
 	TCP        TCP            `yaml:"tcp"`
 	Interface  *net.Interface `yaml:"-"`
 	Port       int            `yaml:"-"`
+	Transport  *Transport     `yaml:"-"`
 }
 
 func (n *Network) setDefaults(role string) {

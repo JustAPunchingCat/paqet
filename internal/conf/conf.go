@@ -20,12 +20,13 @@ type ServerConfig struct {
 }
 
 type Conf struct {
-	Role      string         `yaml:"role"`
-	Log       Log            `yaml:"log"`
-	Listen    Server         `yaml:"listen"`
-	SOCKS5    []SOCKS5       `yaml:"socks5"`
-	Forward   []Forward      `yaml:"forward"`
-	Network   Network        `yaml:"network"`
+	Role    string    `yaml:"role"`
+	Log     Log       `yaml:"log"`
+	Listen  Server    `yaml:"listen"`
+	SOCKS5  []SOCKS5  `yaml:"socks5"`
+	Forward []Forward `yaml:"forward"`
+	Network Network   `yaml:"network"`
+	// Network struct needs to know about Transport for padding config in NewSendHandle
 	Server    Server         `yaml:"server"`
 	Transport Transport      `yaml:"transport"`
 	Hopping   Hopping        `yaml:"hopping"`
@@ -61,6 +62,9 @@ func (c *Conf) setDefaults() {
 	c.Log.setDefaults()
 	c.Listen.setDefaults()
 	c.Network.setDefaults(c.Role)
+
+	// Pass transport config to network for SendHandle initialization
+	c.Network.Transport = &c.Transport
 
 	if c.Role == "client" {
 		if len(c.Servers) == 0 {

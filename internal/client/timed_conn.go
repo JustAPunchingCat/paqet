@@ -32,7 +32,7 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.rootCfg.Network
-	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true)
+	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, tc.srvCfg.Transport.Padding)
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}

@@ -1,8 +1,10 @@
 package socket
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	mrand "math/rand"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/pkg/hash"
@@ -34,7 +36,13 @@ type SendHandle struct {
 	ackOptions  []layers.TCPOption
 	time        uint32
 	tsCounter   uint32
+	ipId        uint32
+	padding     int
 	tcpF        TCPF
+	hopping     *conf.Hopping
+	portRanges  []conf.PortRange
+	currentPort atomic.Uint32
+	stopHopping chan struct{}
 	ethPool     sync.Pool
 	ipv4Pool    sync.Pool
 	ipv6Pool    sync.Pool
@@ -76,6 +84,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		ackOptions: ackOptions,
 		tcpF:       TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
 		time:       uint32(time.Now().UnixNano() / int64(time.Millisecond)),
+		ipId:       uint32(time.Now().UnixNano()),
 		ethPool: sync.Pool{
 			New: func() any {
 				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
@@ -115,11 +124,13 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 
 func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 	ip := h.ipv4Pool.Get().(*layers.IPv4)
+	id := atomic.AddUint32(&h.ipId, 1)
 	*ip = layers.IPv4{
 		Version:  4,
 		IHL:      5,
 		TOS:      184,
-		TTL:      64,
+		Id:       uint16(id),
+		TTL:      uint8(64 + (id % 32)),
 		Flags:    layers.IPv4DontFragment,
 		Protocol: layers.IPProtocolTCP,
 		SrcIP:    h.srcIPv4,
@@ -130,10 +141,11 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 
 func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 	ip := h.ipv6Pool.Get().(*layers.IPv6)
+	id := atomic.LoadUint32(&h.ipId)
 	*ip = layers.IPv6{
 		Version:      6,
 		TrafficClass: 184,
-		HopLimit:     64,
+		HopLimit:     uint8(64 + (id % 32)),
 		NextHeader:   layers.IPProtocolTCP,
 		SrcIP:        h.srcIPv6,
 		DstIP:        dstIP,
@@ -186,6 +198,21 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
+	if h.hopping != nil && h.hopping.Enabled {
+		if p := h.currentPort.Load(); p > 0 {
+			dstPort = uint16(p)
+		}
+	}
+
+	if h.padding > 0 {
+		padLen := int(h.ipId % uint32(h.padding+1))
+		if padLen > 0 {
+			padding := make([]byte, padLen)
+			rand.Read(padding)
+			payload = append(payload, padding...)
+		}
+	}
+
 	f := h.getClientTCPF(dstIP, dstPort)
 	tcpLayer := h.buildTCPHeader(uint16(srcPort), dstPort, f)
 	defer h.tcpPool.Put(tcpLayer)
@@ -230,7 +257,52 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	h.tcpF.mu.Unlock()
 }
 
+func (h *SendHandle) SetPadding(padding int) {
+	h.padding = padding
+}
+
+func (h *SendHandle) SetHopping(hopping *conf.Hopping) error {
+	if hopping == nil || !hopping.Enabled {
+		return nil
+	}
+	ranges, err := hopping.GetRanges()
+	if err != nil {
+		return err
+	}
+	h.hopping = hopping
+	h.portRanges = ranges
+	h.stopHopping = make(chan struct{})
+	h.updateCurrentPort()
+	go h.startHopping()
+	return nil
+}
+
+func (h *SendHandle) startHopping() {
+	ticker := time.NewTicker(time.Duration(h.hopping.Interval) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			h.updateCurrentPort()
+		case <-h.stopHopping:
+			return
+		}
+	}
+}
+
+func (h *SendHandle) updateCurrentPort() {
+	if len(h.portRanges) == 0 {
+		return
+	}
+	r := h.portRanges[mrand.Intn(len(h.portRanges))]
+	newPort := uint32(r.Min + mrand.Intn(r.Max-r.Min+1))
+	h.currentPort.Store(newPort)
+}
+
 func (h *SendHandle) Close() {
+	if h.stopHopping != nil {
+		close(h.stopHopping)
+	}
 	if h.handle != nil {
 		h.handle.Close()
 	}
