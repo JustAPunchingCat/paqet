@@ -53,7 +53,7 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	for {
-		data, _, err := h.handle.ZeroCopyReadPacketData()
+		data, _, err := h.handle.ReadPacketData()
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -68,13 +68,9 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		addr := &net.UDPAddr{}
 		switch netLayer.LayerType() {
 		case layers.LayerTypeIPv4:
-			src := netLayer.(*layers.IPv4).SrcIP
-			addr.IP = make(net.IP, len(src))
-			copy(addr.IP, src)
+			addr.IP = netLayer.(*layers.IPv4).SrcIP
 		case layers.LayerTypeIPv6:
-			src := netLayer.(*layers.IPv6).SrcIP
-			addr.IP = make(net.IP, len(src))
-			copy(addr.IP, src)
+			addr.IP = netLayer.(*layers.IPv6).SrcIP
 		default:
 			continue
 		}

@@ -34,7 +34,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.rootCfg.Network
 	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true)
 	if err != nil {
-		return nil, fmt.Errorf("could not create raw packet conn: %w", err)
+		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
 
 	// If hopping is enabled, the raw socket normalizes incoming packets to hopping.Min.
@@ -56,16 +56,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, err
 	}
 	return conn, nil
-}
-
-func (tc *timedConn) waitConn() tnet.Conn {
-	for {
-		if c, err := tc.createConn(); err == nil {
-			return c
-		} else {
-			time.Sleep(time.Second)
-		}
-	}
 }
 
 func (tc *timedConn) sendTCPF(conn tnet.Conn) error {

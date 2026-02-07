@@ -55,7 +55,7 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	}
 	defer strm.Close()
 	flog.Infof("SOCKS5 accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), r.Address(), strm.RemoteAddr())
-	flog.Debugf("SOCKS5 stream %d established for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
+	flog.Debugf("SOCKS5 stream %d created for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
 
 	errCh := make(chan error, 2)
 	go func() {

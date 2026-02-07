@@ -31,9 +31,10 @@ func (c *Client) Start(ctx context.Context) error {
 		for i := 0; i < srv.Transport.Conn; i++ {
 			tc, err := newTimedConn(ctx, c.cfg, srv)
 			if err != nil {
-				flog.Errorf("failed to establish connection to server %d (conn %d): %v", sIdx+1, i+1, err)
+				flog.Errorf("failed to create connection to server %d (conn %d): %v", sIdx+1, i+1, err)
 				return err
 			}
+			flog.Debugf("client connection %d created successfully", i+1)
 			c.iter.Items = append(c.iter.Items, tc)
 		}
 	}
