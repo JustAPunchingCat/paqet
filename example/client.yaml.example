@@ -49,6 +49,18 @@ servers:
         ports:              # List of single ports or ranges
           - "80"
           - "20000-30000"
+      
+      # Obfuscation Configuration (Optional)
+      obfuscation:
+        use_tls: false      # NOT RECOMMENDED: Mimics HTTPS but lacks handshake. Use padding instead.
+        padding:
+          enabled: true    # Enable random padding
+          min: 32           # Minimum padding bytes
+          max: 64           # Maximum padding bytes
+        headers:
+          randomize_tos: true
+          randomize_ttl: true
+          randomize_window: true
 
       socks5:
         - listen: "127.0.0.1:1080"
@@ -63,9 +75,6 @@ servers:
     transport:
       protocol: "kcp"  # Transport protocol (currently only "kcp" supported)
       conn: 1          # Number of connections (1-256, default: 1)
-      padding: 0       # Maximum random padding bytes per packet (e.g., 50).
-                       # Actual padding is random between 0 and N.
-                       # Does NOT need to match the server's setting.
       
       # tcpbuf: 8192   # TCP buffer size in bytes
       # udpbuf: 4096   # UDP buffer size in bytes

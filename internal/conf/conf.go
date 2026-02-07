@@ -12,25 +12,26 @@ import (
 )
 
 type ServerConfig struct {
-	Server    Server    `yaml:"server"`
-	SOCKS5    []SOCKS5  `yaml:"socks5"`
-	Forward   []Forward `yaml:"forward"`
-	Transport Transport `yaml:"transport"`
-	Hopping   Hopping   `yaml:"hopping"`
+	Server      Server      `yaml:"server"`
+	SOCKS5      []SOCKS5    `yaml:"socks5"`
+	Forward     []Forward   `yaml:"forward"`
+	Transport   Transport   `yaml:"transport"`
+	Hopping     Hopping     `yaml:"hopping"`
+	Obfuscation Obfuscation `yaml:"obfuscation"`
 }
 
 type Conf struct {
-	Role    string    `yaml:"role"`
-	Log     Log       `yaml:"log"`
-	Listen  Server    `yaml:"listen"`
-	SOCKS5  []SOCKS5  `yaml:"socks5"`
-	Forward []Forward `yaml:"forward"`
-	Network Network   `yaml:"network"`
-	// Network struct needs to know about Transport for padding config in NewSendHandle
-	Server    Server         `yaml:"server"`
-	Transport Transport      `yaml:"transport"`
-	Hopping   Hopping        `yaml:"hopping"`
-	Servers   []ServerConfig `yaml:"servers"`
+	Role        string         `yaml:"role"`
+	Log         Log            `yaml:"log"`
+	Listen      Server         `yaml:"listen"`
+	SOCKS5      []SOCKS5       `yaml:"socks5"`
+	Forward     []Forward      `yaml:"forward"`
+	Network     Network        `yaml:"network"`
+	Server      Server         `yaml:"server"`
+	Transport   Transport      `yaml:"transport"`
+	Hopping     Hopping        `yaml:"hopping"`
+	Obfuscation Obfuscation    `yaml:"obfuscation"`
+	Servers     []ServerConfig `yaml:"servers"`
 }
 
 func LoadFromFile(path string) (*Conf, error) {
@@ -61,23 +62,27 @@ func LoadFromFile(path string) (*Conf, error) {
 func (c *Conf) setDefaults() {
 	c.Log.setDefaults()
 	c.Listen.setDefaults()
+	c.Obfuscation.setDefaults()
 	c.Network.setDefaults(c.Role)
 
 	// Pass transport config to network for SendHandle initialization
 	c.Network.Transport = &c.Transport
+	c.Network.Obfuscation = &c.Obfuscation
 
 	if c.Role == "client" {
 		if len(c.Servers) == 0 {
 			c.Servers = append(c.Servers, ServerConfig{
-				Server:    c.Server,
-				SOCKS5:    c.SOCKS5,
-				Forward:   c.Forward,
-				Transport: c.Transport,
-				Hopping:   c.Hopping,
+				Server:      c.Server,
+				SOCKS5:      c.SOCKS5,
+				Forward:     c.Forward,
+				Transport:   c.Transport,
+				Obfuscation: c.Obfuscation,
+				Hopping:     c.Hopping,
 			})
 		}
 		for i := range c.Servers {
 			c.Servers[i].Server.setDefaults()
+			c.Servers[i].Obfuscation.setDefaults()
 			for j := range c.Servers[i].SOCKS5 {
 				c.Servers[i].SOCKS5[j].setDefaults()
 			}
@@ -87,6 +92,17 @@ func (c *Conf) setDefaults() {
 			if !c.Servers[i].Hopping.Enabled && c.Hopping.Enabled {
 				c.Servers[i].Hopping = c.Hopping
 			}
+
+			// Propagate global Transport settings if not set per-server
+			if c.Servers[i].Transport.Protocol == "" {
+				c.Servers[i].Transport.Protocol = c.Transport.Protocol
+			}
+			if c.Servers[i].Transport.KCP == nil && c.Transport.KCP != nil {
+				c.Servers[i].Transport.KCP = c.Transport.KCP
+			} else if c.Servers[i].Transport.KCP != nil && c.Transport.KCP != nil && c.Servers[i].Transport.KCP.Key == "" {
+				c.Servers[i].Transport.KCP.Key = c.Transport.KCP.Key
+			}
+
 			c.Servers[i].Transport.setDefaults(c.Role)
 		}
 	}
@@ -99,7 +115,8 @@ func (c *Conf) validate() error {
 
 	allErrors = append(allErrors, c.Log.validate()...)
 	allErrors = append(allErrors, c.Network.validate()...)
-	allErrors = append(allErrors, c.Hopping.validate()...)
+	allErrors = append(allErrors, c.Hopping.validate(c.Role)...)
+	allErrors = append(allErrors, c.Obfuscation.validate()...)
 
 	if c.Role == "server" {
 		allErrors = append(allErrors, c.Listen.validate()...)
@@ -225,12 +242,12 @@ func (h *Hopping) GetRanges() ([]PortRange, error) {
 	return ranges, nil
 }
 
-func (h *Hopping) validate() []error {
+func (h *Hopping) validate(role string) []error {
 	if !h.Enabled {
 		return nil
 	}
 	var errs []error
-	if h.Interval <= 0 {
+	if role == "client" && h.Interval <= 0 {
 		errs = append(errs, fmt.Errorf("hopping interval must be > 0"))
 	}
 

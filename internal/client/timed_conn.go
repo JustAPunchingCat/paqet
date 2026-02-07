@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"paqet/internal/conf"
+	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
@@ -32,7 +33,16 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.rootCfg.Network
-	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, tc.srvCfg.Transport.Padding)
+	// Use server-specific transport settings (e.g. Key) for this connection
+	netCfg.Transport = &tc.srvCfg.Transport
+
+	// Explicitly use the server's obfuscation config
+	// We do not propagate global obfuscation settings to allow mixing obfuscated
+	// and non-obfuscated servers. If not configured for this server, it defaults
+	// to disabled (zero value).
+	obfsCfg := &tc.srvCfg.Obfuscation
+
+	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
@@ -53,7 +63,23 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		remoteAddr = &clone
 	}
 
-	conn, err := kcp.Dial(remoteAddr, tc.srvCfg.Transport.KCP, pConn)
+	// Adjust MTU to account for obfuscation overhead
+	kcpCfg := *tc.srvCfg.Transport.KCP
+	overhead := 0
+	if obfsCfg.UseTLS {
+		overhead = 5 + 2 + obfsCfg.Padding.Max
+	} else if obfsCfg.Padding.Enabled {
+		overhead = 2 + obfsCfg.Padding.Max
+	}
+	if overhead > 0 {
+		if kcpCfg.MTU == 0 {
+			kcpCfg.MTU = 1350
+		}
+		kcpCfg.MTU -= overhead
+		flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
+	}
+
+	conn, err := kcp.Dial(remoteAddr, &kcpCfg, pConn)
 	if err != nil {
 		return nil, err
 	}

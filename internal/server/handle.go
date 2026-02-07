@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
@@ -24,7 +25,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 		}
 		s.wg.Go(func() {
 			defer strm.Close()
-			if err := s.handleStrm(ctx, strm); err != nil {
+			if err := s.handleStrm(ctx, strm); err != nil && err != io.EOF {
 				flog.Errorf("stream %d from %s closed with error: %v", strm.SID(), strm.RemoteAddr(), err)
 			} else {
 				flog.Debugf("stream %d from %s closed", strm.SID(), strm.RemoteAddr())
@@ -37,6 +38,9 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 	var p protocol.Proto
 	err := p.Read(strm)
 	if err != nil {
+		if err == io.EOF {
+			return err
+		}
 		flog.Errorf("failed to read protocol message from stream %d: %v", strm.SID(), err)
 		return err
 	}
