@@ -42,7 +42,7 @@ jobs:
                   fi
 
             - name: Checkout Code
-              uses: actions/checkout@v5
+              uses: actions/checkout@v4
 
             - name: Mark repo as safe
               run: git config --global --add safe.directory $GITHUB_WORKSPACE
@@ -116,7 +116,7 @@ jobs:
                   choco install mingw -y
 
             - name: Checkout Code
-              uses: actions/checkout@v5
+              uses: actions/checkout@v4
 
             - name: Setup Go
               uses: actions/setup-go@v5
@@ -177,7 +177,7 @@ jobs:
                 goarch: [amd64, arm64]
         steps:
             - name: Checkout Code
-              uses: actions/checkout@v5
+              uses: actions/checkout@v4
 
             - name: Setup Go
               uses: actions/setup-go@v5
