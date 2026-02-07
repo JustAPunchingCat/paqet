@@ -10,9 +10,11 @@ import (
 )
 
 var confPath string
+var debugMode bool
 
 func init() {
 	Cmd.Flags().StringVarP(&confPath, "config", "c", "config.yaml", "Path to the configuration file.")
+	Cmd.Flags().BoolVarP(&debugMode, "debug", "d", false, "Enable debug logging (overrides config)")
 }
 
 var Cmd = &cobra.Command{
@@ -40,6 +42,9 @@ var Cmd = &cobra.Command{
 }
 
 func initialize(cfg *conf.Conf) {
+	if debugMode {
+		cfg.Log.Level = int(flog.Debug)
+	}
 	flog.SetLevel(cfg.Log.Level)
 	buffer.Initialize(cfg.Transport.TCPBuf, cfg.Transport.UDPBuf)
 }

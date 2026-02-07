@@ -14,7 +14,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	bufp := buffer.UPool.Get().(*[]byte)
 	defer buffer.UPool.Put(bufp)
 	buf := *bufp
-	strm, new, k, err := h.client.UDP(addr.String(), d.Address())
+	strm, new, k, err := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
 		return err
@@ -24,7 +24,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
-		h.client.CloseUDP(k)
+		h.client.CloseUDP(h.ServerIdx, k)
 		return err
 	}
 
@@ -33,7 +33,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 		go func() {
 			defer func() {
 				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, d.Address())
-				h.client.CloseUDP(k)
+				h.client.CloseUDP(h.ServerIdx, k)
 			}()
 			for {
 				select {

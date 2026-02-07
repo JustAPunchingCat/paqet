@@ -14,6 +14,7 @@ var rPool = sync.Pool{
 }
 
 type Handler struct {
-	client *client.Client
-	ctx    context.Context
+	client    *client.Client
+	ctx       context.Context
+	ServerIdx int
 }

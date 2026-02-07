@@ -7,17 +7,22 @@ import (
 	"paqet/internal/tnet"
 )
 
-func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
+func (c *Client) UDP(srcAddr, dstAddr string) (tnet.Strm, bool, uint64, error) {
+	return c.UDPByIndex(0, srcAddr, dstAddr)
+}
+
+func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 	key := hash.AddrPair(lAddr, tAddr)
-	c.udpPool.mu.RLock()
-	if strm, exists := c.udpPool.strms[key]; exists {
-		c.udpPool.mu.RUnlock()
+	pool := c.udpPools[serverIdx]
+	pool.mu.RLock()
+	if strm, exists := pool.strms[key]; exists {
+		pool.mu.RUnlock()
 		flog.Debugf("reusing UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
 		return strm, false, key, nil
 	}
-	c.udpPool.mu.RUnlock()
+	pool.mu.RUnlock()
 
-	strm, err := c.newStrm()
+	strm, err := c.newStrm(serverIdx)
 	if err != nil {
 		flog.Debugf("failed to create stream for UDP %s -> %s: %v", lAddr, tAddr, err)
 		return nil, false, 0, err
@@ -37,14 +42,14 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 		return nil, false, 0, err
 	}
 
-	c.udpPool.mu.Lock()
-	c.udpPool.strms[key] = strm
-	c.udpPool.mu.Unlock()
+	pool.mu.Lock()
+	pool.strms[key] = strm
+	pool.mu.Unlock()
 
-	flog.Debugf("UDP stream %d created for %s -> %s", strm.SID(), lAddr, tAddr)
+	flog.Debugf("established UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
 	return strm, true, key, nil
 }
 
-func (c *Client) CloseUDP(key uint64) error {
-	return c.udpPool.delete(key)
+func (c *Client) CloseUDP(serverIdx int, key uint64) error {
+	return c.udpPools[serverIdx].delete(key)
 }

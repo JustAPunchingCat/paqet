@@ -43,7 +43,13 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	remoteAddr := tc.srvCfg.Server.Addr
 	if tc.srvCfg.Hopping.Enabled {
 		clone := *remoteAddr
-		clone.Port = tc.srvCfg.Hopping.Min
+		canonicalPort := tc.srvCfg.Hopping.Min
+		if canonicalPort == 0 {
+			if ranges, _ := tc.srvCfg.Hopping.GetRanges(); len(ranges) > 0 {
+				canonicalPort = ranges[0].Min
+			}
+		}
+		clone.Port = canonicalPort
 		remoteAddr = &clone
 	}
 
