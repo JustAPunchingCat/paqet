@@ -1,4 +1,4 @@
-# paqet - Same paqet but supports multiple servers and port hopping
+# paqet - but more featured.
 
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -128,6 +128,18 @@ servers:
       ports:              # List of single ports or ranges
         - "80"
         - "20000-30000"
+    
+    # Obfuscation Configuration (Optional)
+    obfuscation:
+      use_tls: false      # NOT RECOMMENDED: Mimics HTTPS but lacks handshake. Use padding instead.
+      padding:
+        enabled: true     # Enable random padding
+        min: 32           # Minimum padding bytes
+        max: 64           # Maximum padding bytes
+      headers:
+        randomize_tos: true
+        randomize_ttl: true
+        randomize_window: true
 
     socks5:
       - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
@@ -164,6 +176,18 @@ hopping:
   ports:              # List of single ports or ranges to capture
     - "80"
     - "20000-30000"
+
+# Obfuscation Configuration (Optional)
+obfuscation:
+  use_tls: false
+  padding:
+    enabled: true
+    min: 32
+    max: 64
+  headers:
+    randomize_tos: true
+    randomize_ttl: true
+    randomize_window: true
 
 # Network interface settings
 network:
@@ -309,6 +333,14 @@ The client configuration now supports a `servers` list, allowing you to define m
 
 - **Redundancy & Distribution:** The client initializes connections to all configured servers simultaneously.
 - **Per-Server Configuration:** Each server entry can have its own transport settings, hopping configuration, and forwarding rules.
+
+### Traffic Obfuscation
+
+`paqet` supports advanced traffic obfuscation to evade Deep Packet Inspection (DPI).
+
+- **Padding:** Randomizes packet lengths to hide protocol signatures (e.g. KCP headers).
+- **Header Randomization:** Randomizes IP/TCP headers (TOS, TTL, Window Size) to mimic various operating systems and blend in with normal traffic.
+- **TLS Record Obfuscation:** Wraps packets in TLS Application Data records (Experimental/Not Recommended without handshake).
 
 ### Critical Configuration Points
 
