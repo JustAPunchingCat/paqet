@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	mrand "math/rand"
 	"net"
 	"paqet/internal/conf"
@@ -198,6 +199,14 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
+	// FRAMING: Prepend 2-byte length of the real payload.
+	// This allows the receiver to distinguish real data from padding.
+	realLen := len(payload)
+	framed := make([]byte, 2+realLen)
+	binary.BigEndian.PutUint16(framed, uint16(realLen))
+	copy(framed[2:], payload)
+	payload = framed
+
 	if h.hopping != nil && h.hopping.Enabled {
 		if p := h.currentPort.Load(); p > 0 {
 			dstPort = uint16(p)
@@ -205,7 +214,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	}
 
 	if h.padding > 0 {
-		padLen := int(h.ipId % uint32(h.padding+1))
+		padLen := mrand.Intn(h.padding + 1)
 		if padLen > 0 {
 			padding := make([]byte, padLen)
 			rand.Read(padding)
@@ -294,8 +303,25 @@ func (h *SendHandle) updateCurrentPort() {
 	if len(h.portRanges) == 0 {
 		return
 	}
-	r := h.portRanges[mrand.Intn(len(h.portRanges))]
-	newPort := uint32(r.Min + mrand.Intn(r.Max-r.Min+1))
+
+	idx, err := randInt(len(h.portRanges))
+	if err != nil {
+		idx = mrand.Intn(len(h.portRanges))
+	}
+	r := h.portRanges[idx]
+
+	rangeSize := r.Max - r.Min + 1
+	offset := 0
+	if rangeSize > 1 {
+		o, err := randInt(rangeSize)
+		if err != nil {
+			offset = mrand.Intn(rangeSize)
+		} else {
+			offset = o
+		}
+	}
+
+	newPort := uint32(r.Min + offset)
 	h.currentPort.Store(newPort)
 }
 
@@ -306,4 +332,12 @@ func (h *SendHandle) Close() {
 	if h.handle != nil {
 		h.handle.Close()
 	}
+}
+
+func randInt(max int) (int, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0, err
+	}
+	return int(n.Int64()), nil
 }

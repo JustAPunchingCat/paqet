@@ -2,6 +2,7 @@ package socket
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"net"
@@ -98,13 +99,29 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		return 0, nil, err
 	}
 
+	// FRAMING: Strip padding based on length header.
+	// Wire format: [Length (2B)] [Data] [Padding]
+	if len(payload) < 2 {
+		return 0, addr, nil // Packet too short to contain length header
+	}
+	dataLen := int(binary.BigEndian.Uint16(payload[:2]))
+	if dataLen > len(payload)-2 {
+		return 0, addr, nil // Malformed packet (length claims more data than received)
+	}
+	// Slice the payload to keep only the real data
+	payload = payload[2 : 2+dataLen]
+
 	// If hopping is enabled (Client mode), normalize the remote port to the Min port.
 	// This ensures KCP accepts the packet even if the server replies from a different
 	// port within the range (or if the user configured a different port in the range).
 	if c.hopping != nil && c.hopping.Enabled && len(c.hoppingRanges) > 0 {
 		if udpAddr, ok := addr.(*net.UDPAddr); ok {
 			if c.isInRange(udpAddr.Port) {
-				udpAddr.Port = c.hopping.Min // Normalize to Min (or canonical if we had it)
+				canonicalPort := c.hopping.Min
+				if canonicalPort == 0 && len(c.hoppingRanges) > 0 {
+					canonicalPort = c.hoppingRanges[0].Min
+				}
+				udpAddr.Port = canonicalPort // Normalize to canonical port
 			}
 		}
 	}

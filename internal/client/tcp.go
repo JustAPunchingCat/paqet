@@ -7,7 +7,11 @@ import (
 )
 
 func (c *Client) TCP(addr string) (tnet.Strm, error) {
-	strm, err := c.newStrm()
+	return c.TCPByIndex(0, addr)
+}
+
+func (c *Client) TCPByIndex(serverIdx int, addr string) (tnet.Strm, error) {
+	strm, err := c.newStrm(serverIdx)
 	if err != nil {
 		flog.Debugf("failed to create stream for TCP %s: %v", addr, err)
 		return nil, err

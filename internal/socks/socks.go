@@ -14,9 +14,9 @@ type SOCKS5 struct {
 	handle *Handler
 }
 
-func New(client *client.Client) (*SOCKS5, error) {
+func New(client *client.Client, serverIdx int) (*SOCKS5, error) {
 	return &SOCKS5{
-		handle: &Handler{client: client},
+		handle: &Handler{client: client, ServerIdx: serverIdx},
 	}, nil
 }
 
