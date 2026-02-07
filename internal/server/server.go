@@ -41,13 +41,30 @@ func (s *Server) Start() error {
 		cancel()
 	}()
 
-	pConn, err := socket.NewWithHopping(ctx, &s.cfg.Network, &s.cfg.Hopping, false, s.cfg.Transport.Padding)
+	pConn, err := socket.NewWithHopping(ctx, &s.cfg.Network, &s.cfg.Hopping, false, &s.cfg.Obfuscation)
 	if err != nil {
 		return fmt.Errorf("could not create raw packet conn: %w", err)
 	}
 	s.pConn = pConn
 
-	listener, err := kcp.Listen(s.cfg.Transport.KCP, pConn)
+	// Adjust MTU to account for obfuscation overhead
+	kcpCfg := *s.cfg.Transport.KCP
+	obfsCfg := s.cfg.Obfuscation
+	overhead := 0
+	if obfsCfg.UseTLS {
+		overhead = 5 + 2 + obfsCfg.Padding.Max
+	} else if obfsCfg.Padding.Enabled {
+		overhead = 2 + obfsCfg.Padding.Max
+	}
+	if overhead > 0 {
+		if kcpCfg.MTU == 0 {
+			kcpCfg.MTU = 1350
+		}
+		kcpCfg.MTU -= overhead
+		flog.Debugf("Adjusted Server KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
+	}
+
+	listener, err := kcp.Listen(&kcpCfg, pConn)
 	if err != nil {
 		return fmt.Errorf("could not start KCP listener: %w", err)
 	}

@@ -8,7 +8,6 @@ import (
 type Transport struct {
 	Protocol string `yaml:"protocol"`
 	Conn     int    `yaml:"conn"`
-	Padding  int    `yaml:"padding"`
 	TCPBuf   int    `yaml:"tcpbuf"`
 	UDPBuf   int    `yaml:"udpbuf"`
 	KCP      *KCP   `yaml:"kcp"`
@@ -48,10 +47,6 @@ func (t *Transport) validate() []error {
 
 	if t.Conn < 1 || t.Conn > 256 {
 		errors = append(errors, fmt.Errorf("KCP conn must be between 1-256 connections"))
-	}
-
-	if t.Padding < 0 {
-		errors = append(errors, fmt.Errorf("padding must be >= 0"))
 	}
 
 	switch t.Protocol {

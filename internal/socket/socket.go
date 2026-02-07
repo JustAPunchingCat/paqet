@@ -2,12 +2,12 @@ package socket
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"math/rand"
 	"net"
 	"os"
 	"paqet/internal/conf"
+	"paqet/internal/flog"
+	"paqet/internal/obfs"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,28 +23,26 @@ type PacketConn struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	hopping       *conf.Hopping
-	hoppingRanges []conf.PortRange
-
-	// Map to store the last destination port used by a remote client (for server echo)
-	clientPorts sync.Map // map[string]int (RemoteAddr -> LocalPort)
+	plugins     *PluginManager
+	clientPorts sync.Map
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
 func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
-	return NewWithHopping(ctx, cfg, nil, false, 0)
+	return NewWithHopping(ctx, cfg, nil, false, nil)
 }
 
-func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool, padding int) (*PacketConn, error) {
+func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool, obfsCfg *conf.Obfuscation) (*PacketConn, error) {
 	if cfg.Port == 0 {
-		cfg.Port = 32768 + rand.Intn(32768)
+		// Use crypto-secure random port from ephemeral range (32768-65535)
+		cfg.Port = int(RandInRange(32768, 65535))
 	}
 
 	sendHandle, err := NewSendHandle(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create send handle on %s: %v", cfg.Interface.Name, err)
 	}
-	sendHandle.SetPadding(padding)
+	sendHandle.SetObfuscation(obfsCfg)
 
 	// Only enable hopping on the receive handle if we are NOT hopping on writes (Server mode).
 	// Clients (writeHopping=true) must listen on their specific source port, not the destination range.
@@ -64,14 +62,31 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		recvHandle: recvHandle,
 		ctx:        ctx,
 		cancel:     cancel,
+		plugins:    NewPluginManager(),
 	}
 
-	if hopping != nil && hopping.Enabled && writeHopping {
-		if err := sendHandle.SetHopping(hopping); err != nil {
+	// Initialize plugins
+	useObfs := false
+	if obfsCfg != nil {
+		useObfs = obfsCfg.UseTLS || obfsCfg.Padding.Enabled
+	}
+
+	if useObfs && cfg.Transport != nil && cfg.Transport.KCP != nil {
+		key := []byte(cfg.Transport.KCP.Key)
+		if o, err := obfs.New(obfsCfg, key); err == nil {
+			conn.plugins.Add(NewObfuscationPlugin(o))
+			flog.Debugf("Obfuscation initialized. Key prefix: %x...", key[:min(len(key), 4)])
+		} else {
+			flog.Warnf("failed to initialize obfuscation (check key length): %v", err)
+		}
+	}
+
+	if hopping != nil && hopping.Enabled {
+		hp, err := NewHoppingPlugin(hopping, writeHopping)
+		if err != nil {
 			return nil, fmt.Errorf("invalid hopping configuration: %w", err)
 		}
-		conn.hopping = hopping
-		conn.hoppingRanges, _ = hopping.GetRanges()
+		conn.plugins.Add(hp)
 	}
 
 	return conn, nil
@@ -86,65 +101,40 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		deadline = timer.C
 	}
 
-	select {
-	case <-c.ctx.Done():
-		return 0, nil, c.ctx.Err()
-	case <-deadline:
-		return 0, nil, os.ErrDeadlineExceeded
-	default:
-	}
-
-	payload, addr, dstPort, err := c.recvHandle.Read()
-	if err != nil {
-		return 0, nil, err
-	}
-
-	// FRAMING: Strip padding based on length header.
-	// Wire format: [Length (2B)] [Data] [Padding]
-	if len(payload) < 2 {
-		return 0, addr, nil // Packet too short to contain length header
-	}
-	dataLen := int(binary.BigEndian.Uint16(payload[:2]))
-	if dataLen > len(payload)-2 {
-		return 0, addr, nil // Malformed packet (length claims more data than received)
-	}
-	// Slice the payload to keep only the real data
-	payload = payload[2 : 2+dataLen]
-
-	// If hopping is enabled (Client mode), normalize the remote port to the Min port.
-	// This ensures KCP accepts the packet even if the server replies from a different
-	// port within the range (or if the user configured a different port in the range).
-	if c.hopping != nil && c.hopping.Enabled && len(c.hoppingRanges) > 0 {
-		if udpAddr, ok := addr.(*net.UDPAddr); ok {
-			if c.isInRange(udpAddr.Port) {
-				canonicalPort := c.hopping.Min
-				if canonicalPort == 0 && len(c.hoppingRanges) > 0 {
-					canonicalPort = c.hoppingRanges[0].Min
-				}
-				udpAddr.Port = canonicalPort // Normalize to canonical port
-			}
+	for {
+		select {
+		case <-c.ctx.Done():
+			return 0, nil, c.ctx.Err()
+		case <-deadline:
+			return 0, nil, os.ErrDeadlineExceeded
+		default:
 		}
-	}
 
-	// Store the destination port this packet was sent to, so we can reply from the same port.
-	// This is critical for Server mode to support NAT traversal when clients hop ports.
-	// Optimization: Only update if the port has changed to avoid contention on the sync.Map.
-	if lastPort, ok := c.clientPorts.Load(addr.String()); !ok || lastPort.(int) != dstPort {
-		c.clientPorts.Store(addr.String(), dstPort)
-	}
-
-	n = copy(data, payload)
-
-	return n, addr, nil
-}
-
-func (c *PacketConn) isInRange(port int) bool {
-	for _, r := range c.hoppingRanges {
-		if port >= r.Min && port <= r.Max {
-			return true
+		payload, addr, dstPort, err := c.recvHandle.Read()
+		if err != nil {
+			return 0, nil, err
 		}
+
+		newPayload, newAddr, err := c.plugins.OnRead(payload, addr)
+		if err != nil {
+			// Drop invalid packet (e.g. obfuscation mismatch) and continue
+			flog.Debugf("dropped invalid packet from %s: %v (len=%d, hex=%x)", addr, err, len(payload), payload[:min(len(payload), 16)])
+			continue
+		}
+		payload = newPayload
+		addr = newAddr
+
+		// Store the destination port this packet was sent to, so we can reply from the same port.
+		// This is critical for Server mode to support NAT traversal when clients hop ports.
+		// Optimization: Only update if the port has changed to avoid contention on the sync.Map.
+		if lastPort, ok := c.clientPorts.Load(addr.String()); !ok || lastPort.(int) != dstPort {
+			c.clientPorts.Store(addr.String(), dstPort)
+		}
+
+		n = copy(data, payload)
+
+		return n, addr, nil
 	}
-	return false
 }
 
 func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
@@ -170,13 +160,20 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 
 	srcPort := c.cfg.Port
-	if c.hopping == nil {
-		// If not hopping (Server mode), try to reply from the port the client last contacted.
-		if lastPort, ok := c.clientPorts.Load(daddr.String()); ok {
-			srcPort = lastPort.(int)
-		}
+
+	// Apply plugins (Hop Port, Obfuscate)
+	data, addr, err = c.plugins.OnWrite(data, addr)
+	if err != nil {
+		return 0, err
 	}
 
+	// Server Echo logic: try to reply from the port the client last contacted.
+	if lastPort, ok := c.clientPorts.Load(daddr.String()); ok {
+		srcPort = lastPort.(int)
+	}
+
+	// Cast again because plugins might return a generic net.Addr
+	daddr, _ = addr.(*net.UDPAddr)
 	err = c.sendHandle.Write(data, daddr, srcPort)
 	if err != nil {
 		return 0, err
@@ -187,6 +184,7 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 
 func (c *PacketConn) Close() error {
 	c.cancel()
+	c.plugins.Close()
 
 	if c.sendHandle != nil {
 		go c.sendHandle.Close()
@@ -243,4 +241,11 @@ func (c *PacketConn) SetDSCP(dscp int) error {
 
 func (c *PacketConn) SetClientTCPF(addr net.Addr, f []conf.TCPF) {
 	c.sendHandle.setClientTCPF(addr, f)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

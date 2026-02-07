@@ -1,6 +1,7 @@
 package socks
 
 import (
+	"io"
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
@@ -69,7 +70,7 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
+		if err != nil && err != io.EOF {
 			flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
 		}
 	case <-h.ctx.Done():

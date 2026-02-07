@@ -1,11 +1,8 @@
 package socket
 
 import (
-	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"math/big"
-	mrand "math/rand"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/pkg/hash"
@@ -38,12 +35,8 @@ type SendHandle struct {
 	time        uint32
 	tsCounter   uint32
 	ipId        uint32
-	padding     int
+	obfuscation *conf.Obfuscation
 	tcpF        TCPF
-	hopping     *conf.Hopping
-	portRanges  []conf.PortRange
-	currentPort atomic.Uint32
-	stopHopping chan struct{}
 	ethPool     sync.Pool
 	ipv4Pool    sync.Pool
 	ipv6Pool    sync.Pool
@@ -126,12 +119,23 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 	ip := h.ipv4Pool.Get().(*layers.IPv4)
 	id := atomic.AddUint32(&h.ipId, 1)
+
+	tos := uint8(184) // Default legacy
+	ttl := uint8(64 + (id % 32))
+
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTOS {
+		tos = GenerateRealisticTOS()
+	}
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTTL {
+		ttl = GenerateRealisticTTL()
+	}
+
 	*ip = layers.IPv4{
 		Version:  4,
 		IHL:      5,
-		TOS:      184,
+		TOS:      tos,
 		Id:       uint16(id),
-		TTL:      uint8(64 + (id % 32)),
+		TTL:      ttl,
 		Flags:    layers.IPv4DontFragment,
 		Protocol: layers.IPProtocolTCP,
 		SrcIP:    h.srcIPv4,
@@ -142,11 +146,21 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 
 func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 	ip := h.ipv6Pool.Get().(*layers.IPv6)
-	id := atomic.LoadUint32(&h.ipId)
+
+	tclass := uint8(184)
+	hopLimit := uint8(64 + (h.ipId % 32))
+
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTOS {
+		tclass = GenerateRealisticTOS()
+	}
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTTL {
+		hopLimit = GenerateRealisticTTL()
+	}
+
 	*ip = layers.IPv6{
 		Version:      6,
-		TrafficClass: 184,
-		HopLimit:     uint8(64 + (id % 32)),
+		TrafficClass: tclass,
+		HopLimit:     hopLimit,
 		NextHeader:   layers.IPProtocolTCP,
 		SrcIP:        h.srcIPv6,
 		DstIP:        dstIP,
@@ -156,11 +170,17 @@ func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 
 func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF) *layers.TCP {
 	tcp := h.tcpPool.Get().(*layers.TCP)
+
+	winSize := uint16(65535)
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeWindow {
+		winSize = GenerateRealisticWindow()
+	}
+
 	*tcp = layers.TCP{
 		SrcPort: layers.TCPPort(srcPort),
 		DstPort: layers.TCPPort(dstPort),
 		FIN:     f.FIN, SYN: f.SYN, RST: f.RST, PSH: f.PSH, ACK: f.ACK, URG: f.URG, ECE: f.ECE, CWR: f.CWR, NS: f.NS,
-		Window: 65535,
+		Window: winSize,
 	}
 
 	counter := atomic.AddUint32(&h.tsCounter, 1)
@@ -198,29 +218,6 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
-
-	// FRAMING: Prepend 2-byte length of the real payload.
-	// This allows the receiver to distinguish real data from padding.
-	realLen := len(payload)
-	framed := make([]byte, 2+realLen)
-	binary.BigEndian.PutUint16(framed, uint16(realLen))
-	copy(framed[2:], payload)
-	payload = framed
-
-	if h.hopping != nil && h.hopping.Enabled {
-		if p := h.currentPort.Load(); p > 0 {
-			dstPort = uint16(p)
-		}
-	}
-
-	if h.padding > 0 {
-		padLen := mrand.Intn(h.padding + 1)
-		if padLen > 0 {
-			padding := make([]byte, padLen)
-			rand.Read(padding)
-			payload = append(payload, padding...)
-		}
-	}
 
 	f := h.getClientTCPF(dstIP, dstPort)
 	tcpLayer := h.buildTCPHeader(uint16(srcPort), dstPort, f)
@@ -266,78 +263,12 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	h.tcpF.mu.Unlock()
 }
 
-func (h *SendHandle) SetPadding(padding int) {
-	h.padding = padding
-}
-
-func (h *SendHandle) SetHopping(hopping *conf.Hopping) error {
-	if hopping == nil || !hopping.Enabled {
-		return nil
-	}
-	ranges, err := hopping.GetRanges()
-	if err != nil {
-		return err
-	}
-	h.hopping = hopping
-	h.portRanges = ranges
-	h.stopHopping = make(chan struct{})
-	h.updateCurrentPort()
-	go h.startHopping()
-	return nil
-}
-
-func (h *SendHandle) startHopping() {
-	ticker := time.NewTicker(time.Duration(h.hopping.Interval) * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			h.updateCurrentPort()
-		case <-h.stopHopping:
-			return
-		}
-	}
-}
-
-func (h *SendHandle) updateCurrentPort() {
-	if len(h.portRanges) == 0 {
-		return
-	}
-
-	idx, err := randInt(len(h.portRanges))
-	if err != nil {
-		idx = mrand.Intn(len(h.portRanges))
-	}
-	r := h.portRanges[idx]
-
-	rangeSize := r.Max - r.Min + 1
-	offset := 0
-	if rangeSize > 1 {
-		o, err := randInt(rangeSize)
-		if err != nil {
-			offset = mrand.Intn(rangeSize)
-		} else {
-			offset = o
-		}
-	}
-
-	newPort := uint32(r.Min + offset)
-	h.currentPort.Store(newPort)
+func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {
+	h.obfuscation = obfs
 }
 
 func (h *SendHandle) Close() {
-	if h.stopHopping != nil {
-		close(h.stopHopping)
-	}
 	if h.handle != nil {
 		h.handle.Close()
 	}
-}
-
-func randInt(max int) (int, error) {
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
-	if err != nil {
-		return 0, err
-	}
-	return int(n.Int64()), nil
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
@@ -45,7 +46,7 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 
 	select {
 	case err := <-errChan:
-		if err != nil {
+		if err != nil && err != io.EOF {
 			flog.Errorf("UDP stream %d to %s failed: %v", strm.SID(), addr, err)
 			return err
 		}
