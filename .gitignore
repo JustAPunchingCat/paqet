@@ -40,4 +40,9 @@ Thumbs.db
 # Build directories
 build/
 dist/
+bin/
 tmp/
+
+# Configs
+*.yaml
+!example/*.yaml
