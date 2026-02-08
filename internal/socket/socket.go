@@ -114,6 +114,9 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		if err != nil {
 			return 0, nil, err
 		}
+		if payload == nil {
+			continue
+		}
 
 		newPayload, newAddr, err := c.plugins.OnRead(payload, addr)
 		if err != nil {
