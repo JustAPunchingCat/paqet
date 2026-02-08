@@ -1,58 +1,42 @@
 package socket
 
 import (
-	"fmt"
 	"net"
 	"paqet/internal/conf"
-	"runtime"
-	"strings"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
-	"github.com/gopacket/gopacket/pcap"
 )
 
+type PacketSource interface {
+	ReadPacketData() ([]byte, error)
+	Close()
+}
+
 type RecvHandle struct {
-	handle *pcap.Handle
+	source PacketSource
 }
 
 func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error) {
-	handle, err := newHandle(cfg)
+	var source PacketSource
+	var err error
+
+	switch cfg.Driver {
+	case "ebpf":
+		source, err = newEBPFSource(cfg, hopping)
+	default:
+		source, err = newPcapSource(cfg, hopping)
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
+		return nil, err
 	}
 
-	// SetDirection is not fully supported on Windows Npcap, so skip it
-	if runtime.GOOS != "windows" {
-		if err := handle.SetDirection(pcap.DirectionIn); err != nil {
-			return nil, fmt.Errorf("failed to set pcap direction in: %v", err)
-		}
-	}
-
-	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)
-	if hopping != nil && hopping.Enabled {
-		ranges, err := hopping.GetRanges()
-		if err == nil && len(ranges) > 0 {
-			var parts []string
-			for _, r := range ranges {
-				if r.Min == r.Max {
-					parts = append(parts, fmt.Sprintf("dst port %d", r.Min))
-				} else {
-					parts = append(parts, fmt.Sprintf("dst portrange %d-%d", r.Min, r.Max))
-				}
-			}
-			filter = fmt.Sprintf("tcp and (%s)", strings.Join(parts, " or "))
-		}
-	}
-	if err := handle.SetBPFFilter(filter); err != nil {
-		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
-	}
-
-	return &RecvHandle{handle: handle}, nil
+	return &RecvHandle{source: source}, nil
 }
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
-	data, _, err := h.handle.ReadPacketData()
+	data, err := h.source.ReadPacketData()
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -104,7 +88,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 }
 
 func (h *RecvHandle) Close() {
-	if h.handle != nil {
-		h.handle.Close()
+	if h.source != nil {
+		h.source.Close()
 	}
 }

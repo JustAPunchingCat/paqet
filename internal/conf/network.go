@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"slices"
 )
 
 type Addr struct {
@@ -15,6 +16,7 @@ type Addr struct {
 
 type Network struct {
 	Interface_  string         `yaml:"interface"`
+	Driver      string         `yaml:"driver"`
 	GUID        string         `yaml:"guid"`
 	IPv4        Addr           `yaml:"ipv4"`
 	IPv6        Addr           `yaml:"ipv6"`
@@ -29,10 +31,18 @@ type Network struct {
 func (n *Network) setDefaults(role string) {
 	n.PCAP.setDefaults(role)
 	n.TCP.setDefaults()
+	if n.Driver == "" {
+		n.Driver = "pcap"
+	}
 }
 
 func (n *Network) validate() []error {
 	var errors []error
+
+	validDrivers := []string{"pcap", "ebpf"}
+	if !slices.Contains(validDrivers, n.Driver) {
+		errors = append(errors, fmt.Errorf("driver must be one of: %v", validDrivers))
+	}
 
 	if n.Interface_ == "" {
 		errors = append(errors, fmt.Errorf("network interface is required"))

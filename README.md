@@ -3,22 +3,36 @@
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-`paqet` is a bidirectional packet level proxy built using raw sockets. It forwards traffic from a local client to a remote server, bypassing the host operating system's TCP/IP stack, using KCP for secure, reliable transport.
+`paqet` is a bidirectional packet level proxy built using raw sockets in Go. It forwards traffic from a local client to a remote server, which then connects to target services. By operating at the packet level, it completely bypasses the host operating system's TCP/IP stack, using KCP for secure, reliable transport.
 
 > **⚠️ Development Status Notice**
 >
 > This project is in **active development**. APIs, configuration formats, and interfaces may change without notice. Use with caution in production environments.
 
+This project serves as an example of low-level network programming in Go, demonstrating concepts like:
+
+- High-performance packet capture with eBPF (TC) and `pcap`.
+- Raw packet crafting and injection with `gopacket`.
+- Packet capture with `pcap`.
+- Custom binary network protocols.
+- The security implications of operating below the standard OS firewall.
+
+## Use Cases and Motivation
+
+`paqet` use cases include bypassing firewalls that detect standard handshake protocols and kernel-level connection tracking, as well as network security research. While more complex to configure than general-purpose VPN solutions, it offers granular control at the packet level.
+
 ## How It Works
 
-`paqet` captures packets using `pcap` and injects crafted TCP packets containing encrypted transport data. KCP provides reliable, encrypted communication optimized for high-loss networks using aggressive retransmission, forward error correction, and symmetric encryption.
+`paqet` captures packets using `pcap` or `eBPF` (on Linux) and injects crafted TCP packets containing encrypted transport data. KCP provides reliable, encrypted communication optimized for high-loss networks using aggressive retransmission, forward error correction, and symmetric encryption.
 
 ```
 [Your App] <------> [paqet Client] <===== Raw TCP Packet =====> [paqet Server] <------> [Target Server]
 (e.g. curl)        (localhost:1080)        (Internet)          (Public IP:PORT)     (e.g. https://httpbin.org)
 ```
 
-`paqet` use cases include bypassing firewalls that detect standard handshake protocols and kernel-level connection tracking, as well as network security research. While more complex to configure than general-purpose VPN solutions, it offers granular control at the packet level.
+The system operates in three layers: raw TCP packet injection, encrypted transport (KCP), and application-level connection multiplexing.
+
+KCP provides reliable, encrypted communication optimized for high-loss or unpredictable networks, using aggressive retransmission, forward error correction, and symmetric encryption with a shared secret key. It is especially well-suited for real-time applications and gaming where low latency are critical.
 
 ## Getting Started
 
@@ -37,6 +51,19 @@ Download the pre-compiled binary for your client and server operating systems fr
 You will also need the configuration files from the `example/` directory.
 
 ### 2. Configure the Connection
+
+paqet uses a unified configuration approach with role-based settings. Copy and modify either:
+
+- `example/client.yaml.example` - Client configuration example
+- `example/server.yaml.example` - Server configuration example
+
+You must correctly set the interfaces, IP addresses, MAC addresses, and ports.
+
+> **⚠️ Important:**
+>
+> - **Role Configuration**: Role must be explicitly set as `role: "client"` or `role: "server"`
+> - **Transport Security**: KCP requires identical keys on client/server.
+> - **Configuration**: See "Critical Configuration Points" section below for detailed security requirements
 
 #### Finding Your Network Details
 
@@ -178,13 +205,9 @@ transport:
 
 #### Critical Firewall Configuration
 
-Although packets are handled at a low level, the OS kernel can still see incoming packets on the connection port and generate TCP RST packets since it has no knowledge of the connection. These kernel generated resets can corrupt connection state in NAT devices and stateful firewalls, causing instability, packet drops, and premature termination.
+This application uses `pcap` or `eBPF` to receive and inject packets at a low level, **bypassing traditional firewalls like `ufw` or `firewalld`**. However, the OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. While your connection may appear to work initially, these kernel-generated RST packets can corrupt connection state in NAT devices and stateful firewalls, leading to connection instability, packet drops, and premature connection termination in complex network environments.
 
 You **must** configure `iptables` on the server to prevent the kernel from interfering.
-
-> **⚠️ Important - Avoid Standard Ports**
->
-> Do not use ports 80, 443, or any other standard ports, because iptables rules can also affect outgoing connections from the server. Choose non-standard ports (e.g., 9999, 8888, or other high-numbered ports) for your server configuration.
 
 Run these commands as root on your server:
 
@@ -220,6 +243,10 @@ sudo iptables -t filter -A OUTPUT -p tcp --sport <PORT> -j ACCEPT
 ```
 
 These rules ensure that only the application handles traffic for the connection port.
+
+> **⚠️ Important - Avoid Standard Ports:**
+>
+> Do not use ports 80, 443, or any other standard ports, because iptables rules can also affect outgoing connections from the server. Choose non-standard ports (e.g., 9999, 8888, or other high-numbered ports) for your server configuration.
 
 ### 3. Run `paqet`
 
@@ -272,7 +299,7 @@ sudo ./paqet <command> [arguments]
 
 ## Configuration Reference
 
-paqet uses unified YAML configuration for client and server. The `role` field must be explicitly set to either `"client"` or `"server"`.
+paqet uses a unified YAML configuration that works for both clients and servers. The `role` field must be explicitly set to either `"client"` or `"server"`.
 
 **For complete parameter documentation, see the example files:**
 
@@ -281,12 +308,13 @@ paqet uses unified YAML configuration for client and server. The `role` field mu
 
 ### Encryption Modes
 
-The `transport.kcp.block` parameter determines the encryption method.
+The `transport.kcp.block` parameter determines the encryption method. There are two special modes to disable encryption:
 
-⚠️ **Warning:** `none` and `null` modes disable authentication, anyone with your server IP and port can connect.
+**`none`** (Plaintext with Header)
+No encryption is applied, but a protocol header is still present. The packet format remains compatible with encrypted modes, but the content is plaintext. This helps with protocol compatibility.
 
-- **`none`** - Plaintext with protocol header (protocol-compatible)
-- **`null`** - Raw data, no header (highest performance, least secure)
+**`null`** (Raw Data)
+No encryption and no protocol header, data is transmitted in raw form without any cryptographic framing. This offers the highest performance but is the least secure and most easily identified.
 
 ### Port Hopping
 
@@ -315,13 +343,17 @@ The client configuration now supports a `servers` list, allowing you to define m
 
 ### Critical Configuration Points
 
-The `network.tcp.local_flag` and `network.tcp.remote_flag` arrays cycle through flag combinations to vary traffic patterns. Common patterns: `["PA"]` (standard data), `["S"]` (connection setup), `["A"]` (acknowledgment).
+**Transport Security:** KCP requires identical keys on client/server (use `secret` command to generate).
+
+**Network Configuration:** Use your actual IP address in `network.ipv4.addr`, not `127.0.0.1`. For servers, `network.ipv4.addr` and `listen.addr` ports must match. For clients, use port `0` in `network.ipv4.addr` to automatically assign a random available port and avoid conflicts.
+
+**TCP Flag Cycling:** The `network.tcp.local_flag` and `network.tcp.remote_flag` arrays cycle through flag combinations to vary traffic patterns. Common patterns: `["PA"]` (standard data), `["S"]` (connection setup), `["A"]` (acknowledgment).
 
 # Architecture & Security Model
 
 ### The `pcap` Approach and Firewall Bypass
 
-Understanding why standard firewalls are bypassed is key to using this tool securely.
+Understanding _why_ standard firewalls are bypassed is key to using this tool securely.
 
 A normal application uses the OS's TCP/IP stack. When a packet arrives, it travels up the stack where `netfilter` (the backend for `ufw`/`firewalld`) inspects it. If a firewall rule blocks the port, the packet is dropped and never reaches the application.
 
@@ -340,7 +372,7 @@ A normal application uses the OS's TCP/IP stack. When a packet arrives, it trave
       +------------------------+
 ```
 
-`paqet` uses `pcap` to hook in at a much lower level. It requests a copy of every packet directly from the network driver, before the main OS TCP/IP stack and firewall get to process it.
+`paqet` uses `pcap` to hook in at a much lower level. It requests a **copy** of every packet directly from the network driver, _before_ the main OS TCP/IP stack and firewall get to process it.
 
 ```
       +------------------------+
@@ -350,7 +382,7 @@ A normal application uses the OS's TCP/IP stack. When a packet arrives, it trave
  (pcap copy) /         \  (Original packet continues up)
             /           v
       +------------------------+
-      |     OS TCP/IP Stack    |  <-- Firewall drops the original packet,
+      |     OS TCP/IP Stack    |  <-- Firewall drops the *original* packet,
       |  (Connection Tracking) |      but paqet already has its copy.
       +------------------------+
                   ^
@@ -360,6 +392,12 @@ A normal application uses the OS's TCP/IP stack. When a packet arrives, it trave
 ```
 
 This means a rule like `ufw deny <PORT>` will have no effect on the proxy's operation, as `paqet` receives and processes the packet before `ufw` can block it.
+
+## ⚠️ Security Warning
+
+This project is an exploration of low-level networking and carries significant security responsibilities. The KCP transport protocol provides encryption, authentication, and integrity using symmetric encryption with a shared secret key.
+
+Security depends entirely on proper key management. Use the `secret` command to generate a strong key that must remain identical on both client and server.
 
 ## Troubleshooting
 
