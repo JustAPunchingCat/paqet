@@ -9,6 +9,7 @@ log:
 # Network interface settings
 network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
+  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux TC, fastest)
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
 
   # IPv4 configuration

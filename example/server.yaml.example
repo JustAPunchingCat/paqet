@@ -36,6 +36,7 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0"                          # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
+  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux TC, fastest)
   # guid: "\Device\NPF_{...}"                # Windows only (Npcap).
 
   # IPv4 configuration
@@ -100,7 +101,7 @@ transport:
     # sndwnd: 1024           # Send window size (default for server)
 
     # Encryption settings  
-    # block: "aes"                    # Encryption: aes, aes-128, aes-128-gcm, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none, null.
+    # block: "aes"                    # Encryption: aes, aes-128, aes-128-gcm, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none.
     key: "your-secret-key-here"       # CHANGE ME: Secret key (must match client)
 
     # Buffer settings (optional)
