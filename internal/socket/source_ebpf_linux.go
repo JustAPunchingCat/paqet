@@ -1,8 +1,6 @@
 package socket
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"paqet/internal/conf"
 	"paqet/internal/socket/ebpf"
@@ -54,19 +52,14 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		}
 	}
 
-	// Attach the program to the interface using TC
-	l, err := link.AttachTCX(link.TCXOptions{
+	// Attach the program to the interface using XDP (Faster than TC)
+	l, err := link.AttachXDP(link.XDPOptions{
+		Program:   objs.XdpMain,
 		Interface: cfg.Interface.Index,
-		Program:   objs.ClsMain,
-		Attach:    link.TCXAttachIngress,
 	})
 	if err != nil {
-		// Fallback to legacy TC if TCX is not supported (older kernels)
-		// Note: cilium/ebpf link.AttachTCX is for newer kernels (5.10+ with CONFIG_BPF_JIT)
-		// For broad compatibility, one might use netlink to attach to clsact qdisc.
-		// But link.AttachTCX is the modern way.
 		objs.Close()
-		return nil, fmt.Errorf("failed to attach TCX: %w", err)
+		return nil, fmt.Errorf("failed to attach XDP: %w", err)
 	}
 
 	// Open a ringbuf reader from userspace to receive packets
@@ -90,18 +83,9 @@ func (s *EBPFSource) ReadPacketData() ([]byte, error) {
 		return nil, err
 	}
 
-	// Parse length from the beginning of the sample
-	if len(record.RawSample) < 4 {
-		return nil, errors.New("packet too short from ringbuf")
-	}
-	pktLen := binary.LittleEndian.Uint32(record.RawSample[:4])
-	if int(pktLen) > len(record.RawSample)-4 {
-		return nil, errors.New("malformed packet length in ringbuf")
-	}
-
 	// Copy data to a new slice (RecvHandle expects to own the data)
-	data := make([]byte, pktLen)
-	copy(data, record.RawSample[4:4+pktLen])
+	data := make([]byte, len(record.RawSample))
+	copy(data, record.RawSample)
 	return data, nil
 }
 

@@ -11,7 +11,7 @@
 
 This project serves as an example of low-level network programming in Go, demonstrating concepts like:
 
-- High-performance packet capture with eBPF (TC) and `pcap`.
+- High-performance packet capture with eBPF (XDP) and `pcap`.
 - Raw packet crafting and injection with `gopacket`.
 - Packet capture with `pcap`.
 - Custom binary network protocols.
