@@ -56,7 +56,6 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-
 	p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
 
 	netLayer := p.NetworkLayer()
