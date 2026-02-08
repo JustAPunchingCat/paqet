@@ -2,20 +2,22 @@ package socket
 
 import (
 	"encoding/binary"
-	"fmt"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/pkg/iterator"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
-	"github.com/gopacket/gopacket/pcap"
 )
+
+type PacketInjector interface {
+	WritePacketData(data []byte) error
+	Close()
+}
 
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
@@ -24,7 +26,7 @@ type TCPF struct {
 }
 
 type SendHandle struct {
-	handle      *pcap.Handle
+	injector    PacketInjector
 	srcIPv4     net.IP
 	srcIPv4RHWA net.HardwareAddr
 	srcIPv6     net.IP
@@ -45,16 +47,16 @@ type SendHandle struct {
 }
 
 func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
-	handle, err := newHandle(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
+	var injector PacketInjector
+	var err error
+	switch cfg.Driver {
+	case "ebpf":
+		injector, err = newRawInjector(cfg)
+	default:
+		injector, err = newPcapInjector(cfg)
 	}
-
-	// SetDirection is not fully supported on Windows Npcap, so skip it
-	if runtime.GOOS != "windows" {
-		if err := handle.SetDirection(pcap.DirectionOut); err != nil {
-			return nil, fmt.Errorf("failed to set pcap direction out: %v", err)
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	synOptions := []layers.TCPOption{
@@ -72,7 +74,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	}
 
 	sh := &SendHandle{
-		handle:     handle,
+		injector:   injector,
 		srcPort:    uint16(cfg.Port),
 		synOptions: synOptions,
 		ackOptions: ackOptions,
@@ -244,7 +246,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	if err := gopacket.SerializeLayers(buf, opts, ethLayer, ipLayer, tcpLayer, gopacket.Payload(payload)); err != nil {
 		return err
 	}
-	return h.handle.WritePacketData(buf.Bytes())
+	return h.injector.WritePacketData(buf.Bytes())
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
@@ -268,7 +270,7 @@ func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {
 }
 
 func (h *SendHandle) Close() {
-	if h.handle != nil {
-		h.handle.Close()
+	if h.injector != nil {
+		h.injector.Close()
 	}
 }

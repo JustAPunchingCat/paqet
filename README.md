@@ -34,6 +34,40 @@ The system operates in three layers: raw TCP packet injection, encrypted transpo
 
 KCP provides reliable, encrypted communication optimized for high-loss or unpredictable networks, using aggressive retransmission, forward error correction, and symmetric encryption with a shared secret key. It is especially well-suited for real-time applications and gaming where low latency are critical.
 
+## Building from Source
+
+If you prefer to build `paqet` yourself, follow these instructions.
+
+### Linux
+
+**Prerequisites:**
+- Go 1.25+
+- `libpcap` development headers
+- `clang`, `llvm`, `libbpf-dev` (for eBPF compilation)
+
+```bash
+# Install dependencies (Debian/Ubuntu)
+sudo apt-get install build-essential libpcap-dev clang llvm libbpf-dev
+
+# Generate eBPF artifacts
+go generate ./internal/socket/ebpf
+
+# Build
+go build -o paqet ./cmd
+```
+
+### Windows
+
+**Prerequisites:**
+- Go 1.25+
+- Npcap (ensure "WinPcap API-compatible Mode" is checked during installation)
+- GCC (MinGW-w64)
+
+```powershell
+# Build (eBPF is skipped on Windows)
+go build -o paq.exe ./cmd
+```
+
 ## Getting Started
 
 ### Prerequisites
