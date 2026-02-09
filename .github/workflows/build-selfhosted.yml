@@ -68,6 +68,7 @@ jobs:
 
             - name: Generate eBPF
               run: |
+                  go mod tidy
                   go generate ./internal/socket/ebpf
 
             - name: Build
