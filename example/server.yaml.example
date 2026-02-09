@@ -68,6 +68,11 @@ transport:
   # KCP protocol settings
   kcp:
     mode: "fast"              # KCP mode: normal, fast, fast2, fast3, manual
+                              # - normal: nodelay=0, interval=40, resend=2, nocongestion=1
+                              # - fast:   nodelay=1, interval=30, resend=2, nocongestion=1
+                              # - fast2:  nodelay=1, interval=20, resend=2, nocongestion=1
+                              # - fast3:  nodelay=1, interval=10, resend=2, nocongestion=1
+                              # - manual: use parameters below
 
     # Manual mode parameters (only used when mode="manual")
     # nodelay: 1              # 0=disable, 1=enable

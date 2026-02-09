@@ -5,6 +5,18 @@
 
 `paqet` is a bidirectional packet level proxy built using raw sockets in Go. It forwards traffic from a local client to a remote server, which then connects to target services. By operating at the packet level, it completely bypasses the host operating system's TCP/IP stack, using KCP for secure, reliable transport.
 
+## Key Features
+
+- **High-Performance Transport**: Uses KCP over raw TCP packets, bypassing the OS TCP/IP stack.
+- **Advanced Obfuscation**:
+  - **Padding**: Randomizes packet lengths to hide protocol signatures.
+  - **Header Randomization**: Mimics various OS fingerprints (TTL, TOS, Window Size).
+  - **TLS Record Obfuscation**: Wraps traffic in TLS records to blend in with HTTPS.
+- **Port Hopping**: Dynamically rotates destination ports to evade flow-based blocking and analysis.
+- **eBPF (XDP) Support**: Optional high-performance driver for Linux using XDP for packet capture and AF_PACKET for injection, minimizing CPU usage.
+- **Multi-Server Support**: Client supports simultaneous connections to multiple upstream servers for redundancy.
+- **Firewall Management**: Built-in CLI (`paqet iptables`) to manage required firewall rules safely.
+
 > **⚠️ Development Status Notice**
 >
 > This project is in **active development**. APIs, configuration formats, and interfaces may change without notice. Use with caution in production environments.
@@ -353,8 +365,28 @@ The `transport.kcp.block` parameter determines the encryption method. There are 
 **`none`** (Plaintext with Header)
 No encryption is applied, but a protocol header is still present. The packet format remains compatible with encrypted modes, but the content is plaintext. This helps with protocol compatibility.
 
+**`xor`** (XOR Encryption)
+Extremely fast but cryptographically weak. When combined with **Padding**, it provides excellent performance and sufficient obfuscation to evade DPI that relies on pattern matching, as the traffic appears as high-entropy random noise. Recommended for high-speed links where the inner traffic is already encrypted (e.g., HTTPS).
+
 **`null`** (Raw Data)
 No encryption and no protocol header, data is transmitted in raw form without any cryptographic framing. This offers the highest performance but is the least secure and most easily identified.
+
+### KCP Tuning
+
+The `transport.kcp` section controls the KCP protocol behavior.
+
+**Modes:**
+- `normal`: Balanced settings (nodelay=0, interval=40, resend=2, nocongestion=1).
+- `fast`: Optimized for low latency (nodelay=1, interval=30, resend=2, nocongestion=1).
+- `fast2`: More aggressive (nodelay=1, interval=20, resend=2, nocongestion=1).
+- `fast3`: Most aggressive (nodelay=1, interval=10, resend=2, nocongestion=1).
+- `manual`: Use the specific parameters defined below.
+
+**Manual Parameters (used when `mode: "manual"`):**
+- `nodelay`: Enable nodelay mode (0=disable, 1=enable).
+- `interval`: Protocol internal work interval in ms (10-5000). Lower is more responsive.
+- `resend`: Fast retransmission trigger (0=off, 2=typical).
+- `nocongestion`: Disable congestion control (1=disable, 0=enable).
 
 ### Port Hopping
 
