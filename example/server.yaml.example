@@ -16,10 +16,10 @@ listen:
 # Must match the client's configuration.
 hopping:
   enabled: false      # Enable port hopping support
-  # interval: 30      # Interval (unused on server)
+  # interval: 15      # Interval (unused on server)
   ports:              # List of single ports or ranges to capture
     - "80"
-    - "20000-30000"
+    - "10000-20000"   # Recommended: 10000-20000 (Avoids OS ephemeral ports 32768+)
 
 # Obfuscation Configuration (Optional)
 obfuscation:
@@ -114,10 +114,11 @@ transport:
 #   dshard: 10    # Data shards for FEC  
 #   pshard: 3     # Parity shards for FEC
 
-# Important: Server Firewall Configuration Required!
+# Important: Server Firewall Configuration
 # 
-# Since paqet uses pcap to bypass standard firewalls, you MUST configure
-# iptables on the server to prevent kernel interference:
+# If using driver: "pcap", you MUST configure iptables on the server to prevent 
+# kernel interference (TCP RST packets).
+# If using driver: "ebpf", these rules are NOT required because XDP uses XDP_DROP.
 #
 # sudo iptables -t raw -A PREROUTING -p tcp --dport 9999 -j NOTRACK
 # sudo iptables -t raw -A OUTPUT -p tcp --sport 9999 -j NOTRACK  

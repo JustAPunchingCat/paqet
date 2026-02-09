@@ -121,7 +121,21 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		newPayload, newAddr, err := c.plugins.OnRead(payload, addr)
 		if err != nil {
 			// Drop invalid packet (e.g. obfuscation mismatch) and continue
-			flog.Debugf("dropped invalid packet from %s: %v (len=%d, hex=%x)", addr, err, len(payload), payload[:min(len(payload), 16)])
+
+			// Heuristic: Check if it looks like HTTP/SSH to hint at port overlap
+			isCleartext := false
+			if len(payload) >= 4 {
+				head := string(payload[:4])
+				if head == "HTTP" || head == "SSH-" || head == "GET " || head == "POST" {
+					isCleartext = true
+				}
+			}
+
+			if isCleartext {
+				flog.Debugf("dropped invalid packet from %s: looks like cleartext traffic (HTTP/SSH). Check for port range overlap with OS ephemeral ports.", addr)
+			} else {
+				flog.Debugf("dropped invalid packet from %s: %v (len=%d, hex=%x)", addr, err, len(payload), payload[:min(len(payload), 16)])
+			}
 			continue
 		}
 		payload = newPayload
