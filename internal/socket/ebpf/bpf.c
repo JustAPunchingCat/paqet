@@ -10,7 +10,7 @@
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 24); // 16MB buffer
+    __uint(max_entries, 1 << 26); // 64MB buffer
 } packets SEC(".maps");
 
 struct {
@@ -40,6 +40,11 @@ int xdp_main(struct xdp_md *ctx) {
 
     // Check destination port against allowed_ports map
     __u16 dest = bpf_ntohs(tcp->dest);
+
+    // --- SAFETY SWITCH ---
+    // Never intercept SSH (22). If your VPS uses a custom SSH port, add it here.
+    if (dest == 22) return XDP_PASS;
+
     __u8 *val = bpf_map_lookup_elem(&allowed_ports, &dest);
     if (!val) return XDP_PASS;
 
@@ -50,7 +55,7 @@ int xdp_main(struct xdp_md *ctx) {
     // Efficiently copy data to ringbuf
     bpf_ringbuf_output(&packets, data, len, 0);
 
-    return XDP_PASS;
+    return XDP_DROP;
 }
 
 char __license[] SEC("license") = "Dual MIT/GPL";

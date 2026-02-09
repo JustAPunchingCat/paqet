@@ -46,10 +46,10 @@ servers:
 
       hopping:
         enabled: false      # Enable port hopping
-        interval: 30        # Interval in seconds to change ports
+        interval: 15        # Interval in seconds to change ports
         ports:              # List of single ports or ranges
           - "80"
-          - "20000-30000"
+          - "10000-20000"   # Recommended: 10000-20000 (Avoids OS ephemeral ports 32768+)
       
       # Obfuscation Configuration (Optional)
       obfuscation:

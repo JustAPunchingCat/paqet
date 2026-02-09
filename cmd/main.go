@@ -4,6 +4,7 @@ import (
 	"os"
 	"paqet/cmd/dump"
 	"paqet/cmd/iface"
+	"paqet/cmd/iptables"
 	"paqet/cmd/ping"
 	"paqet/cmd/run"
 	"paqet/cmd/secret"
@@ -26,6 +27,7 @@ func main() {
 	rootCmd.AddCommand(secret.Cmd)
 	rootCmd.AddCommand(iface.Cmd)
 	rootCmd.AddCommand(version.Cmd)
+	rootCmd.AddCommand(iptables.Cmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		flog.Errorf("%v", err)

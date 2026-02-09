@@ -239,9 +239,13 @@ transport:
 
 #### Critical Firewall Configuration
 
-This application uses `pcap` or `eBPF` to receive and inject packets at a low level, **bypassing traditional firewalls like `ufw` or `firewalld`**. However, the OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. While your connection may appear to work initially, these kernel-generated RST packets can corrupt connection state in NAT devices and stateful firewalls, leading to connection instability, packet drops, and premature connection termination in complex network environments.
+This application uses `pcap` or `eBPF` to receive and inject packets at a low level, **bypassing traditional firewalls like `ufw` or `firewalld`**.
 
-You **must** configure `iptables` on the server to prevent the kernel from interfering.
+**For `pcap` driver:** The OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. This causes connection instability. You **must** configure `iptables` on the server to prevent this.
+
+**For `ebpf` driver:** The XDP program uses `XDP_DROP` to discard incoming packets at the driver level, preventing them from reaching the kernel stack. Therefore, `iptables` rules are **not required** to prevent RST packets. However, applying them is recommended as a safety fallback in case the eBPF program fails to load or you switch drivers.
+
+**Firewall Commands (Required for `pcap`, Optional for `ebpf`):**
 
 Run these commands as root on your server:
 
@@ -443,6 +447,9 @@ Security depends entirely on proper key management. Use the `secret` command to 
     - **Incorrect Network Details:** Double-check all IPs, MAC addresses, and interface names.
     - **Cloud Provider Firewalls:** Ensure your cloud provider's security group allows TCP traffic on your `listen.addr` port.
     - **NAT/Port Configuration:** For servers, ensure `listen.addr` and `network.ipv4.addr` ports match. For clients, use port `0` in `network.ipv4.addr` for automatic port assignment to avoid conflicts.
+    - **Port Range Overlap:** If using Port Hopping with a large range (e.g., `20000-40000`), ensure it does not overlap with your OS's ephemeral port range (Linux defaults to `32768-60999`).
+      - **Symptom:** Logs showing `dropped invalid packet` from port 80/443.
+      - **Fix:** Change your hopping range to `10000-30000` or adjust `sysctl net.ipv4.ip_local_port_range`.
 3.  **Use `ping` and `dump`:** Use `paqet ping -c config.yaml` to test the connection. Use `paqet dump -p <PORT>` on the server to see if packets are arriving.
 
 ## Acknowledgments
