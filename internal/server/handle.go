@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
@@ -40,6 +41,10 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 	if err != nil {
 		if err == io.EOF {
 			return err
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+			return nil
 		}
 		flog.Errorf("failed to read protocol message from stream %d: %v", strm.SID(), err)
 		return err

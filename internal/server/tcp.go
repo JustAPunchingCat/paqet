@@ -9,6 +9,7 @@ import (
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
+	"strings"
 	"time"
 )
 
@@ -49,6 +50,11 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	select {
 	case err := <-errChan:
 		if err != nil && err != io.EOF {
+			msg := err.Error()
+			if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+				flog.Debugf("TCP stream %d to %s closed (remote disconnect): %v", strm.SID(), addr, err)
+				return nil
+			}
 			flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
 			return err
 		}

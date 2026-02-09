@@ -5,6 +5,7 @@ import (
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
+	"strings"
 
 	"github.com/txthinking/socks5"
 )
@@ -71,7 +72,12 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	select {
 	case err := <-errCh:
 		if err != nil && err != io.EOF {
-			flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
+			msg := err.Error()
+			if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+				flog.Debugf("SOCKS5 stream %d closed (client disconnect) for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
+			} else {
+				flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
+			}
 		}
 	case <-h.ctx.Done():
 		flog.Debugf("SOCKS5 connection %s -> %s closed due to shutdown", conn.RemoteAddr(), r.Address())

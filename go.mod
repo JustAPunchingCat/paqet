@@ -4,6 +4,7 @@ go 1.25
 
 require (
 	github.com/cilium/ebpf v0.20.0
+	github.com/coreos/go-iptables v0.8.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/gopacket/gopacket v1.5.0
 	github.com/spf13/cobra v1.10.2
