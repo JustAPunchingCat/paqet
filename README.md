@@ -142,6 +142,7 @@ log:
 # Network interface settings
 network:
   interface: "en0" # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
+  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
   # guid: "\Device\NPF_{...}" # Windows only (Npcap).
   ipv4:
     addr: "192.168.1.100:0" # CHANGE ME: Local IP (use port 0 for random port)
@@ -225,6 +226,7 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0" # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
+  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
   ipv4:
     addr: "10.0.0.100:9999" # CHANGE ME: Server IPv4 and port (port must match listen.addr)
     router_mac: "aa:bb:cc:dd:ee:ff" # CHANGE ME: Gateway/router MAC address

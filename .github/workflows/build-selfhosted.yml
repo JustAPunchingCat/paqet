@@ -10,7 +10,7 @@ jobs:
     build-linux-selfhosted:
         runs-on: self-hosted
         container:
-            image: golang:1.24
+            image: golang:1.25
         strategy:
             matrix:
                 include:

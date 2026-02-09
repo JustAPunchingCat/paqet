@@ -13,7 +13,7 @@ jobs:
     build-linux:
         runs-on: ubuntu-latest
         container:
-            image: golang:1.24
+            image: golang:1.25
         strategy:
             matrix:
                 include:
