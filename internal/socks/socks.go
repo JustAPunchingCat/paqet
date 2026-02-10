@@ -28,14 +28,14 @@ func (s *SOCKS5) Start(ctx context.Context, cfg conf.SOCKS5) error {
 
 func (s *SOCKS5) listen(ctx context.Context, cfg conf.SOCKS5) error {
 	listenAddr, _ := net.ResolveTCPAddr("tcp", cfg.Listen.String())
-	server, err := socks5.NewClassicServer(listenAddr.String(), listenAddr.IP.String(), cfg.Username, cfg.Password, 10, 10)
+	server, err := socks5.NewClassicServer(listenAddr.String(), listenAddr.IP.String(), cfg.Username, cfg.Password, 10, 30)
 	if err != nil {
 		flog.Fatalf("SOCKS5 server failed to create on %s: %v", listenAddr.String(), err)
 	}
 
 	go func() {
 		if err := server.ListenAndServe(s.handle); err != nil {
-			flog.Debugf("SOCKS5 server failed to listen on %s: %v", listenAddr.String(), err)
+			flog.Errorf("SOCKS5 server failed to listen on %s: %v", listenAddr.String(), err)
 		}
 	}()
 	flog.Infof("SOCKS5 server listening on %s", listenAddr.String())

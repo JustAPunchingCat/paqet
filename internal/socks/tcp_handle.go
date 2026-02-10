@@ -6,6 +6,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"strings"
+	"time"
 
 	"github.com/txthinking/socks5"
 )
@@ -26,10 +27,14 @@ func (h *Handler) TCPHandle(server *socks5.Server, conn *net.TCPConn, r *socks5.
 }
 
 func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
+	conn.SetNoDelay(true)
+	conn.SetKeepAlive(true)
+	conn.SetKeepAlivePeriod(30 * time.Second)
+
 	addr := conn.LocalAddr().(*net.TCPAddr)
 	bufp := rPool.Get().(*[]byte)
 	defer rPool.Put(bufp)
-	buf := *bufp
+	buf := (*bufp)[:0]
 	buf = append(buf, socks5.Ver)
 	buf = append(buf, socks5.RepSuccess)
 	buf = append(buf, 0x00)

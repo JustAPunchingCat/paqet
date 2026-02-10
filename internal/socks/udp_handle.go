@@ -11,15 +11,12 @@ import (
 )
 
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
-	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
-	buf := *bufp
 	strm, new, k, err := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
 		return err
 	}
-	strm.SetWriteDeadline(time.Now().Add(8 * time.Second))
+	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	_, err = strm.Write(d.Data)
 	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
@@ -30,27 +27,50 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 
 	if new {
 		flog.Infof("SOCKS5 accepted UDP connection %s -> %s via %s", addr, d.Address(), strm.RemoteAddr())
+
+		// Capture needed fields to avoid accessing d in goroutine (safety against reuse)
+		dAddr := d.Address()
+		atyp := d.Atyp
+		dstAddr := append([]byte(nil), d.DstAddr...)
+		dstPort := append([]byte(nil), d.DstPort...)
+
 		go func() {
+			bufp := buffer.UPool.Get().(*[]byte)
+			defer buffer.UPool.Put(bufp)
+			buf := *bufp
+
 			defer func() {
-				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, d.Address())
+				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, dAddr)
 				h.client.CloseUDP(h.ServerIdx, k)
 			}()
+
+			// Pre-calculate header length: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
+			headerLen := 4 + len(dstAddr) + len(dstPort)
+
+			// Pre-fill header in buffer (constant for this stream)
+			if len(buf) > headerLen {
+				buf[0], buf[1], buf[2] = 0, 0, 0 // RSV, FRAG
+				buf[3] = atyp
+				copy(buf[4:], dstAddr)
+				copy(buf[4+len(dstAddr):], dstPort)
+			}
+
 			for {
 				select {
 				case <-h.ctx.Done():
 					return
 				default:
-					strm.SetDeadline(time.Now().Add(8 * time.Second))
-					n, err := strm.Read(buf)
+					strm.SetDeadline(time.Now().Add(30 * time.Second))
+					// Read directly into buffer after header
+					n, err := strm.Read(buf[headerLen:])
 					strm.SetDeadline(time.Time{})
 					if err != nil {
-						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, d.Address(), err)
+						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, dAddr, err)
 						return
 					}
-					dd := socks5.NewDatagram(d.Atyp, d.DstAddr, d.DstPort, buf[:n])
-					_, err = server.UDPConn.WriteToUDP(dd.Bytes(), addr)
+					_, err = server.UDPConn.WriteToUDP(buf[:headerLen+n], addr)
 					if err != nil {
-						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(dd.Bytes()), addr, err)
+						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+n, addr, err)
 						return
 					}
 				}
