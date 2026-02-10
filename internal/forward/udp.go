@@ -7,6 +7,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/tnet"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,10 @@ func (f *Forward) listenUDP(ctx context.Context) {
 
 	flog.Infof("UDP forwarder listening on %s -> %s", laddr, f.targetAddr)
 
+	bufp := buffer.UPool.Get().(*[]byte)
+	defer buffer.UPool.Put(bufp)
+	buf := *bufp
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -37,17 +42,15 @@ func (f *Forward) listenUDP(ctx context.Context) {
 		default:
 		}
 
-		if err := f.handleUDPPacket(ctx, conn); err != nil {
-			flog.Errorf("UDP packet handling failed on %s: %v", f.listenAddr, err)
+		if err := f.handleUDPPacket(ctx, conn, buf); err != nil {
+			if ctx.Err() == nil {
+				flog.Errorf("UDP packet handling failed on %s: %v", f.listenAddr, err)
+			}
 		}
 	}
 }
 
-func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error {
-	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
-	buf := *bufp
-
+func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []byte) error {
 	n, caddr, err := conn.ReadFromUDP(buf)
 	if err != nil {
 		return err
@@ -63,11 +66,14 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error 
 		return err
 	}
 
+	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	if _, err := strm.Write(buf[:n]); err != nil {
 		flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
 		f.client.CloseUDP(f.ServerIdx, k)
+		strm.SetWriteDeadline(time.Time{})
 		return err
 	}
+	strm.SetWriteDeadline(time.Time{})
 	if new {
 		flog.Infof("accepted UDP connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		go f.handleUDPStrm(ctx, k, strm, conn, caddr)
@@ -91,11 +97,15 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 			return
 		default:
 		}
-		strm.SetDeadline(time.Now().Add(8 * time.Second))
+		strm.SetDeadline(time.Now().Add(30 * time.Second))
 		err := CopyU(strm, conn, caddr, buf)
 		strm.SetDeadline(time.Time{})
 		if err != nil {
-			flog.Errorf("UDP stream %d failed for %s -> %s: %v", strm.SID(), caddr, f.targetAddr, err)
+			if err != io.EOF && !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "closed") {
+				flog.Errorf("UDP stream %d failed for %s -> %s: %v", strm.SID(), caddr, f.targetAddr, err)
+			} else {
+				flog.Debugf("UDP stream %d closed for %s -> %s: %v", strm.SID(), caddr, f.targetAddr, err)
+			}
 			return
 		}
 	}

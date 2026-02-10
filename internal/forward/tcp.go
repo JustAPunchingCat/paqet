@@ -2,9 +2,12 @@ package forward
 
 import (
 	"context"
+	"io"
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
+	"strings"
+	"time"
 )
 
 func (f *Forward) listenTCP(ctx context.Context) error {
@@ -44,9 +47,20 @@ func (f *Forward) listenTCP(ctx context.Context) error {
 }
 
 func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	strm, err := f.client.TCPByIndex(f.ServerIdx, f.targetAddr)
-	if err != nil {
-		flog.Errorf("failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), f.targetAddr, err)
+	if err != nil && err != io.EOF {
+		msg := err.Error()
+		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+			flog.Debugf("TCP stream %d closed (client disconnect) for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+		} else {
+			flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+		}
 		return err
 	}
 	defer func() {
