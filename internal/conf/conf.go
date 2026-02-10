@@ -12,6 +12,7 @@ import (
 )
 
 type ServerConfig struct {
+	Enabled     *bool       `yaml:"enabled"`
 	Server      Server      `yaml:"server"`
 	SOCKS5      []SOCKS5    `yaml:"socks5"`
 	Forward     []Forward   `yaml:"forward"`
@@ -81,6 +82,10 @@ func (c *Conf) setDefaults() {
 			})
 		}
 		for i := range c.Servers {
+			if c.Servers[i].Enabled == nil {
+				enabled := true
+				c.Servers[i].Enabled = &enabled
+			}
 			c.Servers[i].Server.setDefaults()
 			c.Servers[i].Obfuscation.setDefaults()
 			for j := range c.Servers[i].SOCKS5 {

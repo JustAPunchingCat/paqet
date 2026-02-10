@@ -164,6 +164,7 @@ network:
 # Define multiple servers, each with its own SOCKS5 and forwarding rules.
 servers:
   - server:
+      enabled: true             # Enable/Disable this server (default: true)
       addr: "10.0.0.100:9999" # CHANGE ME: First server address
     
     # Port Hopping Configuration (Optional)

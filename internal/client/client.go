@@ -30,8 +30,13 @@ func New(cfg *conf.Conf) (*Client, error) {
 
 func (c *Client) Start(ctx context.Context) error {
 	totalConns := 0
+	activeServers := 0
 	for sIdx := range c.cfg.Servers {
 		srv := &c.cfg.Servers[sIdx]
+		if !*srv.Enabled {
+			continue
+		}
+		activeServers++
 		for i := 0; i < srv.Transport.Conn; i++ {
 			tc, err := newTimedConn(ctx, c.cfg, srv)
 			if err != nil {
@@ -66,6 +71,6 @@ func (c *Client) Start(ctx context.Context) error {
 	if c.cfg.Network.IPv6.Addr != nil {
 		ipv6Addr = c.cfg.Network.IPv6.Addr.IP.String()
 	}
-	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, len(c.cfg.Servers), totalConns)
+	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, activeServers, totalConns)
 	return nil
 }
