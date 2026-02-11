@@ -71,7 +71,14 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 
 	// Write length prefix (2 bytes) + Data
 	// Combine into a single write to ensure atomicity
-	payload := make([]byte, 2+n)
+	// Optimization: Use buffer pool
+	bufp := buffer.UPool.Get().(*[]byte)
+	defer buffer.UPool.Put(bufp)
+	payload := *bufp
+	if cap(payload) < 2+n {
+		payload = make([]byte, 2+n)
+	}
+	payload = payload[:2+n]
 	binary.BigEndian.PutUint16(payload, uint16(n))
 	copy(payload[2:], buf[:n])
 	if _, err := strm.Write(payload); err != nil {
@@ -98,6 +105,7 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 	}()
 	buf := *bufp
 
+	lenBuf := make([]byte, 2)
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,7 +113,19 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 		default:
 		}
 		strm.SetDeadline(time.Now().Add(30 * time.Second))
-		err := CopyU(strm, conn, caddr, buf)
+
+		// Inline CopyU logic to avoid function call overhead and reuse lenBuf
+		if _, err := io.ReadFull(strm, lenBuf); err != nil {
+			flog.Debugf("UDP stream %d closed/error: %v", strm.SID(), err)
+			return
+		}
+		length := int(binary.BigEndian.Uint16(lenBuf))
+		if _, err := io.ReadFull(strm, buf[:length]); err != nil {
+			flog.Errorf("UDP stream %d payload read error: %v", strm.SID(), err)
+			return
+		}
+		_, err := conn.WriteToUDP(buf[:length], caddr)
+
 		strm.SetDeadline(time.Time{})
 		if err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "closed") {
@@ -116,21 +136,4 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 			return
 		}
 	}
-}
-
-func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) error {
-	// Read length prefix
-	lenBuf := make([]byte, 2)
-	if _, err := io.ReadFull(dst, lenBuf); err != nil {
-		return err
-	}
-	length := int(binary.BigEndian.Uint16(lenBuf))
-
-	// Read payload
-	if _, err := io.ReadFull(dst, buf[:length]); err != nil {
-		return err
-	}
-
-	_, err := src.WriteToUDP(buf[:length], addr)
-	return err
 }

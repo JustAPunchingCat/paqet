@@ -60,6 +60,7 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 
 func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 	buf := make([]byte, 65535)
+	framedBuf := make([]byte, 65535+2) // Reusable buffer for framing
 	for {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		n, err := conn.Read(buf)
@@ -68,12 +69,11 @@ func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 		}
 
 		// Write length prefix (2 bytes) + Data
-		payload := make([]byte, 2+n)
-		binary.BigEndian.PutUint16(payload, uint16(n))
-		copy(payload[2:], buf[:n])
+		binary.BigEndian.PutUint16(framedBuf, uint16(n))
+		copy(framedBuf[2:], buf[:n])
 
 		strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		if _, err := strm.Write(payload); err != nil {
+		if _, err := strm.Write(framedBuf[:2+n]); err != nil {
 			return err
 		}
 	}

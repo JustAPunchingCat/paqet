@@ -22,7 +22,14 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 
 	// Write length prefix (2 bytes) + Data to preserve packet boundaries in the stream
 	// Combine into a single write to ensure atomicity on the stream
-	payload := make([]byte, 2+len(d.Data))
+	// Optimization: Use buffer pool to avoid allocation per packet
+	bufp := buffer.UPool.Get().(*[]byte)
+	defer buffer.UPool.Put(bufp)
+	payload := *bufp
+	if cap(payload) < 2+len(d.Data) {
+		payload = make([]byte, 2+len(d.Data))
+	}
+	payload = payload[:2+len(d.Data)]
 	binary.BigEndian.PutUint16(payload, uint16(len(d.Data)))
 	copy(payload[2:], d.Data)
 	_, err = strm.Write(payload)
@@ -63,6 +70,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 				copy(buf[4+len(dstAddr):], dstPort)
 			}
 
+			lenBuf := make([]byte, 2)
 			for {
 				select {
 				case <-h.ctx.Done():
@@ -71,7 +79,6 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					strm.SetDeadline(time.Now().Add(30 * time.Second))
 
 					// Read length prefix (2 bytes)
-					lenBuf := make([]byte, 2)
 					if _, err := io.ReadFull(strm, lenBuf); err != nil {
 						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, dAddr, err)
 						return
