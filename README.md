@@ -74,6 +74,12 @@ If you want to run paqet on a system without libpcap installed, you can build a 
 go build -tags nopcap -o paqet_nopcap ./cmd
 ```
 
+#### Building without eBPF (Pure Go/Pcap):
+If you do not have clang/llvm installed or do not need the eBPF driver, you can build a version that only supports pcap.
+```bash
+go build -tags noebpf -o paqet_noebpf ./cmd 
+```
+
 ### Windows
 
 **Prerequisites:**

@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build !linux || noebpf
 
 package socket
 
@@ -8,5 +8,5 @@ import (
 )
 
 func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, error) {
-	return nil, fmt.Errorf("ebpf driver is only supported on Linux")
+	return nil, fmt.Errorf("ebpf support is disabled in this build")
 }
