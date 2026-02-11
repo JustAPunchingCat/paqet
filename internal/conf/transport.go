@@ -19,7 +19,7 @@ func (t *Transport) setDefaults(role string) {
 	}
 
 	if t.TCPBuf == 0 {
-		t.TCPBuf = 8 * 1024
+		t.TCPBuf = 64 * 1024 // Increase default TCP buffer to 64KB
 	}
 	if t.TCPBuf < 4*1024 {
 		t.TCPBuf = 4 * 1024

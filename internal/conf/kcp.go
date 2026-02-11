@@ -40,18 +40,10 @@ func (k *KCP) setDefaults(role string) {
 	}
 
 	if k.Rcvwnd == 0 {
-		if role == "server" {
-			k.Rcvwnd = 1024
-		} else {
-			k.Rcvwnd = 512
-		}
+		k.Rcvwnd = 2048
 	}
 	if k.Sndwnd == 0 {
-		if role == "server" {
-			k.Sndwnd = 1024
-		} else {
-			k.Sndwnd = 512
-		}
+		k.Sndwnd = 2048
 	}
 
 	// if k.Dshard == 0 {
