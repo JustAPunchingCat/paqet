@@ -12,6 +12,7 @@ import (
 )
 
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
+	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, d.Address())
 	strm, new, k, err := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)

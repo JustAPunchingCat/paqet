@@ -2,13 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/buffer"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
+	"time"
 )
 
 func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
@@ -36,11 +37,11 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 
 	errChan := make(chan error, 2)
 	go func() {
-		err := buffer.CopyU(conn, strm)
+		err := s.udpToStream(conn, strm)
 		errChan <- err
 	}()
 	go func() {
-		err := buffer.CopyU(strm, conn)
+		err := s.streamToUDP(strm, conn)
 		errChan <- err
 	}()
 
@@ -55,4 +56,46 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 	}
 
 	return nil
+}
+
+func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
+	buf := make([]byte, 65535)
+	for {
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		n, err := conn.Read(buf)
+		if err != nil {
+			return err
+		}
+
+		// Write length prefix (2 bytes) + Data
+		payload := make([]byte, 2+n)
+		binary.BigEndian.PutUint16(payload, uint16(n))
+		copy(payload[2:], buf[:n])
+
+		strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if _, err := strm.Write(payload); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *Server) streamToUDP(strm tnet.Strm, conn net.Conn) error {
+	lenBuf := make([]byte, 2)
+	buf := make([]byte, 65535)
+	for {
+		strm.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if _, err := io.ReadFull(strm, lenBuf); err != nil {
+			return err
+		}
+		length := int(binary.BigEndian.Uint16(lenBuf))
+
+		if _, err := io.ReadFull(strm, buf[:length]); err != nil {
+			return err
+		}
+
+		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if _, err := conn.Write(buf[:length]); err != nil {
+			return err
+		}
+	}
 }
