@@ -51,8 +51,13 @@ func newPcapSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 }
 
 func (s *PcapSource) ReadPacketData() ([]byte, error) {
-	data, _, err := s.handle.ReadPacketData()
-	return data, err
+	for {
+		data, _, err := s.handle.ReadPacketData()
+		if err == pcap.NextErrorTimeoutExpired {
+			continue
+		}
+		return data, err
+	}
 }
 
 func (s *PcapSource) Close() {
