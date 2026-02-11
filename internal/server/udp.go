@@ -9,8 +9,16 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
+	"sync"
 	"time"
 )
+
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 65535+2)
+		return &b
+	},
+}
 
 func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
 	clientInfo := strm.RemoteAddr().String()
@@ -59,36 +67,42 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 }
 
 func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
-	buf := make([]byte, 65535)
-	framedBuf := make([]byte, 65535+2) // Reusable buffer for framing
+	bufp := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufp)
+	buf := *bufp
+
 	for {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-		n, err := conn.Read(buf)
+		// Read into buf starting at offset 2 to leave room for header
+		n, err := conn.Read(buf[2:])
 		if err != nil {
 			return err
 		}
 
 		// Write length prefix (2 bytes) + Data
-		binary.BigEndian.PutUint16(framedBuf, uint16(n))
-		copy(framedBuf[2:], buf[:n])
+		binary.BigEndian.PutUint16(buf[:2], uint16(n))
 
 		strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		if _, err := strm.Write(framedBuf[:2+n]); err != nil {
+		if _, err := strm.Write(buf[:2+n]); err != nil {
 			return err
 		}
 	}
 }
 
 func (s *Server) streamToUDP(strm tnet.Strm, conn net.Conn) error {
-	lenBuf := make([]byte, 2)
-	buf := make([]byte, 65535)
+	bufp := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufp)
+	buf := *bufp
+
 	for {
 		strm.SetReadDeadline(time.Now().Add(30 * time.Second))
-		if _, err := io.ReadFull(strm, lenBuf); err != nil {
+		// Read length prefix into the first 2 bytes of buf
+		if _, err := io.ReadFull(strm, buf[:2]); err != nil {
 			return err
 		}
-		length := int(binary.BigEndian.Uint16(lenBuf))
+		length := int(binary.BigEndian.Uint16(buf[:2]))
 
+		// Read payload into buf starting at 0 (overwriting header, which is fine)
 		if _, err := io.ReadFull(strm, buf[:length]); err != nil {
 			return err
 		}
