@@ -171,6 +171,7 @@ log:
 network:
   interface: "en0" # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
   driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP), "tun" (Experimental)
   # guid: "\Device\NPF_{...}" # Windows only (Npcap).
   ipv4:
     addr: "192.168.1.100:0" # CHANGE ME: Local IP (use port 0 for random port)
@@ -255,7 +256,7 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0" # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP - Recommended), "tun" (Experimental)
   ipv4:
     addr: "10.0.0.100:9999" # CHANGE ME: Server IPv4 and port (port must match listen.addr)
     router_mac: "aa:bb:cc:dd:ee:ff" # CHANGE ME: Gateway/router MAC address
@@ -272,11 +273,11 @@ transport:
 
 This application uses `pcap` or `eBPF` to receive and inject packets at a low level, **bypassing traditional firewalls like `ufw` or `firewalld`**.
 
-**For `pcap` driver:** The OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. This causes connection instability. You **must** configure `iptables` on the server to prevent this.
+**For `pcap` driver:** The OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. This causes connection instability. **You MUST configure `iptables` on the server.**
 
-**For `ebpf` driver:** The XDP program uses `XDP_DROP` to discard incoming packets at the driver level, preventing them from reaching the kernel stack. Therefore, `iptables` rules are **not required** to prevent RST packets. However, applying them is recommended as a safety fallback in case the eBPF program fails to load or you switch drivers.
+**For `ebpf` driver:** The XDP program uses `XDP_DROP` to discard incoming packets at the driver level, preventing them from reaching the kernel stack. **`iptables` rules are NOT required.**
 
-**Firewall Commands (Required for `pcap`, Optional for `ebpf`):**
+**Firewall Commands (Required for `pcap`):**
 
 Run these commands as root on your server:
 

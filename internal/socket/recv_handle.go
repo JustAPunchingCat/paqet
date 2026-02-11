@@ -14,7 +14,11 @@ type PacketSource interface {
 }
 
 type RecvHandle struct {
-	source PacketSource
+	source     PacketSource
+	driver     string
+	SkipDecode bool
+	RemoteAddr net.Addr
+	LocalPort  int
 }
 
 func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error) {
@@ -24,6 +28,8 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 	switch cfg.Driver {
 	case "ebpf":
 		source, err = newEBPFSource(cfg, hopping)
+	case "tun":
+		source, err = newTunSource(cfg, hopping)
 	default:
 		source, err = newPcapSource(cfg, hopping)
 	}
@@ -32,7 +38,7 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 		return nil, err
 	}
 
-	return &RecvHandle{source: source}, nil
+	return &RecvHandle{source: source, driver: cfg.Driver}, nil
 }
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
@@ -40,7 +46,28 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
+
+	if h.SkipDecode {
+		// If using netstack, we already have the payload.
+		// We return the fixed remote address associated with the connection.
+		// Note: dstPort (local port) is returned as h.LocalPort
+		return data, h.RemoteAddr, h.LocalPort, nil
+	}
+
+	var decoder gopacket.Decoder
+	if h.driver == "tun" {
+		// TUN delivers raw IP packets. Check version from first byte.
+		if len(data) > 0 {
+			if data[0]>>4 == 6 {
+				decoder = layers.LayerTypeIPv6
+			} else {
+				decoder = layers.LayerTypeIPv4
+			}
+		}
+	} else {
+		decoder = layers.LayerTypeEthernet
+	}
+	p := gopacket.NewPacket(data, decoder, gopacket.NoCopy)
 
 	netLayer := p.NetworkLayer()
 	if netLayer == nil {

@@ -2,11 +2,17 @@ package client
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/signal"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
+	"paqet/internal/forward"
 	"paqet/internal/pkg/iterator"
+	"paqet/internal/socks"
 	"paqet/internal/tnet"
 	"sync"
+	"syscall"
 )
 
 type Client struct {
@@ -29,6 +35,19 @@ func New(cfg *conf.Conf) (*Client, error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sig:
+			flog.Infof("Shutdown signal received...")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	totalConns := 0
 	activeServers := 0
 	for sIdx := range c.cfg.Servers {
@@ -40,6 +59,7 @@ func (c *Client) Start(ctx context.Context) error {
 		for i := 0; i < srv.Transport.Conn; i++ {
 			tc, err := newTimedConn(ctx, c.cfg, srv)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating client connection: %v\n", err)
 				flog.Errorf("failed to create connection to server %d (conn %d): %v", sIdx+1, i+1, err)
 				return err
 			}
@@ -50,18 +70,30 @@ func (c *Client) Start(ctx context.Context) error {
 			c.iters[sIdx].Items = append(c.iters[sIdx].Items, tc)
 			totalConns++
 		}
-	}
-	go c.ticker(ctx)
 
-	go func() {
-		<-ctx.Done()
-		for _, iter := range c.iters {
-			for _, tc := range iter.Items {
-				tc.close()
+		for _, s5cfg := range srv.SOCKS5 {
+			s5, err := socks.New(c, sIdx)
+			if err != nil {
+				flog.Errorf("failed to create SOCKS5 server: %v", err)
+				continue
+			}
+			if err := s5.Start(ctx, s5cfg); err != nil {
+				flog.Errorf("failed to start SOCKS5 server: %v", err)
 			}
 		}
-		flog.Infof("client shutdown complete")
-	}()
+
+		for _, fwdCfg := range srv.Forward {
+			fwd, err := forward.New(c, fwdCfg.Listen.String(), fwdCfg.Target.String(), sIdx)
+			if err != nil {
+				flog.Errorf("failed to create forwarder: %v", err)
+				continue
+			}
+			if err := fwd.Start(ctx, fwdCfg.Protocol); err != nil {
+				flog.Errorf("failed to start forwarder: %v", err)
+			}
+		}
+	}
+	go c.ticker(ctx)
 
 	ipv4Addr := "<nil>"
 	ipv6Addr := "<nil>"
@@ -72,5 +104,13 @@ func (c *Client) Start(ctx context.Context) error {
 		ipv6Addr = c.cfg.Network.IPv6.Addr.IP.String()
 	}
 	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, activeServers, totalConns)
+
+	<-ctx.Done()
+	for _, iter := range c.iters {
+		for _, tc := range iter.Items {
+			tc.close()
+		}
+	}
+	flog.Infof("client shutdown complete")
 	return nil
 }

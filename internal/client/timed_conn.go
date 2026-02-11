@@ -16,6 +16,7 @@ type timedConn struct {
 	rootCfg *conf.Conf
 	srvCfg  *conf.ServerConfig
 	conn    tnet.Conn
+	pConn   *socket.PacketConn
 	expire  time.Time
 	ctx     context.Context
 }
@@ -79,14 +80,32 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
 	}
 
+	// NAT Hole Punching: Send a raw SYN packet to initialize stateful firewalls/NATs.
+	// Without this, routers will drop our PSH-ACK packets because they never saw a handshake.
+	synFlag := []conf.TCPF{{SYN: true}}
+	pConn.SetClientTCPF(remoteAddr, synFlag)
+	pConn.WriteTo(nil, remoteAddr) // Send empty SYN
+	time.Sleep(50 * time.Millisecond)
+
+	// Restore default flags (e.g., PSH-ACK) for data transmission
+	pConn.SetClientTCPF(remoteAddr, tc.rootCfg.Network.TCP.LF)
+
 	conn, err := kcp.Dial(remoteAddr, &kcpCfg, pConn)
 	if err != nil {
+		pConn.Close()
 		return nil, err
 	}
 	err = tc.sendTCPF(conn)
 	if err != nil {
+		pConn.Close()
 		return nil, err
 	}
+
+	if tc.pConn != nil {
+		tc.pConn.Close()
+	}
+	tc.pConn = pConn
+
 	return conn, nil
 }
 
@@ -108,5 +127,8 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 func (tc *timedConn) close() {
 	if tc.conn != nil {
 		tc.conn.Close()
+	}
+	if tc.pConn != nil {
+		tc.pConn.Close()
 	}
 }

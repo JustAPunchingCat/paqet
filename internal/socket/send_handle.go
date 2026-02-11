@@ -22,11 +22,12 @@ type PacketInjector interface {
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
 	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
-	mu         sync.RWMutex
+	mu         sync.Mutex
 }
 
 type SendHandle struct {
 	injector    PacketInjector
+	driver      string
 	srcIPv4     net.IP
 	srcIPv4RHWA net.HardwareAddr
 	srcIPv6     net.IP
@@ -44,6 +45,7 @@ type SendHandle struct {
 	ipv6Pool    sync.Pool
 	tcpPool     sync.Pool
 	bufPool     sync.Pool
+	SkipHeaders bool
 }
 
 func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
@@ -52,6 +54,8 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	switch cfg.Driver {
 	case "ebpf":
 		injector, err = newRawInjector(cfg)
+	case "tun":
+		injector, err = newTunInjector(cfg)
 	default:
 		injector, err = newPcapInjector(cfg)
 	}
@@ -75,6 +79,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 
 	sh := &SendHandle{
 		injector:   injector,
+		driver:     cfg.Driver,
 		srcPort:    uint16(cfg.Port),
 		synOptions: synOptions,
 		ackOptions: ackOptions,
@@ -187,6 +192,7 @@ func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF) *layer
 
 	counter := atomic.AddUint32(&h.tsCounter, 1)
 	tsVal := h.time + (counter >> 3)
+
 	if f.SYN {
 		binary.BigEndian.PutUint32(h.synOptions[2].OptionData[0:4], tsVal)
 		binary.BigEndian.PutUint32(h.synOptions[2].OptionData[4:8], 0)
@@ -210,13 +216,21 @@ func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF) *layer
 }
 
 func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error {
+	if h.SkipHeaders {
+		return h.injector.WritePacketData(payload)
+	}
+
 	buf := h.bufPool.Get().(gopacket.SerializeBuffer)
-	ethLayer := h.ethPool.Get().(*layers.Ethernet)
 	defer func() {
 		buf.Clear()
 		h.bufPool.Put(buf)
-		h.ethPool.Put(ethLayer)
 	}()
+
+	var ethLayer *layers.Ethernet
+	if h.driver != "tun" {
+		ethLayer = h.ethPool.Get().(*layers.Ethernet)
+		defer h.ethPool.Put(ethLayer)
+	}
 
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
@@ -231,27 +245,39 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 		defer h.ipv4Pool.Put(ip)
 		ipLayer = ip
 		tcpLayer.SetNetworkLayerForChecksum(ip)
-		ethLayer.DstMAC = h.srcIPv4RHWA
-		ethLayer.EthernetType = layers.EthernetTypeIPv4
+		if ethLayer != nil {
+			ethLayer.DstMAC = h.srcIPv4RHWA
+			ethLayer.EthernetType = layers.EthernetTypeIPv4
+		}
 	} else {
 		ip := h.buildIPv6Header(dstIP)
 		defer h.ipv6Pool.Put(ip)
 		ipLayer = ip
 		tcpLayer.SetNetworkLayerForChecksum(ip)
-		ethLayer.DstMAC = h.srcIPv6RHWA
-		ethLayer.EthernetType = layers.EthernetTypeIPv6
+		if ethLayer != nil {
+			ethLayer.DstMAC = h.srcIPv6RHWA
+			ethLayer.EthernetType = layers.EthernetTypeIPv6
+		}
 	}
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	if err := gopacket.SerializeLayers(buf, opts, ethLayer, ipLayer, tcpLayer, gopacket.Payload(payload)); err != nil {
+	layersToSerialize := []gopacket.SerializableLayer{ipLayer, tcpLayer}
+	if len(payload) > 0 {
+		layersToSerialize = append(layersToSerialize, gopacket.Payload(payload))
+	}
+	if ethLayer != nil {
+		layersToSerialize = append([]gopacket.SerializableLayer{ethLayer}, layersToSerialize...)
+	}
+
+	if err := gopacket.SerializeLayers(buf, opts, layersToSerialize...); err != nil {
 		return err
 	}
 	return h.injector.WritePacketData(buf.Bytes())
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
-	h.tcpF.mu.RLock()
-	defer h.tcpF.mu.RUnlock()
+	h.tcpF.mu.Lock()
+	defer h.tcpF.mu.Unlock()
 	if ff := h.tcpF.clientTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
 		return ff.Next()
 	}

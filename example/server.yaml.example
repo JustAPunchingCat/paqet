@@ -36,18 +36,18 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0"                          # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP), "tun" (Layer 3 TUN device)
   # guid: "\Device\NPF_{...}"                # Windows only (Npcap).
 
   # IPv4 configuration
   ipv4:
     addr: "10.0.0.100:9999"                  # CHANGE ME: Server IPv4 and port (port must match listen.addr)
-    router_mac: "aa:bb:cc:dd:ee:ff"          # CHANGE ME: Gateway/router MAC address
+    router_mac: "aa:bb:cc:dd:ee:ff"          # CHANGE ME: Gateway/router MAC address (Required for pcap/ebpf, ignored for tun)
 
   # IPv6 configuration (optional)
   ipv6:
     addr: "[::1]:9999"                       # CHANGE ME: Server IPv6 and port (or remove if not using IPv6)
-    router_mac: "aa:bb:cc:dd:ee:ff"          # CHANGE ME: Gateway/router MAC address
+    router_mac: "aa:bb:cc:dd:ee:ff"          # CHANGE ME: Gateway/router MAC address (Required for pcap/ebpf, ignored for tun)
 
   # TCP flags for packet crafting (optional - will use defaults)
   tcp:
@@ -56,6 +56,10 @@ network:
   # PCAP settings (optional - will use defaults)
   # pcap:
     # sockbuf: 8388608                         # 8MB buffer (default for server)
+
+  tun:
+    name: "tun0"   # Interface name for TUN driver
+    # fd: 0        # Optional: File descriptor
 
 # Transport protocol configuration
 transport:

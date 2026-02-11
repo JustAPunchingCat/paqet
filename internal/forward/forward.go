@@ -3,20 +3,26 @@ package forward
 import (
 	"context"
 	"fmt"
-	"paqet/internal/client"
 	"paqet/internal/flog"
+	"paqet/internal/tnet"
 	"sync"
 )
 
+type Client interface {
+	TCPByIndex(serverIdx int, addr string) (tnet.Strm, error)
+	UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool, uint64, error)
+	CloseUDP(serverIdx int, key uint64) error
+}
+
 type Forward struct {
-	client     *client.Client
+	client     Client
 	listenAddr string
 	targetAddr string
 	wg         sync.WaitGroup
 	ServerIdx  int
 }
 
-func New(client *client.Client, listenAddr, targetAddr string, serverIdx int) (*Forward, error) {
+func New(client Client, listenAddr, targetAddr string, serverIdx int) (*Forward, error) {
 	return &Forward{
 		client:     client,
 		listenAddr: listenAddr,

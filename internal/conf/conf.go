@@ -66,6 +66,16 @@ func (c *Conf) setDefaults() {
 	c.Obfuscation.setDefaults()
 	c.Network.setDefaults(c.Role)
 
+	// If TUN driver is used, ensure TUN name has a default and override the physical interface.
+	// This makes the configuration robust against invalid physical interface names (e.g., "Ethernet 3" in WSL)
+	// when the user's intent is to use the TUN driver.
+	if c.Network.Driver == "tun" {
+		if c.Network.TUN.Name == "" {
+			// Default to tun0 if not specified, to match 'tun setup' behavior.
+			c.Network.TUN.Name = "tun0"
+		}
+	}
+
 	// Pass transport config to network for SendHandle initialization
 	c.Network.Transport = &c.Transport
 	c.Network.Obfuscation = &c.Obfuscation
