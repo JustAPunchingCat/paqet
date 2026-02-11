@@ -26,15 +26,18 @@ type Conn struct {
 	readLoopWg   sync.WaitGroup
 	lastRemoteID uint32 // Track last accepted ID to ignore late/replayed streams
 	unordered    bool   // Default mode for new streams
+	mtu          int    // Max fragment size
 }
 
 const (
-	maxPacketSize = 1200 // Reduced to be safe
 	flagMoreFrags = 0x01 // Flag indicating more fragments follow
 	flagStart     = 0x02 // Flag indicating start of a message
 )
 
-func newConn(adapter net.Conn, isServer bool, unordered bool) *Conn {
+func newConn(adapter net.Conn, isServer bool, unordered bool, mtu int) *Conn {
+	if mtu <= 0 {
+		mtu = 1200
+	}
 	c := &Conn{
 		conn:       adapter,
 		streams:    make(map[uint32]*muxStream),
@@ -44,6 +47,7 @@ func newConn(adapter net.Conn, isServer bool, unordered bool) *Conn {
 		isServer:   isServer,
 		nextID:     1,
 		unordered:  unordered,
+		mtu:        mtu,
 	}
 	if isServer {
 		c.nextID = 2
@@ -422,8 +426,8 @@ func (s *muxStream) Write(b []byte) (n int, err error) {
 		if written == 0 {
 			flags |= flagStart
 		}
-		if chunkSize > maxPacketSize {
-			chunkSize = maxPacketSize
+		if chunkSize > s.conn.mtu {
+			chunkSize = s.conn.mtu
 			flags |= flagMoreFrags
 		}
 		chunk := b[:chunkSize]

@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"paqet/internal/conf"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -55,9 +56,15 @@ func buildTLSConfig(cfg *conf.QUIC, isServer bool) (*tls.Config, error) {
 	return tlsConf, nil
 }
 
+var certCache sync.Map
+
 // deterministicCert generates a deterministic ECDSA certificate from a shared key.
 // Both client and server derive the same cert from the same key.
 func deterministicCert(key string) (tls.Certificate, error) {
+	if v, ok := certCache.Load(key); ok {
+		return *v.(*tls.Certificate), nil
+	}
+
 	// Derive deterministic private key scalar from shared key
 	seed := sha256.Sum256([]byte("paqet-quic-cert:" + key))
 
@@ -97,7 +104,9 @@ func deterministicCert(key string) (tls.Certificate, error) {
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER})
 
-	return tls.X509KeyPair(certPEM, keyPEM)
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	certCache.Store(key, &cert)
+	return cert, err
 }
 
 // deterministicRand is an io.Reader that produces deterministic output from a seed
@@ -136,6 +145,6 @@ func buildQUICConfig(cfg *conf.QUIC) *quic.Config {
 		MaxStreamReceiveWindow:         cfg.MaxStreamWindow,
 		InitialConnectionReceiveWindow: cfg.InitialConnWindow,
 		MaxConnectionReceiveWindow:     cfg.MaxConnWindow,
-		DisablePathMTUDiscovery:        true, // Force 1200 byte packets to avoid MTU blackholes on raw sockets
+		DisablePathMTUDiscovery:        cfg.MTU <= 1200, // Enable PMTUD only if a larger MTU is requested
 	}
 }

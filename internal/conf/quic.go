@@ -17,6 +17,7 @@ type QUIC struct {
 	CertFile            string        `yaml:"cert_file"`
 	KeyFile             string        `yaml:"key_file"`
 	ALPN                string        `yaml:"alpn"`
+	MTU                 int           `yaml:"mtu"`
 }
 
 func (q *QUIC) setDefaults() {
@@ -46,6 +47,9 @@ func (q *QUIC) setDefaults() {
 		// To support others (e.g. "h2"), ensure BOTH client and server configs match.
 		q.ALPN = "h3"
 	}
+	if q.MTU == 0 {
+		q.MTU = 1200 // Default safe MTU for QUIC
+	}
 }
 
 func (q *QUIC) validate() []error {
@@ -55,6 +59,9 @@ func (q *QUIC) validate() []error {
 	}
 	if (q.CertFile != "" && q.KeyFile == "") || (q.CertFile == "" && q.KeyFile != "") {
 		errors = append(errors, fmt.Errorf("both cert_file and key_file must be provided if one is set"))
+	}
+	if q.MTU < 1200 {
+		errors = append(errors, fmt.Errorf("QUIC MTU must be at least 1200 bytes"))
 	}
 	return errors
 }

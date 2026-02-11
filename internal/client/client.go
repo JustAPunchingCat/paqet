@@ -30,33 +30,57 @@ func New(cfg *conf.Conf) (*Client, error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
-	totalConns := 0
 	activeServers := 0
+	var wg sync.WaitGroup
+
 	for sIdx := range c.cfg.Servers {
 		srv := &c.cfg.Servers[sIdx]
 		if !*srv.Enabled {
 			continue
 		}
 		activeServers++
+
+		if c.iters[sIdx] == nil {
+			c.iters[sIdx] = &iterator.Iterator[*timedConn]{}
+		}
+
 		for i := 0; i < srv.Transport.Conn; i++ {
-			tc, err := newTimedConn(ctx, c.cfg, srv)
-			if err != nil {
-				flog.Errorf("failed to create connection to server %d (conn %d): %v", sIdx+1, i+1, err)
-				return err
-			}
-			flog.Debugf("client connection %d created successfully", i+1)
-			if c.iters[sIdx] == nil {
-				c.iters[sIdx] = &iterator.Iterator[*timedConn]{}
-			}
-			c.iters[sIdx].Items = append(c.iters[sIdx].Items, tc)
-			totalConns++
+			wg.Add(1)
+			go func(sIdx, connIdx int, srv *conf.ServerConfig) {
+				defer wg.Done()
+				tc, err := newTimedConn(ctx, c.cfg, srv)
+				if err != nil {
+					flog.Errorf("failed to create connection to server %d (conn %d): %v", sIdx+1, connIdx+1, err)
+					return
+				}
+				flog.Debugf("client connection %d created successfully", connIdx+1)
+				c.mu.Lock()
+				c.iters[sIdx].Items = append(c.iters[sIdx].Items, tc)
+				c.mu.Unlock()
+			}(sIdx, i, srv)
 		}
 	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
 	go c.ticker(ctx)
 
 	go func() {
 		<-ctx.Done()
 		for _, iter := range c.iters {
+			if iter == nil {
+				continue
+			}
 			for _, tc := range iter.Items {
 				tc.close()
 			}
@@ -71,6 +95,13 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	if c.cfg.Network.IPv6.Addr != nil {
 		ipv6Addr = c.cfg.Network.IPv6.Addr.IP.String()
+	}
+
+	totalConns := 0
+	for _, iter := range c.iters {
+		if iter != nil {
+			totalConns += len(iter.Items)
+		}
 	}
 	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, activeServers, totalConns)
 	return nil

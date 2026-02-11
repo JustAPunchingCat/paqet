@@ -36,7 +36,7 @@ func (l *Listener) Accept() (tnet.Conn, error) {
 	// Server writes MagicServer, expects MagicClient
 	reader := newClientConnReader(cc, l.packetConn, l.demux.cipher, MagicClient, MagicServer)
 
-	return newConn(reader, true, l.cfg.Unordered), nil
+	return newConn(reader, true, l.cfg.Unordered, l.cfg.MTU), nil
 }
 
 func (l *Listener) Close() error {

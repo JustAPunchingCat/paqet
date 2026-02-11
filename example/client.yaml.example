@@ -161,6 +161,7 @@ servers:
       # udp:
       #   key: "your-secret-key-here"   # Encryption key (must match server)
       #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
+      #   mtu: 1350                     # Maximum Transmission Unit (default: 1350)
       #   unordered: true               # Enable unordered delivery (default: false)
       #                                 # Set to true for high-performance UDP forwarding (Hysteria, QUIC)
       #                                 # Set to false if you need strict ordering (e.g. tunneling TCP over UDP)

@@ -42,5 +42,5 @@ func Dial(addr *net.UDPAddr, cfg *conf.UDP, pConn net.PacketConn) (tnet.Conn, er
 		}
 	}()
 
-	return newConn(adapter, false, cfg.Unordered), nil
+	return newConn(adapter, false, cfg.Unordered, cfg.MTU), nil
 }
