@@ -13,7 +13,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
-	"paqet/internal/tnet/kcp"
+	"paqet/internal/transport"
 )
 
 type Server struct {
@@ -47,8 +47,9 @@ func (s *Server) Start() error {
 	}
 	s.pConn = pConn
 
-	// Adjust MTU to account for obfuscation overhead
-	kcpCfg := *s.cfg.Transport.KCP
+	var listener tnet.Listener
+
+	// Calculate obfuscation overhead
 	obfsCfg := s.cfg.Obfuscation
 	overhead := 0
 	if obfsCfg.UseTLS {
@@ -56,15 +57,27 @@ func (s *Server) Start() error {
 	} else if obfsCfg.Padding.Enabled {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
+
 	if overhead > 0 {
-		if kcpCfg.MTU == 0 {
-			kcpCfg.MTU = 1350
+		// Adjust KCP MTU
+		if s.cfg.Transport.KCP != nil {
+			if s.cfg.Transport.KCP.MTU == 0 {
+				s.cfg.Transport.KCP.MTU = 1350
+			}
+			s.cfg.Transport.KCP.MTU -= overhead
+			flog.Debugf("Adjusted Server KCP MTU to %d (overhead: %d)", s.cfg.Transport.KCP.MTU, overhead)
 		}
-		kcpCfg.MTU -= overhead
-		flog.Debugf("Adjusted Server KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
+		// Adjust UDP MTU
+		if s.cfg.Transport.UDP != nil {
+			if s.cfg.Transport.UDP.MTU == 0 {
+				s.cfg.Transport.UDP.MTU = 1350
+			}
+			s.cfg.Transport.UDP.MTU -= overhead
+			flog.Debugf("Adjusted Server UDP MTU to %d (overhead: %d)", s.cfg.Transport.UDP.MTU, overhead)
+		}
 	}
 
-	listener, err := kcp.Listen(&kcpCfg, pConn)
+	listener, err = transport.Listen(&s.cfg.Transport, pConn)
 	if err != nil {
 		return fmt.Errorf("could not start KCP listener: %w", err)
 	}
@@ -104,6 +117,9 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 		}
 		conn, err := listener.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			flog.Errorf("failed to accept connection: %v", err)
 			continue
 		}

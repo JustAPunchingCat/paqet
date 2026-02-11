@@ -1,10 +1,24 @@
 # paqet Client Configuration Example
+
 # Role must be explicitly set
 role: "client"
 
 # Logging configuration
 log:
   level: "info"  # none, debug, info, warn, error, fatal
+
+# SOCKS5 proxy configuration (client mode)
+socks5:
+  - listen: "127.0.0.1:1080"    # SOCKS5 proxy listen address
+    username: ""                # Optional SOCKS5 authentication
+    password: ""                # Optional SOCKS5 authentication
+
+# Alternative: Port forwarding configuration (instead of SOCKS5)
+# forward:
+#   - listen: "127.0.0.1:8080"  # Local port to listen on
+#     target: "127.0.0.1:80"    # Target to forward to (via server)
+#     protocol: "tcp"           # Protocol (tcp/udp)
+#     streams: 8                # UDP only: parallel streams for throughput (1-64, default: 8)
 
 # Network interface settings
 network:
@@ -75,8 +89,12 @@ servers:
     
     # Transport protocol configuration for this server
     transport:
-      protocol: "kcp"  # Transport protocol (currently only "kcp" supported)
-      conn: 1          # Number of connections (1-256, default: 1)
+      protocol: "kcp"  # Transport protocol: "kcp", "quic", "udp", or "auto"
+                       # "auto" mode: client probes all configured protocols
+                       # and selects the one with lowest RTT.
+                       # Requires at least 2 protocol sections configured.
+                       # Server must also use "auto" to accept all protocols.
+      conn: 4          # Number of connections (1-256, default: 4, power-of-2 recommended)
       
       # tcpbuf: 8192   # TCP buffer size in bytes
       # udpbuf: 4096   # UDP buffer size in bytes
@@ -118,16 +136,37 @@ servers:
                                   # Setting true reduces latency but increases bandwidth usage
 
         # mtu: 1350              # Maximum transmission unit (50-1500)
-        # rcvwnd: 512            # Receive window size (default for client)  
-        # sndwnd: 512            # Send window size (default for client)
+        # rcvwnd: 2048           # Receive window size (default: 2048)
+        # sndwnd: 2048           # Send window size (default: 2048)
 
         # Encryption settings
         # block: "aes"                    # Encryption: aes, aes-128, aes-128-gcm, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none, null.
         key: "your-secret-key-here"       # CHANGE ME: Secret key (must match server)
 
         # Buffer settings (optional)
-        # smuxbuf: 4194304       # 4MB SMUX buffer
-        # streambuf: 2097152     # 2MB stream buffer
+        # smuxbuf: 8388608       # 8MB session buffer (default)
+        # streambuf: 4194304     # 4MB per-stream buffer (default)
+
+      # QUIC protocol settings (used when protocol: "quic")
+      # quic:
+      #   key: "your-secret-key-here"   # Shared secret for deterministic TLS cert (must match server)
+      #   alpn: "h3"                    # ALPN protocol (default: "h3" to mimic HTTP/3)
+      #   max_streams: 256              # Max concurrent streams (1-65535)
+      #   idle_timeout: 30s             # Connection idle timeout (1s-5m)
+      #   # cert_file: "cert.pem"      # Optional: custom TLS certificate
+      #   # key_file: "key.pem"        # Optional: custom TLS private key
+
+      # UDP protocol settings (used when protocol: "udp")
+      # WARNING: No reliability layer - packet loss causes stream errors
+      # udp:
+      #   key: "your-secret-key-here"   # Encryption key (must match server)
+      #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
+      #   unordered: true               # Enable unordered delivery (default: false)
+      #                                 # Set to true for high-performance UDP forwarding (Hysteria, QUIC)
+      #                                 # Set to false if you need strict ordering (e.g. tunneling TCP over UDP)
+      #                                 # Note: SOCKS5 UDP always tries to use unordered mode regardless of this setting.
+      #   smuxbuf: 4194304              # 4MB smux buffer
+      #   streambuf: 2097152            # 2MB stream buffer
 
   # - server:
   #     addr: "10.0.0.101:9999"    # Second server

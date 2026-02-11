@@ -24,6 +24,8 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 	switch cfg.Driver {
 	case "ebpf":
 		source, err = newEBPFSource(cfg, hopping)
+	case "afpacket":
+		source, err = newAfpacketSource(cfg, hopping)
 	default:
 		source, err = newPcapSource(cfg, hopping)
 	}

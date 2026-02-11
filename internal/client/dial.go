@@ -30,17 +30,3 @@ func (c *Client) newConn(serverIdx int) (tnet.Conn, error) {
 	}
 	return tc.conn, nil
 }
-
-func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
-	conn, err := c.newConn(serverIdx)
-	if err != nil {
-		flog.Debugf("session creation failed, retrying")
-		return c.newStrm(serverIdx)
-	}
-	strm, err := conn.OpenStrm()
-	if err != nil {
-		flog.Debugf("failed to open stream, retrying: %v", err)
-		return c.newStrm(serverIdx)
-	}
-	return strm, nil
-}

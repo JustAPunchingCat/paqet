@@ -3,12 +3,14 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
-	"paqet/internal/tnet/kcp"
+	"paqet/internal/transport"
+	"sync"
 	"time"
 )
 
@@ -18,6 +20,7 @@ type timedConn struct {
 	conn    tnet.Conn
 	expire  time.Time
 	ctx     context.Context
+	mu      sync.Mutex
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -63,23 +66,64 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		remoteAddr = &clone
 	}
 
-	// Adjust MTU to account for obfuscation overhead
-	kcpCfg := *tc.srvCfg.Transport.KCP
+	var conn tnet.Conn
+
+	// Calculate obfuscation overhead
 	overhead := 0
 	if obfsCfg.UseTLS {
 		overhead = 5 + 2 + obfsCfg.Padding.Max
 	} else if obfsCfg.Padding.Enabled {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
-	if overhead > 0 {
-		if kcpCfg.MTU == 0 {
-			kcpCfg.MTU = 1350
+
+	switch tc.srvCfg.Transport.Protocol {
+	case "kcp":
+		// Adjust MTU to account for obfuscation overhead
+		// Make a shallow copy of Transport config to avoid modifying the global config
+		tCfg := tc.srvCfg.Transport
+		kcpCfg := *tCfg.KCP
+		if overhead > 0 {
+			if kcpCfg.MTU == 0 {
+				kcpCfg.MTU = 1350
+			}
+			kcpCfg.MTU -= overhead
+			flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
 		}
-		kcpCfg.MTU -= overhead
-		flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
+		tCfg.KCP = &kcpCfg
+		conn, err = transport.DialProto("kcp", remoteAddr, &tCfg, pConn)
+	case "quic":
+		conn, err = transport.DialProto("quic", remoteAddr, &tc.srvCfg.Transport, pConn)
+	case "udp":
+		tCfg := tc.srvCfg.Transport
+		udpCfg := *tCfg.UDP
+		if overhead > 0 {
+			if udpCfg.MTU == 0 {
+				udpCfg.MTU = 1350
+			}
+			udpCfg.MTU -= overhead
+			flog.Debugf("Adjusted Client UDP MTU to %d (overhead: %d)", udpCfg.MTU, overhead)
+		}
+		tCfg.UDP = &udpCfg
+		conn, err = transport.DialProto("udp", remoteAddr, &tCfg, pConn)
+	case "auto":
+		// Probe for best protocol
+		// We need a factory to create new PacketConns for probing
+		newPConn := func() (net.PacketConn, error) {
+			return socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg)
+		}
+		results, err := transport.Probe(remoteAddr, &tc.srvCfg.Transport, newPConn)
+		if err != nil {
+			return nil, fmt.Errorf("auto probe failed: %w", err)
+		}
+		best, err := transport.SelectBest(results)
+		if err != nil {
+			return nil, err
+		}
+		conn, err = transport.DialProto(best, remoteAddr, &tc.srvCfg.Transport, pConn)
+	default:
+		return nil, fmt.Errorf("unsupported protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
-	conn, err := kcp.Dial(remoteAddr, &kcpCfg, pConn)
 	if err != nil {
 		return nil, err
 	}

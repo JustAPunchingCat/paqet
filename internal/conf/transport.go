@@ -11,6 +11,8 @@ type Transport struct {
 	TCPBuf   int    `yaml:"tcpbuf"`
 	UDPBuf   int    `yaml:"udpbuf"`
 	KCP      *KCP   `yaml:"kcp"`
+	QUIC     *QUIC  `yaml:"quic"`
+	UDP      *UDP   `yaml:"udp"`
 }
 
 func (t *Transport) setDefaults(role string) {
@@ -19,13 +21,13 @@ func (t *Transport) setDefaults(role string) {
 	}
 
 	if t.TCPBuf == 0 {
-		t.TCPBuf = 64 * 1024 // Increase default TCP buffer to 64KB
+		t.TCPBuf = 64 * 1024
 	}
 	if t.TCPBuf < 4*1024 {
 		t.TCPBuf = 4 * 1024
 	}
 	if t.UDPBuf == 0 {
-		t.UDPBuf = 4 * 1024 * 1024 // 4MB
+		t.UDPBuf = 4 * 1024 * 1024
 	}
 	if t.UDPBuf < 2*1024 {
 		t.UDPBuf = 2 * 1024
@@ -34,13 +36,36 @@ func (t *Transport) setDefaults(role string) {
 	switch t.Protocol {
 	case "kcp":
 		t.KCP.setDefaults(role)
+	case "quic":
+		if t.QUIC == nil {
+			t.QUIC = &QUIC{}
+		}
+		t.QUIC.setDefaults()
+	case "udp":
+		if t.UDP == nil {
+			t.UDP = &UDP{}
+		}
+		t.UDP.setDefaults()
+	case "auto":
+		if t.KCP == nil {
+			t.KCP = &KCP{}
+		}
+		t.KCP.setDefaults(role)
+		if t.QUIC == nil {
+			t.QUIC = &QUIC{}
+		}
+		t.QUIC.setDefaults()
+		if t.UDP == nil {
+			t.UDP = &UDP{}
+		}
+		t.UDP.setDefaults()
 	}
 }
 
 func (t *Transport) validate() []error {
 	var errors []error
 
-	validProtocols := []string{"kcp"}
+	validProtocols := []string{"kcp", "quic", "udp", "auto"}
 	if !slices.Contains(validProtocols, t.Protocol) {
 		errors = append(errors, fmt.Errorf("transport protocol must be one of: %v", validProtocols))
 	}
@@ -52,6 +77,14 @@ func (t *Transport) validate() []error {
 	switch t.Protocol {
 	case "kcp":
 		errors = append(errors, t.KCP.validate()...)
+	case "quic":
+		errors = append(errors, t.QUIC.validate()...)
+	case "udp":
+		errors = append(errors, t.UDP.validate()...)
+	case "auto":
+		errors = append(errors, t.KCP.validate()...)
+		errors = append(errors, t.QUIC.validate()...)
+		errors = append(errors, t.UDP.validate()...)
 	}
 
 	return errors

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"paqet/internal/client"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"time"
@@ -13,6 +14,16 @@ import (
 
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
 	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, d.Address())
+
+	// Try to use Datagram Mode (Unreliable/Unordered) first.
+	// This is preferred for UDP-based protocols like Hysteria/QUIC/WebRTC
+	// as it avoids Head-of-Line blocking caused by stream reordering.
+	dgSession, err := h.client.UDPDatagramNew(h.ctx, h.ServerIdx, d.Address())
+	if err == nil && dgSession != nil {
+		return h.handleUDPDatagramSession(server, addr, d, dgSession)
+	}
+
+	// Fallback to Stream Mode (Reliable/Ordered)
 	strm, new, k, err := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
@@ -104,6 +115,56 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 			}
 		}()
 	}
+	return nil
+}
+
+func (h *Handler) handleUDPDatagramSession(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram, sess *client.UDPDatagramSession) error {
+	// Send the first packet immediately
+	if err := sess.Send(d.Data); err != nil {
+		flog.Errorf("SOCKS5 failed to send datagram to %s: %v", d.Address(), err)
+		return err
+	}
+
+	// Start receive loop
+	go func() {
+		defer sess.Close()
+
+		// Pre-calculate header for responses
+		// SOCKS5 UDP Header: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
+		// We use the original destination address as the source for the response
+		dAddr := d.Address()
+		atyp := d.Atyp
+		dstAddr := append([]byte(nil), d.DstAddr...)
+		dstPort := append([]byte(nil), d.DstPort...)
+		headerLen := 4 + len(dstAddr) + len(dstPort)
+
+		bufp := buffer.UPool.Get().(*[]byte)
+		defer buffer.UPool.Put(bufp)
+		buf := *bufp
+
+		// Pre-fill header
+		if len(buf) > headerLen {
+			buf[0], buf[1], buf[2] = 0, 0, 0
+			buf[3] = atyp
+			copy(buf[4:], dstAddr)
+			copy(buf[4+len(dstAddr):], dstPort)
+		}
+
+		for {
+			data, err := sess.Receive()
+			if err != nil {
+				flog.Debugf("SOCKS5 datagram session closed for %s: %v", dAddr, err)
+				return
+			}
+
+			// Construct SOCKS5 UDP packet: [Header][Data]
+			// Ensure buffer fits
+			if headerLen+len(data) <= len(buf) {
+				copy(buf[headerLen:], data)
+				server.UDPConn.WriteToUDP(buf[:headerLen+len(data)], addr)
+			}
+		}
+	}()
 	return nil
 }
 

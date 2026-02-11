@@ -8,6 +8,7 @@ import (
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/obfs"
+	"paqet/internal/pkg/hash"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,8 +72,16 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		useObfs = obfsCfg.UseTLS || obfsCfg.Padding.Enabled
 	}
 
-	if useObfs && cfg.Transport != nil && cfg.Transport.KCP != nil {
-		key := []byte(cfg.Transport.KCP.Key)
+	if useObfs && cfg.Transport != nil {
+		var keyStr string
+		if cfg.Transport.KCP != nil && cfg.Transport.KCP.Key != "" {
+			keyStr = cfg.Transport.KCP.Key
+		} else if cfg.Transport.QUIC != nil && cfg.Transport.QUIC.Key != "" {
+			keyStr = cfg.Transport.QUIC.Key
+		} else if cfg.Transport.UDP != nil && cfg.Transport.UDP.Key != "" {
+			keyStr = cfg.Transport.UDP.Key
+		}
+		key := []byte(keyStr)
 		if o, err := obfs.New(obfsCfg, key); err == nil {
 			conn.plugins.Add(NewObfuscationPlugin(o))
 			flog.Debugf("Obfuscation initialized. Key prefix: %x...", key[:min(len(key), 4)])
@@ -144,8 +153,9 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		// Store the destination port this packet was sent to, so we can reply from the same port.
 		// This is critical for Server mode to support NAT traversal when clients hop ports.
 		// Optimization: Only update if the port has changed to avoid contention on the sync.Map.
-		if lastPort, ok := c.clientPorts.Load(addr.String()); !ok || lastPort.(int) != dstPort {
-			c.clientPorts.Store(addr.String(), dstPort)
+		key := hash.IPAddr(addr.(*net.UDPAddr).IP, uint16(addr.(*net.UDPAddr).Port))
+		if lastPort, ok := c.clientPorts.Load(key); !ok || lastPort.(int) != dstPort {
+			c.clientPorts.Store(key, dstPort)
 		}
 
 		n = copy(data, payload)
@@ -185,7 +195,8 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 
 	// Server Echo logic: try to reply from the port the client last contacted.
-	if lastPort, ok := c.clientPorts.Load(daddr.String()); ok {
+	key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
+	if lastPort, ok := c.clientPorts.Load(key); ok {
 		srcPort = lastPort.(int)
 	}
 
@@ -230,7 +241,8 @@ func (c *PacketConn) LocalAddr() net.Addr {
 }
 
 func (c *PacketConn) GetClientPort(addr net.Addr) int {
-	if port, ok := c.clientPorts.Load(addr.String()); ok {
+	key := hash.IPAddr(addr.(*net.UDPAddr).IP, uint16(addr.(*net.UDPAddr).Port))
+	if port, ok := c.clientPorts.Load(key); ok {
 		return port.(int)
 	}
 	return 0
@@ -249,6 +261,16 @@ func (c *PacketConn) SetReadDeadline(t time.Time) error {
 
 func (c *PacketConn) SetWriteDeadline(t time.Time) error {
 	c.writeDeadline.Store(t)
+	return nil
+}
+
+func (c *PacketConn) SetReadBuffer(bytes int) error {
+	// Buffers are managed by the underlying driver (pcap/afpacket/ebpf) configuration
+	return nil
+}
+
+func (c *PacketConn) SetWriteBuffer(bytes int) error {
+	// Buffers are managed by the underlying driver (pcap/afpacket/ebpf) configuration
 	return nil
 }
 

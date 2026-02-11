@@ -59,7 +59,7 @@ network:
 
 # Transport protocol configuration
 transport:
-  protocol: "kcp"  # Transport protocol (currently only "kcp" supported)
+  protocol: "kcp"  # Transport protocol: "kcp", "quic", "udp", "auto" (listen on all)
   conn: 1          # Number of connections (1-256, default: 1)
   
   # tcpbuf: 8192   # TCP buffer size in bytes
@@ -110,8 +110,28 @@ transport:
     key: "your-secret-key-here"       # CHANGE ME: Secret key (must match client)
 
     # Buffer settings (optional)
-    # smuxbuf: 4194304       # 4MB SMUX buffer
-    # streambuf: 2097152     # 2MB stream buffer
+    # smuxbuf: 8388608       # 8MB session buffer (default)
+    # streambuf: 4194304     # 4MB per-stream buffer (default)
+
+  # QUIC protocol settings (used when protocol: "quic")
+  # quic:
+  #   key: "your-secret-key-here"   # Shared secret for deterministic TLS cert (must match client)
+  #   alpn: "h3"                    # ALPN protocol (default: "h3" to mimic HTTP/3)
+  #   max_streams: 256              # Max concurrent streams (1-65535)
+  #   idle_timeout: 30s             # Connection idle timeout (1s-5m)
+  #   # cert_file: "cert.pem"      # Optional: custom TLS certificate
+  #   # key_file: "key.pem"        # Optional: custom TLS private key
+
+  # UDP protocol settings (used when protocol: "udp")
+  # udp:
+  #   key: "your-secret-key-here"   # Encryption key (must match client)
+  #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
+  #   unordered: true               # Enable unordered delivery (default: false)
+  #                                 # Set to true for high-performance UDP forwarding (Hysteria, QUIC)
+  #                                 # Set to false if you need strict ordering
+  #                                 # Must match client setting for best results.
+  #   smuxbuf: 4194304              # 4MB smux buffer
+  #   streambuf: 2097152            # 2MB stream buffer
 
 
 # Optional Forward Error Correction (FEC) - currently disabled

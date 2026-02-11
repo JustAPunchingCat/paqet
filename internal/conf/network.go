@@ -39,7 +39,7 @@ func (n *Network) setDefaults(role string) {
 func (n *Network) validate() []error {
 	var errors []error
 
-	validDrivers := []string{"pcap", "ebpf"}
+	validDrivers := []string{"pcap", "ebpf", "afpacket"}
 	if !slices.Contains(validDrivers, n.Driver) {
 		errors = append(errors, fmt.Errorf("driver must be one of: %v", validDrivers))
 	}

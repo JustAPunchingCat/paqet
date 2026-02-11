@@ -12,6 +12,15 @@ import (
 )
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
+	// Ensure connection is closed when context is cancelled to unblock AcceptStrm
+	// Use a child context to ensure the monitoring goroutine exits when handleConn returns
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -21,6 +30,9 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 		}
 		strm, err := conn.AcceptStrm()
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			flog.Errorf("failed to accept stream on %s: %v", conn.RemoteAddr(), err)
 			return
 		}
@@ -62,6 +74,8 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 		return s.handleTCPProtocol(ctx, strm, &p)
 	case protocol.PUDP:
 		return s.handleUDPProtocol(ctx, strm, &p)
+	case protocol.PUDPDGM:
+		return s.handleDatagramProtocol(ctx, strm, &p)
 	default:
 		flog.Errorf("unknown protocol type %d on stream %d", p.Type, strm.SID())
 		return fmt.Errorf("unknown protocol type: %d", p.Type)

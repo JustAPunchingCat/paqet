@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
@@ -73,4 +74,57 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, activeServers, totalConns)
 	return nil
+}
+
+func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
+	iter := c.iters[serverIdx]
+	// Try all connections in round-robin
+	for i := 0; i < len(iter.Items); i++ {
+		tc := iter.Next()
+
+		tc.mu.Lock()
+		if tc.conn == nil {
+			var err error
+			tc.conn, err = tc.createConn()
+			if err != nil {
+				tc.mu.Unlock()
+				flog.Debugf("failed to connect to server %d: %v", serverIdx+1, err)
+				continue
+			}
+		}
+
+		strm, err := tc.conn.OpenStrm()
+		if err == nil {
+			tc.mu.Unlock()
+			return strm, nil
+		}
+
+		flog.Debugf("failed to open stream, reconnecting: %v", err)
+		if tc.conn != nil {
+			tc.conn.Close()
+		}
+
+		// Reconnect
+		tc.conn, err = tc.createConn()
+		if err != nil {
+			flog.Debugf("reconnection failed: %v", err)
+			tc.conn = nil
+			tc.mu.Unlock()
+			continue
+		}
+
+		// Retry opening stream on new connection
+		strm, err = tc.conn.OpenStrm()
+		if err == nil {
+			flog.Infof("reconnected to server %d", serverIdx+1)
+			tc.mu.Unlock()
+			return strm, nil
+		}
+
+		flog.Debugf("failed to open stream after reconnect: %v", err)
+		tc.conn.Close()
+		tc.conn = nil
+		tc.mu.Unlock()
+	}
+	return nil, fmt.Errorf("no healthy connections available for server %d", serverIdx+1)
 }

@@ -9,6 +9,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
+	"paqet/internal/tnet/udp"
 	"sync"
 	"time"
 )
@@ -20,6 +21,15 @@ var bufPool = sync.Pool{
 	},
 }
 
+func (s *Server) handleDatagramProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
+	// Enable unordered mode for this stream to avoid Head-of-Line blocking
+	if udpStrm, ok := strm.(*udp.Strm); ok {
+		udpStrm.SetUnordered(true)
+	}
+	// Reuse the existing UDP handling logic, but now on an unordered stream
+	return s.handleUDPProtocol(ctx, strm, p)
+}
+
 func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
 	clientInfo := strm.RemoteAddr().String()
 	if s.pConn != nil {
@@ -27,6 +37,15 @@ func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 			clientInfo = fmt.Sprintf("%s (via :%d)", strm.RemoteAddr(), actualPort)
 		}
 	}
+
+	// If the user configured 'unordered: true' for high performance, enable it now.
+	// We do this AFTER the handshake (which happened in handleStrm) to ensure setup reliability.
+	if s.cfg.Transport.UDP != nil && s.cfg.Transport.UDP.Unordered {
+		if udpStrm, ok := strm.(*udp.Strm); ok {
+			udpStrm.SetUnordered(true)
+		}
+	}
+
 	flog.Infof("accepted UDP stream %d: %s -> %s", strm.SID(), clientInfo, p.Addr.String())
 	return s.handleUDP(ctx, strm, p.Addr.String())
 }

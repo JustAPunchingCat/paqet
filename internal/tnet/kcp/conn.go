@@ -1,10 +1,10 @@
 package kcp
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"paqet/internal/protocol"
-	"paqet/internal/socket"
 	"paqet/internal/tnet"
 	"time"
 
@@ -13,7 +13,7 @@ import (
 )
 
 type Conn struct {
-	PacketConn *socket.PacketConn
+	PacketConn net.PacketConn
 	UDPSession *kcp.UDPSession
 	Session    *smux.Session
 }
@@ -76,3 +76,15 @@ func (c *Conn) RemoteAddr() net.Addr               { return c.Session.RemoteAddr
 func (c *Conn) SetDeadline(t time.Time) error      { return c.Session.SetDeadline(t) }
 func (c *Conn) SetReadDeadline(t time.Time) error  { return c.UDPSession.SetReadDeadline(t) }
 func (c *Conn) SetWriteDeadline(t time.Time) error { return c.UDPSession.SetWriteDeadline(t) }
+
+func (c *Conn) SupportsDatagrams() bool { return false }
+func (c *Conn) SendDatagram(data []byte) error {
+	return fmt.Errorf("kcp does not support datagrams")
+}
+
+// ReceiveDatagram receives an unreliable datagram from QUIC.
+func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return nil, fmt.Errorf("kcp does not support datagrams")
+}
+
+var _ tnet.DatagramConn = (*Conn)(nil)
