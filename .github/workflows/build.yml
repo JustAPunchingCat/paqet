@@ -102,7 +102,7 @@ jobs:
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
                     -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
                     -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
-                    -o paqet_linux_${{ matrix.filename }} ./cmd/main.go
+                    -o paqet_linux_${{ matrix.filename }} ./cmd
 
                   chmod +x paqet_linux_${{ matrix.filename }}
                   tar -czvf dist/paqet-linux-${{ matrix.filename }}-${{ steps.ref_id.outputs.ref }}.tar.gz \
@@ -120,7 +120,7 @@ jobs:
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
                     -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
                     -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
-                    -o paqet_linux_nopcap_${{ matrix.filename }} ./cmd/main.go
+                    -o paqet_linux_nopcap_${{ matrix.filename }} ./cmd
 
                   chmod +x paqet_linux_nopcap_${{ matrix.filename }}
                   tar -czvf dist/paqet-linux-nopcap-${{ matrix.filename }}-${{ steps.ref_id.outputs.ref }}.tar.gz \
@@ -189,7 +189,7 @@ jobs:
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
                     -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
                     -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
-                    -o paqet_windows_${{ matrix.goarch }}.exe ./cmd/main.go
+                    -o paqet_windows_${{ matrix.goarch }}.exe ./cmd
 
                   7z a -tzip dist/paqet-windows-${{ matrix.goarch }}-${{ steps.ref_id.outputs.ref }}.zip \
                     paqet_windows_${{ matrix.goarch }}.exe \
@@ -248,7 +248,7 @@ jobs:
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
                     -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
                     -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
-                    -o paqet_darwin_${{ matrix.goarch }} ./cmd/main.go
+                    -o paqet_darwin_${{ matrix.goarch }} ./cmd
 
                   chmod +x paqet_darwin_${{ matrix.goarch }}
                   tar -czvf dist/paqet-darwin-${{ matrix.goarch }}-${{ steps.ref_id.outputs.ref }}.tar.gz \
