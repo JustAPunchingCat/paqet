@@ -63,6 +63,11 @@ func (k *KCP) setDefaults(role string) {
 	if k.Streambuf == 0 {
 		k.Streambuf = 2 * 1024 * 1024
 	}
+
+	// Default to AckNoDelay=true for lower latency.
+	if !k.AckNoDelay {
+		k.AckNoDelay = true
+	}
 }
 
 func (k *KCP) validate() []error {
