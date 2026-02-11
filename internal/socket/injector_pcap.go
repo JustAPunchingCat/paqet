@@ -1,3 +1,5 @@
+//go:build !nopcap
+
 package socket
 
 import (

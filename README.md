@@ -68,6 +68,12 @@ go generate ./internal/socket/ebpf
 go build -o paqet ./cmd
 ```
 
+#### Building without libpcap (eBPF only):
+If you want to run paqet on a system without libpcap installed, you can build a version that only supports the ebpf driver.
+```bash
+go build -tags nopcap -o paqet_nopcap ./cmd
+```
+
 ### Windows
 
 **Prerequisites:**
@@ -90,6 +96,10 @@ go build -o paq.exe ./cmd
   - **macOS:** Comes pre-installed with Xcode Command Line Tools. Install with `xcode-select --install`
   - **Windows:** Install Npcap. Download from [npcap.com](https://npcap.com/).
 
+- **eBPF Requirements (Linux only):**
+  - **Kernel:** Linux 5.8+ is required (5.15+ recommended for optimal performance).
+  - **Usage:** Set `driver: "ebpf"` in `config.yaml`.
+  - **Build Dependencies:** If building from source, `clang`, `llvm`, and `libbpf-dev` are required.
 ### 1. Download a Release
 
 Download the pre-compiled binary for your client and server operating systems from the project's **Releases page**.

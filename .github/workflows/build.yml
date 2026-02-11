@@ -110,12 +110,30 @@ jobs:
                     README.md \
                     example/client.yaml.example \
                     example/server.yaml.example
+                  
+                  # Build nopcap version (no libpcap dependency, ebpf only)
+                  go build -v -a -trimpath \
+                    -tags nopcap \
+                    -gcflags "all=-l=4" \
+                    -ldflags "-s -w -buildid= \
+                    -X 'paqet/cmd/version.Version=${VERSION}' \
+                    -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
+                    -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
+                    -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
+                    -o paqet_linux_nopcap_${{ matrix.filename }} ./cmd/main.go
+
+                  chmod +x paqet_linux_nopcap_${{ matrix.filename }}
+                  tar -czvf dist/paqet-linux-nopcap-${{ matrix.filename }}-${{ steps.ref_id.outputs.ref }}.tar.gz \
+                    paqet_linux_nopcap_${{ matrix.filename }} \
+                    README.md \
+                    example/client.yaml.example \
+                    example/server.yaml.example
 
             - name: Upload Artifact
               uses: actions/upload-artifact@v4
               with:
                   name: paqet-linux-${{ matrix.filename }}
-                  path: dist/paqet-linux-${{ matrix.filename }}-${{ steps.ref_id.outputs.ref }}.tar.gz
+                  path: dist/paqet-linux*-${{ matrix.filename }}-${{ steps.ref_id.outputs.ref }}.tar.gz
                   retention-days: 1
 
     build-windows:
