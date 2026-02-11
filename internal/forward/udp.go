@@ -70,10 +70,11 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
 	// Write length prefix (2 bytes) + Data
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(n))
-	strm.Write(lenBuf)
-	if _, err := strm.Write(buf[:n]); err != nil {
+	// Combine into a single write to ensure atomicity
+	payload := make([]byte, 2+n)
+	binary.BigEndian.PutUint16(payload, uint16(n))
+	copy(payload[2:], buf[:n])
+	if _, err := strm.Write(payload); err != nil {
 		flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
 		f.client.CloseUDP(f.ServerIdx, k)
 		strm.SetWriteDeadline(time.Time{})

@@ -20,10 +20,11 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
 	// Write length prefix (2 bytes) + Data to preserve packet boundaries in the stream
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(d.Data)))
-	strm.Write(lenBuf)
-	_, err = strm.Write(d.Data)
+	// Combine into a single write to ensure atomicity on the stream
+	payload := make([]byte, 2+len(d.Data))
+	binary.BigEndian.PutUint16(payload, uint16(len(d.Data)))
+	copy(payload[2:], d.Data)
+	_, err = strm.Write(payload)
 	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
