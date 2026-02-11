@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"paqet/cmd/iface"
 	"paqet/cmd/iptables"
 	"paqet/cmd/ping"
 	"paqet/cmd/run"
@@ -22,6 +23,7 @@ func main() {
 	rootCmd.AddCommand(run.Cmd)
 	rootCmd.AddCommand(ping.Cmd)
 	rootCmd.AddCommand(secret.Cmd)
+	rootCmd.AddCommand(iface.Cmd)
 	rootCmd.AddCommand(version.Cmd)
 	rootCmd.AddCommand(iptables.Cmd)
 	addPcapCommands(rootCmd)

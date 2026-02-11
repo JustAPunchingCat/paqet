@@ -14,9 +14,4 @@ func addPcapCommands(root *cobra.Command) {
 		Short: "Packet dump (disabled in nopcap build)",
 		Run:   func(cmd *cobra.Command, args []string) { fmt.Println("dump command is disabled in nopcap build") },
 	})
-	root.AddCommand(&cobra.Command{
-		Use:   "iface",
-		Short: "Interface list (disabled in nopcap build)",
-		Run:   func(cmd *cobra.Command, args []string) { fmt.Println("iface command is disabled in nopcap build") },
-	})
 }
