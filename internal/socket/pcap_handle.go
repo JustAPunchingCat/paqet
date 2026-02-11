@@ -1,3 +1,5 @@
+//go:build !nopcap
+
 package socket
 
 import (
@@ -22,19 +24,37 @@ func newHandle(cfg *conf.Network) (*pcap.Handle, error) {
 	}
 	defer inactive.CleanUp()
 
-	if err = inactive.SetBufferSize(cfg.PCAP.Sockbuf); err != nil {
-		return nil, fmt.Errorf("failed to set pcap buffer size to %d: %v", cfg.PCAP.Sockbuf, err)
+	// Set Buffer Size (if configured)
+	if cfg.PCAP.Sockbuf > 0 {
+		if err = inactive.SetBufferSize(cfg.PCAP.Sockbuf); err != nil {
+			return nil, fmt.Errorf("failed to set pcap buffer size to %d: %v", cfg.PCAP.Sockbuf, err)
+		}
 	}
 
-	if err = inactive.SetSnapLen(65536); err != nil {
+	// Set SnapLen
+	snaplen := cfg.PCAP.Snaplen
+	if snaplen == 0 {
+		snaplen = 65536
+	}
+	if err = inactive.SetSnapLen(snaplen); err != nil {
 		return nil, fmt.Errorf("failed to set pcap snap length: %v", err)
 	}
-	if err = inactive.SetPromisc(true); err != nil {
+
+	// Set Promiscuous Mode
+	if err = inactive.SetPromisc(cfg.PCAP.Promisc); err != nil {
 		return nil, fmt.Errorf("failed to enable promiscuous mode: %v", err)
 	}
-	if err = inactive.SetTimeout(pcap.BlockForever); err != nil {
+
+	// Set Timeout
+	timeout := cfg.PCAP.Timeout
+	if timeout <= 0 {
+		timeout = pcap.BlockForever
+	}
+	if err = inactive.SetTimeout(timeout); err != nil {
 		return nil, fmt.Errorf("failed to set pcap timeout: %v", err)
 	}
+
+	// Set Immediate Mode (Low Latency)
 	if err = inactive.SetImmediateMode(true); err != nil {
 		return nil, fmt.Errorf("failed to enable immediate mode: %v", err)
 	}
