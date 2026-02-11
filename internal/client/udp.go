@@ -17,7 +17,6 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 	pool.mu.RLock()
 	if strm, exists := pool.strms[key]; exists {
 		pool.mu.RUnlock()
-		flog.Debugf("reusing UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
 		return strm, false, key, nil
 	}
 	pool.mu.RUnlock()
