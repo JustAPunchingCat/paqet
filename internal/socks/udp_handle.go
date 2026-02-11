@@ -1,6 +1,7 @@
 package socks
 
 import (
+	"encoding/binary"
 	"io"
 	"net"
 	"paqet/internal/flog"
@@ -17,6 +18,11 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 		return err
 	}
 	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
+
+	// Write length prefix (2 bytes) + Data to preserve packet boundaries in the stream
+	lenBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(lenBuf, uint16(len(d.Data)))
+	strm.Write(lenBuf)
 	_, err = strm.Write(d.Data)
 	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
@@ -61,16 +67,28 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					return
 				default:
 					strm.SetDeadline(time.Now().Add(30 * time.Second))
-					// Read directly into buffer after header
-					n, err := strm.Read(buf[headerLen:])
-					strm.SetDeadline(time.Time{})
-					if err != nil {
+
+					// Read length prefix (2 bytes)
+					lenBuf := make([]byte, 2)
+					if _, err := io.ReadFull(strm, lenBuf); err != nil {
 						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, dAddr, err)
 						return
 					}
-					_, err = server.UDPConn.WriteToUDP(buf[:headerLen+n], addr)
+					payloadLen := int(binary.BigEndian.Uint16(lenBuf))
+
+					// Read payload
+					if headerLen+payloadLen > len(buf) {
+						flog.Errorf("SOCKS5 UDP packet too large: %d", payloadLen)
+						return
+					}
+					_, err := io.ReadFull(strm, buf[headerLen:headerLen+payloadLen])
+					strm.SetDeadline(time.Time{})
 					if err != nil {
-						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+n, addr, err)
+						return
+					}
+					_, err = server.UDPConn.WriteToUDP(buf[:headerLen+payloadLen], addr)
+					if err != nil {
+						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+payloadLen, addr, err)
 						return
 					}
 				}
