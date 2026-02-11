@@ -98,7 +98,7 @@ jobs:
                     -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
                     -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
                     -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
-                    -o paqet_linux_${{ matrix.filename }} ./cmd/main.go
+                    -o paqet_linux_${{ matrix.filename }} ./cmd
 
                   chmod +x paqet_linux_${{ matrix.filename }}
                   tar -czvf dist/paqet-linux-${{ matrix.filename }}-${{ steps.ref_id.outputs.ref }}.tar.gz \
