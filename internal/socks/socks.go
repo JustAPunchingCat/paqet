@@ -3,7 +3,6 @@ package socks
 import (
 	"context"
 	"net"
-	"paqet/internal/client"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 
@@ -14,7 +13,7 @@ type SOCKS5 struct {
 	handle *Handler
 }
 
-func New(client *client.Client, serverIdx int) (*SOCKS5, error) {
+func New(client Client, serverIdx int) (*SOCKS5, error) {
 	return &SOCKS5{
 		handle: &Handler{client: client, ServerIdx: serverIdx},
 	}, nil

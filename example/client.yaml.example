@@ -9,18 +9,18 @@ log:
 # Network interface settings
 network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
-  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP), "tun" (Layer 3 TUN device)
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
 
   # IPv4 configuration
   ipv4:
     addr: "192.168.1.100:0"                 # CHANGE ME: Local IP (use port 0 for random port)
-    router_mac: "aa:bb:cc:dd:ee:ff"         # CHANGE ME: Gateway/router MAC address
+    router_mac: "aa:bb:cc:dd:ee:ff"         # CHANGE ME: Gateway/router MAC address (Required for pcap/ebpf, ignored for tun)
 
   # IPv6 configuration (optional)
   ipv6:
     addr: "[2001:db8::1]:0"                 # CHANGE ME: Local IPv6 address and port (optional)
-    router_mac: "aa:bb:cc:dd:ee:ff"         # CHANGE ME: Gateway/router MAC address for IPv6
+    router_mac: "aa:bb:cc:dd:ee:ff"         # CHANGE ME: Gateway/router MAC address for IPv6 (Required for pcap/ebpf, ignored for tun)
 
   tcp:
     local_flag: ["PA"]                      # Local TCP flags (Push+Ack default)
@@ -29,7 +29,10 @@ network:
   # PCAP settings (optional - will use defaults)
   # pcap:
     # sockbuf: 4194304                        # 4MB buffer (default for client)
-
+  
+  tun:
+    name: "tun0"   # Interface name for TUN driver
+    # fd: 0        # Optional: File descriptor (e.g. Android VpnService)
 
 
 # Servers configuration

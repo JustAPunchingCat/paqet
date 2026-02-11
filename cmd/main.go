@@ -7,6 +7,7 @@ import (
 	"paqet/cmd/ping"
 	"paqet/cmd/run"
 	"paqet/cmd/secret"
+	"paqet/cmd/tun"
 	"paqet/cmd/version"
 	"paqet/internal/flog"
 
@@ -26,6 +27,7 @@ func main() {
 	rootCmd.AddCommand(iface.Cmd)
 	rootCmd.AddCommand(version.Cmd)
 	rootCmd.AddCommand(iptables.Cmd)
+	rootCmd.AddCommand(tun.Cmd)
 	addPcapCommands(rootCmd)
 
 	if err := rootCmd.Execute(); err != nil {

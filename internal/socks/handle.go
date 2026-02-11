@@ -2,7 +2,7 @@ package socks
 
 import (
 	"context"
-	"paqet/internal/client"
+	"paqet/internal/tnet"
 	"sync"
 )
 
@@ -13,8 +13,14 @@ var rPool = sync.Pool{
 	},
 }
 
+type Client interface {
+	TCPByIndex(serverIdx int, addr string) (tnet.Strm, error)
+	UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool, uint64, error)
+	CloseUDP(serverIdx int, key uint64) error
+}
+
 type Handler struct {
-	client    *client.Client
+	client    Client
 	ctx       context.Context
 	ServerIdx int
 }

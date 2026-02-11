@@ -18,6 +18,7 @@ type Network struct {
 	Interface_  string         `yaml:"interface"`
 	Driver      string         `yaml:"driver"`
 	GUID        string         `yaml:"guid"`
+	TUN         TUN            `yaml:"tun"`
 	IPv4        Addr           `yaml:"ipv4"`
 	IPv6        Addr           `yaml:"ipv6"`
 	PCAP        PCAP           `yaml:"pcap"`
@@ -31,30 +32,43 @@ type Network struct {
 func (n *Network) setDefaults(role string) {
 	n.PCAP.setDefaults(role)
 	n.TCP.setDefaults()
+	n.TUN.setDefaults()
 	if n.Driver == "" {
-		n.Driver = "pcap"
+		if n.TUN.FD > 0 {
+			n.Driver = "tun"
+		} else {
+			n.Driver = "pcap"
+		}
 	}
 }
 
 func (n *Network) validate() []error {
 	var errors []error
 
-	validDrivers := []string{"pcap", "ebpf"}
+	validDrivers := []string{"pcap", "ebpf", "tun"}
 	if !slices.Contains(validDrivers, n.Driver) {
 		errors = append(errors, fmt.Errorf("driver must be one of: %v", validDrivers))
 	}
 
-	if n.Interface_ == "" {
-		errors = append(errors, fmt.Errorf("network interface is required"))
+	if n.Driver != "tun" {
+		if n.Interface_ == "" {
+			errors = append(errors, fmt.Errorf("network interface is required"))
+		}
+		if len(n.Interface_) > 15 {
+			errors = append(errors, fmt.Errorf("network interface name too long (max 15 characters): '%s'", n.Interface_))
+		}
+		lIface, err := net.InterfaceByName(n.Interface_)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("failed to find network interface %s: %v", n.Interface_, err))
+		}
+		n.Interface = lIface
+	} else {
+		// For TUN driver, we don't need a physical interface.
+		// Create a dummy interface struct for logging purposes.
+		n.Interface = &net.Interface{
+			Name: n.TUN.Name,
+		}
 	}
-	if len(n.Interface_) > 15 {
-		errors = append(errors, fmt.Errorf("network interface name too long (max 15 characters): '%s'", n.Interface_))
-	}
-	lIface, err := net.InterfaceByName(n.Interface_)
-	if err != nil {
-		errors = append(errors, fmt.Errorf("failed to find network interface %s: %v", n.Interface_, err))
-	}
-	n.Interface = lIface
 
 	if runtime.GOOS == "windows" && n.GUID == "" {
 		errors = append(errors, fmt.Errorf("guid is required on windows"))
@@ -67,10 +81,10 @@ func (n *Network) validate() []error {
 		return errors
 	}
 	if ipv4Configured {
-		errors = append(errors, n.IPv4.validate()...)
+		errors = append(errors, n.IPv4.validate(n.Driver)...)
 	}
 	if ipv6Configured {
-		errors = append(errors, n.IPv6.validate()...)
+		errors = append(errors, n.IPv6.validate(n.Driver)...)
 	}
 	if ipv4Configured && ipv6Configured {
 		if n.IPv4.Addr.Port != n.IPv6.Addr.Port {
@@ -90,7 +104,7 @@ func (n *Network) validate() []error {
 	return errors
 }
 
-func (n *Addr) validate() []error {
+func (n *Addr) validate(driver string) []error {
 	var errors []error
 
 	l, err := validateAddr(n.Addr_, false)
@@ -99,15 +113,16 @@ func (n *Addr) validate() []error {
 	}
 	n.Addr = l
 
-	if n.RouterMac_ == "" {
-		errors = append(errors, fmt.Errorf("Router MAC address is required"))
+	if n.RouterMac_ != "" {
+		hwAddr, err := net.ParseMAC(n.RouterMac_)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("invalid Router MAC address '%s': %v", n.RouterMac_, err))
+		}
+		n.Router = hwAddr
+	} else if driver != "tun" {
+		// Router MAC is required for pcap and ebpf (Layer 2), but not for tun (Layer 3)
+		errors = append(errors, fmt.Errorf("router_mac is required (needed for raw packet injection)"))
 	}
-
-	hwAddr, err := net.ParseMAC(n.RouterMac_)
-	if err != nil {
-		errors = append(errors, fmt.Errorf("invalid Router MAC address '%s': %v", n.RouterMac_, err))
-	}
-	n.Router = hwAddr
 
 	return errors
 }

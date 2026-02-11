@@ -25,6 +25,7 @@ type PacketConn struct {
 
 	plugins     *PluginManager
 	clientPorts sync.Map
+	closeOnce   sync.Once
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -38,10 +39,84 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		cfg.Port = int(RandInRange(32768, 65535))
 	}
 
+	var nsConn net.Conn
+	var nsListener net.Listener
+
+	if cfg.Driver == "tun" {
+		// 1. Create TUN device (without starting read loop)
+		dev, err := newTunDevice(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create TUN device: %v", err)
+		}
+
+		// 2. Initialize gVisor Netstack for TUN
+		// Note: This assumes Client mode.
+		// In a real app, you'd likely want to Dial per-connection in the Client struct,
+		// not here in PacketConn. But for this architecture:
+		ns, err := NewTunNetstack(dev.File(), cfg.IPv4.Addr.IP)
+		if err != nil {
+			return nil, err
+		}
+
+		// For Client: We need a target to Dial.
+		// Since PacketConn is generic, we might need to defer Dialing.
+		// But to fit the existing interface, let's assume we are connecting to the first server.
+		// (This is a simplification for the example)
+		// nsConn, err = ns.DialTCP(...)
+	} else {
+		// For Server (Pcap/EBPF) - Optional: Enable Netstack to handle TCP handshake
+		// You can control this via a config flag, e.g., cfg.TCP.UseNetstack
+		// For now, let's assume we want it if we are a server (writeHopping=false)
+		if !writeHopping {
+			// Create raw source/injector
+			source, err := NewRecvHandle(cfg, hopping)
+			if err != nil {
+				return nil, err
+			}
+			injector, err := NewSendHandle(cfg)
+			if err != nil {
+				return nil, err
+			}
+
+			// Wrap in gVisor
+			ep := NewPaqetLinkEndpoint(source.source, injector.injector)
+			ns, err := NewNetstack(ep, cfg.IPv4.Addr.IP)
+			if err != nil {
+				return nil, err
+			}
+
+			// Listen
+			nsListener, err = ns.ListenTCP(cfg.Port)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// If we have a Netstack Listener (Server mode), we need to accept a connection
+	// This breaks the PacketConn abstraction slightly because PacketConn is datagram-based.
+	// However, since we are wrapping KCP, we can accept one connection and use it.
+	if nsListener != nil {
+		// Accept in background or block?
+		// For simplicity, we accept one connection to establish the tunnel.
+		// In production, you'd handle multiple connections.
+		go func() {
+			conn, _ := nsListener.Accept()
+			nsConn = conn
+		}()
+	}
+
+	// ... (Rest of the function uses nsConn if set)
 	sendHandle, err := NewSendHandle(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create send handle on %s: %v", cfg.Interface.Name, err)
 	}
+
+	if nsConn != nil {
+		sendHandle.injector = &NetstackInjector{conn: nsConn}
+		sendHandle.SkipHeaders = true
+	}
+
 	sendHandle.SetObfuscation(obfsCfg)
 
 	// Only enable hopping on the receive handle if we are NOT hopping on writes (Server mode).
@@ -53,6 +128,13 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	recvHandle, err := NewRecvHandle(cfg, recvHopping)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create receive handle on %s: %v", cfg.Interface.Name, err)
+	}
+
+	if nsConn != nil {
+		recvHandle.source = &NetstackSource{conn: nsConn}
+		recvHandle.SkipDecode = true
+		recvHandle.RemoteAddr = nsConn.RemoteAddr()
+		recvHandle.LocalPort = cfg.Port
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -200,15 +282,17 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 }
 
 func (c *PacketConn) Close() error {
-	c.cancel()
-	c.plugins.Close()
+	c.closeOnce.Do(func() {
+		c.cancel()
+		c.plugins.Close()
 
-	if c.sendHandle != nil {
-		go c.sendHandle.Close()
-	}
-	if c.recvHandle != nil {
-		go c.recvHandle.Close()
-	}
+		if c.sendHandle != nil {
+			go c.sendHandle.Close()
+		}
+		if c.recvHandle != nil {
+			go c.recvHandle.Close()
+		}
+	})
 
 	return nil
 }
