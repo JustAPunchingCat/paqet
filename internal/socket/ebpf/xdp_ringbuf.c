@@ -24,6 +24,9 @@ int xdp_main(struct xdp_md *ctx)
     if (!parse_tcp(data, data_end, &tcp))
         return XDP_PASS;
 
+    // Re-verify bounds to satisfy verifier on older kernels
+    if ((void *)(tcp + 1) > data_end) return XDP_PASS;
+
     __u16 dest = bpf_ntohs(tcp->dest);
 
     // --- SAFETY SWITCH ---
