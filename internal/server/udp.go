@@ -37,6 +37,11 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 		flog.Errorf("failed to establish UDP connection to %s for stream %d: %v", addr, strm.SID(), err)
 		return err
 	}
+	if udpConn, ok := conn.(*net.UDPConn); ok {
+		// Increase socket buffers to 4MB to prevent drops during bursts
+		udpConn.SetReadBuffer(4 * 1024 * 1024)
+		udpConn.SetWriteBuffer(4 * 1024 * 1024)
+	}
 	defer func() {
 		conn.Close()
 		flog.Debugf("closed UDP connection %s for stream %d", addr, strm.SID())

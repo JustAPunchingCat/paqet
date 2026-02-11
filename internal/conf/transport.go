@@ -25,7 +25,7 @@ func (t *Transport) setDefaults(role string) {
 		t.TCPBuf = 4 * 1024
 	}
 	if t.UDPBuf == 0 {
-		t.UDPBuf = 4 * 1024
+		t.UDPBuf = 4 * 1024 * 1024 // 4MB
 	}
 	if t.UDPBuf < 2*1024 {
 		t.UDPBuf = 2 * 1024
