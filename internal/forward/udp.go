@@ -2,6 +2,7 @@ package forward
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"paqet/internal/flog"
@@ -67,6 +68,11 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 	}
 
 	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
+
+	// Write length prefix (2 bytes) + Data
+	lenBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(lenBuf, uint16(n))
+	strm.Write(lenBuf)
 	if _, err := strm.Write(buf[:n]); err != nil {
 		flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
 		f.client.CloseUDP(f.ServerIdx, k)
@@ -112,11 +118,18 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 }
 
 func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) error {
-	n, err := dst.Read(buf)
-	if err != nil {
+	// Read length prefix
+	lenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(dst, lenBuf); err != nil {
+		return err
+	}
+	length := int(binary.BigEndian.Uint16(lenBuf))
+
+	// Read payload
+	if _, err := io.ReadFull(dst, buf[:length]); err != nil {
 		return err
 	}
 
-	_, err = src.WriteToUDP(buf[:n], addr)
+	_, err := src.WriteToUDP(buf[:length], addr)
 	return err
 }

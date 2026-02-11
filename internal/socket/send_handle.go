@@ -22,7 +22,7 @@ type PacketInjector interface {
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
 	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
-	mu         sync.RWMutex
+	mu         sync.Mutex
 }
 
 type SendHandle struct {
@@ -250,8 +250,8 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
-	h.tcpF.mu.RLock()
-	defer h.tcpF.mu.RUnlock()
+	h.tcpF.mu.Lock()
+	defer h.tcpF.mu.Unlock()
 	if ff := h.tcpF.clientTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
 		return ff.Next()
 	}
