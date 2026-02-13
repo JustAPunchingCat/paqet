@@ -34,14 +34,15 @@ func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
 }
 
 func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool, obfsCfg *conf.Obfuscation) (*PacketConn, error) {
-	if cfg.Port == 0 {
+	connCfg := *cfg
+	if connCfg.Port == 0 {
 		// Use crypto-secure random port from ephemeral range (32768-65535)
-		cfg.Port = int(RandInRange(32768, 65535))
+		connCfg.Port = int(RandInRange(32768, 65535))
 	}
 
-	sendHandle, err := NewSendHandle(cfg)
+	sendHandle, err := NewSendHandle(&connCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create send handle on %s: %v", cfg.Interface.Name, err)
+		return nil, fmt.Errorf("failed to create send handle on %s: %v", connCfg.Interface.Name, err)
 	}
 	sendHandle.SetObfuscation(obfsCfg)
 
@@ -51,14 +52,14 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	if !writeHopping {
 		recvHopping = hopping
 	}
-	recvHandle, err := NewRecvHandle(cfg, recvHopping)
+	recvHandle, err := NewRecvHandle(&connCfg, recvHopping)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create receive handle on %s: %v", cfg.Interface.Name, err)
+		return nil, fmt.Errorf("failed to create receive handle on %s: %v", connCfg.Interface.Name, err)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	conn := &PacketConn{
-		cfg:        cfg,
+		cfg:        &connCfg,
 		sendHandle: sendHandle,
 		recvHandle: recvHandle,
 		ctx:        ctx,
@@ -72,14 +73,14 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		useObfs = obfsCfg.UseTLS || obfsCfg.Padding.Enabled
 	}
 
-	if useObfs && cfg.Transport != nil {
+	if useObfs && connCfg.Transport != nil {
 		var keyStr string
-		if cfg.Transport.KCP != nil && cfg.Transport.KCP.Key != "" {
-			keyStr = cfg.Transport.KCP.Key
-		} else if cfg.Transport.QUIC != nil && cfg.Transport.QUIC.Key != "" {
-			keyStr = cfg.Transport.QUIC.Key
-		} else if cfg.Transport.UDP != nil && cfg.Transport.UDP.Key != "" {
-			keyStr = cfg.Transport.UDP.Key
+		if connCfg.Transport.KCP != nil && connCfg.Transport.KCP.Key != "" {
+			keyStr = connCfg.Transport.KCP.Key
+		} else if connCfg.Transport.QUIC != nil && connCfg.Transport.QUIC.Key != "" {
+			keyStr = connCfg.Transport.QUIC.Key
+		} else if connCfg.Transport.UDP != nil && connCfg.Transport.UDP.Key != "" {
+			keyStr = connCfg.Transport.UDP.Key
 		}
 		key := []byte(keyStr)
 		if o, err := obfs.New(obfsCfg, key); err == nil {
