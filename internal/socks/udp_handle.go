@@ -7,7 +7,6 @@ import (
 	"paqet/internal/client"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
-	"time"
 
 	"github.com/txthinking/socks5"
 )
@@ -29,7 +28,6 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
 		return err
 	}
-	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
 	// Write length prefix (2 bytes) + Data to preserve packet boundaries in the stream
 	// Combine into a single write to ensure atomicity on the stream
@@ -44,7 +42,6 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	binary.BigEndian.PutUint16(payload, uint16(len(d.Data)))
 	copy(payload[2:], d.Data)
 	_, err = strm.Write(payload)
-	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
 		h.client.CloseUDP(h.ServerIdx, k)
@@ -87,8 +84,6 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 				case <-h.ctx.Done():
 					return
 				default:
-					strm.SetDeadline(time.Now().Add(30 * time.Second))
-
 					// Read length prefix (2 bytes)
 					if _, err := io.ReadFull(strm, lenBuf); err != nil {
 						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, dAddr, err)
@@ -102,7 +97,6 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 						return
 					}
 					_, err := io.ReadFull(strm, buf[headerLen:headerLen+payloadLen])
-					strm.SetDeadline(time.Time{})
 					if err != nil {
 						return
 					}

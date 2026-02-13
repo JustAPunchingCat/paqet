@@ -47,6 +47,9 @@ func (c *connAdapter) Read(b []byte) (n int, err error) {
 				continue // Drop invalid packet (loopback or garbage) and wait for next
 			}
 			data = data[len(c.readMagic):]
+			if len(data) == 0 {
+				continue
+			}
 
 			n = copy(b, data)
 			if n < len(data) {

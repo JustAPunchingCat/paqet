@@ -11,8 +11,9 @@ var (
 )
 
 const (
-	handshakeTimeout = 5 * time.Second
-	keepAlive        = 15 * time.Second
+	handshakeTimeout  = 10 * time.Second
+	keepAliveInterval = 15 * time.Second
+	connectionTimeout = 120 * time.Second
 )
 
 var (

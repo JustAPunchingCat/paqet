@@ -101,7 +101,7 @@ transport:
                               # false = batch ACKs (more bandwidth efficient)
                               # Setting true reduces latency but increases bandwidth usage
 
-    # mtu: 1350              # Maximum transmission unit (50-1500)
+    # mtu: 1280              # Maximum transmission unit (50-1500). Default 1280 for better compatibility.
     # rcvwnd: 1024           # Receive window size (default for server)
     # sndwnd: 1024           # Send window size (default for server)
 
@@ -126,7 +126,7 @@ transport:
   # udp:
   #   key: "your-secret-key-here"   # Encryption key (must match client)
   #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
-  #   mtu: 1350                     # Maximum Transmission Unit (default: 1350)
+  #   mtu: 1280                     # Maximum Transmission Unit (default: 1280)
   #   unordered: true               # Enable unordered delivery (default: false)
   #                                 # Set to true for high-performance UDP forwarding (Hysteria, QUIC)
   #                                 # Set to false if you need strict ordering

@@ -27,33 +27,44 @@ type Conn struct {
 	lastRemoteID uint32 // Track last accepted ID to ignore late/replayed streams
 	unordered    bool   // Default mode for new streams
 	mtu          int    // Max fragment size
+	lastActivity time.Time
 }
 
 const (
 	flagMoreFrags = 0x01 // Flag indicating more fragments follow
 	flagStart     = 0x02 // Flag indicating start of a message
+	flagKeepAlive = 0x04 // Flag for keepalive packets
 )
+
+var packetPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 2048)
+		return &b
+	},
+}
 
 func newConn(adapter net.Conn, isServer bool, unordered bool, mtu int) *Conn {
 	if mtu <= 0 {
 		mtu = 1200
 	}
 	c := &Conn{
-		conn:       adapter,
-		streams:    make(map[uint32]*muxStream),
-		acceptCh:   make(chan *muxStream, 1024),
-		datagramCh: make(chan []byte, 4096),
-		closed:     make(chan struct{}),
-		isServer:   isServer,
-		nextID:     1,
-		unordered:  unordered,
-		mtu:        mtu,
+		conn:         adapter,
+		streams:      make(map[uint32]*muxStream),
+		acceptCh:     make(chan *muxStream, 1024),
+		datagramCh:   make(chan []byte, 4096),
+		closed:       make(chan struct{}),
+		isServer:     isServer,
+		nextID:       1,
+		unordered:    unordered,
+		mtu:          mtu,
+		lastActivity: time.Now(),
 	}
 	if isServer {
 		c.nextID = 2
 	}
 	c.readLoopWg.Add(1)
 	go c.readLoop()
+	go c.keepAliveLoop()
 	return c
 }
 
@@ -112,6 +123,11 @@ func (c *Conn) readLoop() {
 			c.Close()
 			return
 		}
+
+		c.mu.Lock()
+		c.lastActivity = time.Now()
+		c.mu.Unlock()
+
 		if n < 13 {
 			flog.Debugf("UDP Conn: packet too short: %d", n)
 			continue
@@ -121,6 +137,11 @@ func (c *Conn) readLoop() {
 		seq := binary.BigEndian.Uint32(buf[4:8])
 		sum := binary.BigEndian.Uint32(buf[8:12])
 		flags := buf[12]
+
+		// Handle KeepAlive
+		if flags&flagKeepAlive != 0 {
+			continue
+		}
 
 		// Must copy data because buf is reused in the next iteration
 		payload := make([]byte, n-13)
@@ -152,6 +173,7 @@ func (c *Conn) readLoop() {
 				flog.Debugf("UDP Conn: stream %d buffer full, dropping packet", sid)
 			}
 		} else if !c.isServer || (sid%2 != 1) {
+			// flog.Debugf("UDP Conn: ignoring unknown stream %d", sid)
 			continue
 		} else {
 			// Check if this is an old ID from a closed stream
@@ -197,14 +219,49 @@ func (c *Conn) closeStream(id uint32) {
 	c.mu.Unlock()
 }
 
+func (c *Conn) keepAliveLoop() {
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-ticker.C:
+			c.mu.RLock()
+			idle := time.Since(c.lastActivity)
+			c.mu.RUnlock()
+
+			if idle > connectionTimeout {
+				flog.Debugf("UDP Conn timed out after %v idle", idle)
+				c.Close()
+				return
+			}
+
+			// Send KeepAlive packet (SID=0, Seq=0, Flags=KeepAlive, Empty Data)
+			c.writePacket(0, 0, nil, flagKeepAlive)
+		}
+	}
+}
+
 func (c *Conn) writePacket(id, seq uint32, data []byte, flags byte) error {
-	pkt := make([]byte, 13+len(data))
+	// Use pool to reduce GC pressure
+	bufp := packetPool.Get().(*[]byte)
+	defer packetPool.Put(bufp)
+	pkt := *bufp
+
+	if cap(pkt) < 13+len(data) {
+		pkt = make([]byte, 13+len(data))
+	}
+	pkt = pkt[:13+len(data)]
+
 	binary.BigEndian.PutUint32(pkt[:4], id)
 	binary.BigEndian.PutUint32(pkt[4:8], seq)
 	sum := crc32.ChecksumIEEE(data)
 	binary.BigEndian.PutUint32(pkt[8:12], sum)
 	pkt[12] = flags
 	copy(pkt[13:], data)
+
 	// flog.Debugf("Writing UDP packet: id=%d len=%d crc=%x", id, len(data), sum)
 	_, err := c.conn.Write(pkt)
 
@@ -302,14 +359,17 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 				// Buffer the fragment
 				s.reorderBuf[frag.seq] = frag
 
-				// If it's a start fragment (or a single packet), try to deliver immediately
-				if frag.flags&flagStart != 0 {
-					if data, ok := s.tryReassemble(frag.seq); ok {
-						n = copy(b, data)
-						if n < len(data) {
-							s.buf = data[n:]
+				// Check if this fragment completes ANY pending message
+				// We iterate the map to find any start fragments that might now be complete
+				for seq, f := range s.reorderBuf {
+					if f.flags&flagStart != 0 {
+						if data, ok := s.tryReassemble(seq); ok {
+							n = copy(b, data)
+							if n < len(data) {
+								s.buf = data[n:]
+							}
+							return n, nil
 						}
-						return n, nil
 					}
 				}
 
