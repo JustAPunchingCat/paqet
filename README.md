@@ -14,6 +14,7 @@
   - **TLS Record Obfuscation**: Wraps traffic in TLS records to blend in with HTTPS.
 - **Port Hopping**: Dynamically rotates destination ports to evade flow-based blocking and analysis.
 - **eBPF (XDP) Support**: Optional high-performance driver for Linux using XDP for packet capture and AF_PACKET for injection, minimizing CPU usage.
+- **AF_PACKET Support**: High-performance zero-copy packet capture for Linux using memory-mapped ring buffers (TPACKET), faster than pcap.
 - **Multi-Server Support**: Client supports simultaneous connections to multiple upstream servers for redundancy.
 - **Firewall Management**: Built-in CLI (`paqet iptables`) to manage required firewall rules safely.
 
@@ -35,7 +36,7 @@ This project serves as an example of low-level network programming in Go, demons
 
 ## How It Works
 
-`paqet` captures packets using `pcap` or `eBPF` (on Linux) and injects crafted TCP packets containing encrypted transport data. KCP provides reliable, encrypted communication optimized for high-loss networks using aggressive retransmission, forward error correction, and symmetric encryption.
+`paqet` captures packets using `pcap`, `afpacket` (on Linux), or `eBPF` (on Linux) and injects crafted TCP packets containing encrypted transport data. KCP provides reliable, encrypted communication optimized for high-loss networks using aggressive retransmission, forward error correction, and symmetric encryption.
 
 ```
 [Your App] <------> [paqet Client] <===== Raw TCP Packet =====> [paqet Server] <------> [Target Server]
@@ -170,7 +171,7 @@ log:
 # Network interface settings
 network:
   interface: "en0" # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
-  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"   # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
   # guid: "\Device\NPF_{...}" # Windows only (Npcap).
   ipv4:
     addr: "192.168.1.100:0" # CHANGE ME: Local IP (use port 0 for random port)
@@ -255,7 +256,7 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0" # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
   ipv4:
     addr: "10.0.0.100:9999" # CHANGE ME: Server IPv4 and port (port must match listen.addr)
     router_mac: "aa:bb:cc:dd:ee:ff" # CHANGE ME: Gateway/router MAC address
@@ -270,15 +271,15 @@ transport:
 
 #### Critical Firewall Configuration
 
-This application uses `pcap` or `eBPF` to receive and inject packets at a low level, **bypassing traditional firewalls like `ufw` or `firewalld`**.
+This application uses `pcap`, `afpacket`, or `eBPF` to receive and inject packets at a low level, **bypassing traditional firewalls like `ufw` or `firewalld`**.
 
-**For `pcap` driver:** The OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. This causes connection instability. You **must** configure `iptables` on the server to prevent this.
+**For `pcap` and `afpacket` drivers:** The OS kernel will still see incoming packets for the connection port and, not knowing about the connection, will generate TCP `RST` (reset) packets. This causes connection instability. You **must** configure `iptables` on the server to prevent this.
 
 **For `ebpf` driver:** The XDP program uses `XDP_DROP` to discard incoming packets at the driver level, preventing them from reaching the kernel stack. Therefore, `iptables` rules are **not required** to prevent RST packets. However, applying them is recommended as a safety fallback in case the eBPF program fails to load or you switch drivers.
 
 **Firewall Commands (Required for `pcap`, Optional for `ebpf`):**
 
-Run these commands as root on your server:
+Run these commands as root on your server (Required for `pcap` and `afpacket` drivers):
 
 ```bash
 # Replace <PORT> with your server listen port (e.g., 9999).

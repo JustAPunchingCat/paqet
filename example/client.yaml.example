@@ -23,7 +23,7 @@ socks5:
 # Network interface settings
 network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
-  driver: "pcap"   # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"   # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
 
   # IPv4 configuration
@@ -40,7 +40,7 @@ network:
     local_flag: ["PA"]                      # Local TCP flags (Push+Ack default)
     remote_flag: ["PA"]                     # Remote TCP flags (Push+Ack default)
 
-  # PCAP settings (optional - will use defaults)
+  # PCAP/AF_PACKET settings (optional - will use defaults)
   # pcap:
     # sockbuf: 4194304                        # 4MB buffer (default for client)
 

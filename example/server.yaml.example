@@ -36,7 +36,7 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0"                          # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
   # guid: "\Device\NPF_{...}"                # Windows only (Npcap).
 
   # IPv4 configuration
@@ -53,7 +53,7 @@ network:
   tcp:
     local_flag: ["PA"]                       # Local TCP flags (Push+Ack default)
 
-  # PCAP settings (optional - will use defaults)
+  # PCAP/AF_PACKET settings (optional - will use defaults)
   # pcap:
     # sockbuf: 8388608                         # 8MB buffer (default for server)
 
@@ -142,7 +142,7 @@ transport:
 
 # Important: Server Firewall Configuration
 # 
-# If using driver: "pcap", you MUST configure iptables on the server to prevent 
+# If using driver: "pcap" or "afpacket", you MUST configure iptables on the server to prevent 
 # kernel interference (TCP RST packets).
 # If using driver: "ebpf", these rules are NOT required because XDP uses XDP_DROP.
 #
