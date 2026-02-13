@@ -25,7 +25,7 @@ func (s *Server) handleTCPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 }
 
 func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) error {
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		flog.Errorf("failed to establish TCP connection to %s for stream %d: %v", addr, strm.SID(), err)

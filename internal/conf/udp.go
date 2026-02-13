@@ -10,7 +10,7 @@ type UDP struct {
 
 func (u *UDP) setDefaults() {
 	if u.MTU == 0 {
-		u.MTU = 1350
+		u.MTU = 1280
 	}
 }
 

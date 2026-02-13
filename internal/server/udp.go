@@ -10,8 +10,8 @@ import (
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"paqet/internal/tnet/udp"
+	"strings"
 	"sync"
-	"time"
 )
 
 var bufPool = sync.Pool{
@@ -79,7 +79,10 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 
 	select {
 	case err := <-errChan:
-		if err != nil && err != io.EOF {
+		// Ignore errors caused by normal closing or timeouts which are expected
+		if err != nil && err != io.EOF &&
+			!strings.Contains(err.Error(), "use of closed network connection") &&
+			!strings.Contains(err.Error(), "timeout") {
 			flog.Errorf("UDP stream %d to %s failed: %v", strm.SID(), addr, err)
 			return err
 		}
@@ -96,7 +99,6 @@ func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 	buf := *bufp
 
 	for {
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		// Read into buf starting at offset 2 to leave room for header
 		n, err := conn.Read(buf[2:])
 		if err != nil {
@@ -106,7 +108,6 @@ func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 		// Write length prefix (2 bytes) + Data
 		binary.BigEndian.PutUint16(buf[:2], uint16(n))
 
-		strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		if _, err := strm.Write(buf[:2+n]); err != nil {
 			return err
 		}
@@ -119,7 +120,6 @@ func (s *Server) streamToUDP(strm tnet.Strm, conn net.Conn) error {
 	buf := *bufp
 
 	for {
-		strm.SetReadDeadline(time.Now().Add(30 * time.Second))
 		// Read length prefix into the first 2 bytes of buf
 		if _, err := io.ReadFull(strm, buf[:2]); err != nil {
 			return err
@@ -131,7 +131,6 @@ func (s *Server) streamToUDP(strm tnet.Strm, conn net.Conn) error {
 			return err
 		}
 
-		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		if _, err := conn.Write(buf[:length]); err != nil {
 			return err
 		}

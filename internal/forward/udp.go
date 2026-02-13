@@ -9,7 +9,6 @@ import (
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/tnet"
 	"strings"
-	"time"
 )
 
 func (f *Forward) listenUDP(ctx context.Context) {
@@ -71,8 +70,6 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 		return err
 	}
 
-	strm.SetWriteDeadline(time.Now().Add(30 * time.Second))
-
 	// Write length prefix (2 bytes) + Data
 	// Combine into a single write to ensure atomicity
 	// Optimization: Use buffer pool
@@ -88,10 +85,8 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 	if _, err := strm.Write(payload); err != nil {
 		flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
 		f.client.CloseUDP(f.ServerIdx, k)
-		strm.SetWriteDeadline(time.Time{})
 		return err
 	}
-	strm.SetWriteDeadline(time.Time{})
 	if new {
 		flog.Infof("accepted UDP connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		go f.handleUDPStrm(ctx, k, strm, conn, caddr)
@@ -116,7 +111,6 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 			return
 		default:
 		}
-		strm.SetDeadline(time.Now().Add(30 * time.Second))
 
 		// Inline CopyU logic to avoid function call overhead and reuse lenBuf
 		if _, err := io.ReadFull(strm, lenBuf); err != nil {
@@ -130,7 +124,6 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 		}
 		_, err := conn.WriteToUDP(buf[:length], caddr)
 
-		strm.SetDeadline(time.Time{})
 		if err != nil {
 			if err != io.EOF && !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "closed") {
 				flog.Errorf("UDP stream %d failed for %s -> %s: %v", strm.SID(), caddr, f.targetAddr, err)

@@ -33,6 +33,10 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			if ctx.Err() != nil {
 				return
 			}
+			if strings.Contains(err.Error(), "closed network connection") {
+				flog.Debugf("connection from %s closed", conn.RemoteAddr())
+				return
+			}
 			flog.Errorf("failed to accept stream on %s: %v", conn.RemoteAddr(), err)
 			return
 		}
