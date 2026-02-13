@@ -161,7 +161,11 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		s.Close()
 		return nil, err
 	}
-	flog.Debugf("eBPF registered ports: %v for IP: %s", ports, s.ipv4)
+	if len(ports) > 10 {
+		flog.Debugf("eBPF registered ports: %v... (total %d) for IP: %s", ports[:10], len(ports), s.ipv4)
+	} else {
+		flog.Debugf("eBPF registered ports: %v for IP: %s", ports, s.ipv4)
+	}
 	s.ports = ports
 
 	return s, nil
