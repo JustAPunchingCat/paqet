@@ -2,12 +2,15 @@ package socket
 
 import (
 	"encoding/binary"
+	"net"
 	"paqet/internal/conf"
 )
 
 type afpacketSource struct {
 	handle RawHandle
 	port   int
+	ipv4   net.IP
+	ipv6   net.IP
 	ranges []conf.PortRange
 }
 
@@ -25,6 +28,12 @@ func newAfpacketSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, 
 	s := &afpacketSource{
 		handle: handle,
 		port:   cfg.Port,
+	}
+	if cfg.IPv4.Addr != nil {
+		s.ipv4 = cfg.IPv4.Addr.IP
+	}
+	if cfg.IPv6.Addr != nil {
+		s.ipv6 = cfg.IPv6.Addr.IP
 	}
 
 	if hopping != nil && hopping.Enabled {
@@ -69,11 +78,22 @@ func (s *afpacketSource) filter(data []byte) bool {
 		}
 		// IHL is the lower 4 bits of the first byte
 		ihl := data[ipOffset] & 0x0F
+		if ihl < 5 {
+			return false
+		}
 		headerLen := int(ihl) * 4
 		if len(data) < ipOffset+headerLen {
 			return false
 		}
 		nextProto = data[ipOffset+9]
+
+		if s.ipv4 != nil {
+			dstIP := net.IP(data[ipOffset+16 : ipOffset+20])
+			if !dstIP.Equal(s.ipv4) {
+				return false
+			}
+		}
+
 		ipOffset += headerLen
 	} else if ethType == 0x86DD { // IPv6
 		ipOffset = 14
@@ -81,6 +101,14 @@ func (s *afpacketSource) filter(data []byte) bool {
 			return false
 		}
 		nextProto = data[ipOffset+6]
+
+		if s.ipv6 != nil {
+			dstIP := net.IP(data[ipOffset+24 : ipOffset+40])
+			if !dstIP.Equal(s.ipv6) {
+				return false
+			}
+		}
+
 		ipOffset += 40
 	} else {
 		return false
