@@ -45,7 +45,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	// to disabled (zero value).
 	obfsCfg := &tc.srvCfg.Obfuscation
 
-	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg)
+	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg, tc.srvCfg.Server.Addr.String())
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
@@ -109,7 +109,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		// Probe for best protocol
 		// We need a factory to create new PacketConns for probing
 		newPConn := func() (net.PacketConn, error) {
-			return socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg)
+			return socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg, tc.srvCfg.Server.Addr.String())
 		}
 		results, err := transport.Probe(remoteAddr, &tc.srvCfg.Transport, newPConn)
 		if err != nil {

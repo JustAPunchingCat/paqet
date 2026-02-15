@@ -2,12 +2,14 @@ package client
 
 import (
 	"context"
+	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"paqet/internal/tnet/udp"
 	"sync/atomic"
+	"time"
 )
 
 // udpStreamCounter generates unique keys for uncached UDP streams
@@ -104,6 +106,45 @@ func (c *Client) CloseUDP(serverIdx int, key uint64) error {
 	return c.udpPools[serverIdx].delete(key)
 }
 
+// UDPDatagramByIndex gets an existing datagram session or creates a new one.
+func (c *Client) UDPDatagramByIndex(serverIdx int, lAddr, tAddr string) (*UDPDatagramSession, bool, uint64, error) {
+	// Use a prefix to avoid collision with standard UDP streams in the same pool
+	key := hash.AddrPair(lAddr, "dgm:"+tAddr)
+	pool := c.udpPools[serverIdx]
+
+	// Check cache
+	pool.mu.RLock()
+	if strm, exists := pool.strms[key]; exists {
+		pool.mu.RUnlock()
+		if sess, ok := strm.(*UDPDatagramSession); ok {
+			return sess, false, key, nil
+		}
+		// Should not happen if keys are distinct, but safe fallback
+	}
+	pool.mu.RUnlock()
+
+	// Create new session
+	// Use background context because the session outlives this single packet request
+	sess, err := c.UDPDatagramNew(context.Background(), serverIdx, tAddr)
+	if err != nil {
+		return nil, false, 0, err
+	}
+
+	pool.mu.Lock()
+	// Double-check
+	if existing, exists := pool.strms[key]; exists {
+		pool.mu.Unlock()
+		sess.Close()
+		if sess, ok := existing.(*UDPDatagramSession); ok {
+			return sess, false, key, nil
+		}
+	}
+	pool.strms[key] = sess
+	pool.mu.Unlock()
+
+	return sess, true, key, nil
+}
+
 // UDPDatagramNew creates a new datagram-based UDP session if the transport supports it.
 // Returns nil if datagrams are not supported (caller should fall back to streams).
 func (c *Client) UDPDatagramNew(ctx context.Context, serverIdx int, tAddr string) (*UDPDatagramSession, error) {
@@ -165,20 +206,18 @@ func (s *UDPDatagramSession) Send(data []byte) error {
 	return err
 }
 
-// Receive receives a UDP packet via QUIC datagram.
-func (s *UDPDatagramSession) Receive() ([]byte, error) {
-	// Read from the stream (unordered)
-	// We need a buffer. Allocate one.
-	buf := make([]byte, 2048)
-	n, err := s.strm.Read(buf)
-	if err != nil {
-		return nil, err
-	}
-	return buf[:n], nil
+// Close closes the datagram session.
+func (s *UDPDatagramSession) Close() error {
+	s.cancel()
+	return s.strm.Close()
 }
 
-// Close closes the datagram session.
-func (s *UDPDatagramSession) Close() {
-	s.cancel()
-	s.strm.Close()
-}
+// Implement tnet.Strm interface for UDPDatagramSession so it can be stored in udpPool
+func (s *UDPDatagramSession) Read(b []byte) (int, error)         { return s.strm.Read(b) }
+func (s *UDPDatagramSession) Write(b []byte) (int, error)        { return s.strm.Write(b) }
+func (s *UDPDatagramSession) LocalAddr() net.Addr                { return s.strm.LocalAddr() }
+func (s *UDPDatagramSession) RemoteAddr() net.Addr               { return s.strm.RemoteAddr() }
+func (s *UDPDatagramSession) SetDeadline(t time.Time) error      { return s.strm.SetDeadline(t) }
+func (s *UDPDatagramSession) SetReadDeadline(t time.Time) error  { return s.strm.SetReadDeadline(t) }
+func (s *UDPDatagramSession) SetWriteDeadline(t time.Time) error { return s.strm.SetWriteDeadline(t) }
+func (s *UDPDatagramSession) SID() int                           { return s.strm.SID() }

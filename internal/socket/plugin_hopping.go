@@ -15,9 +15,10 @@ type HoppingPlugin struct {
 	stop        chan struct{}
 	minPort     int
 	isClient    bool
+	label       string
 }
 
-func NewHoppingPlugin(cfg *conf.Hopping, isClient bool) (*HoppingPlugin, error) {
+func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
 	ranges, err := cfg.GetRanges()
 	if err != nil {
 		return nil, err
@@ -34,6 +35,7 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool) (*HoppingPlugin, error) 
 		stop:     make(chan struct{}),
 		minPort:  minPort,
 		isClient: isClient,
+		label:    label,
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -71,7 +73,11 @@ func (p *HoppingPlugin) updateCurrentPort() {
 
 	newPort := uint32(r.Min + offset)
 	p.currentPort.Store(newPort)
-	flog.Debugf("Hopping: switched to port %d", newPort)
+	if p.label != "" {
+		flog.Debugf("Hopping: switched to port %d for %s", newPort, p.label)
+	} else {
+		flog.Debugf("Hopping: switched to port %d", newPort)
+	}
 }
 
 func (p *HoppingPlugin) OnRead(data []byte, addr net.Addr) ([]byte, net.Addr, error) {
