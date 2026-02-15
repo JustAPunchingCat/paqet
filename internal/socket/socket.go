@@ -33,7 +33,11 @@ func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
 	return NewWithHopping(ctx, cfg, nil, false, nil)
 }
 
-func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool, obfsCfg *conf.Obfuscation) (*PacketConn, error) {
+func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hopping, writeHopping bool, obfsCfg *conf.Obfuscation, labels ...string) (*PacketConn, error) {
+	label := ""
+	if len(labels) > 0 {
+		label = labels[0]
+	}
 	connCfg := *cfg
 	if connCfg.Port == 0 {
 		// Use crypto-secure random port from ephemeral range (32768-65535)
@@ -92,7 +96,7 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	}
 
 	if hopping != nil && hopping.Enabled {
-		hp, err := NewHoppingPlugin(hopping, writeHopping)
+		hp, err := NewHoppingPlugin(hopping, writeHopping, label)
 		if err != nil {
 			return nil, fmt.Errorf("invalid hopping configuration: %w", err)
 		}
