@@ -10,6 +10,8 @@ import (
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/afpacket"
+	"github.com/gopacket/gopacket/layers"
+	"github.com/gopacket/gopacket/pcap"
 	"golang.org/x/net/bpf"
 )
 
@@ -119,9 +121,21 @@ func macEqual(a, b []byte) bool {
 		a[3] == b[3] && a[4] == b[4] && a[5] == b[5]
 }
 
-// compileBPFFilter is a stub. Real implementation requires a BPF compiler (like pcap's).
-// For pure Go, you might need 'golang.org/x/net/bpf' and manual assembly or a parser.
 func compileBPFFilter(filter string) ([]bpf.RawInstruction, error) {
-	// TODO: Implement pure Go BPF compilation or fallback to pcap for compilation only.
-	return nil, fmt.Errorf("BPF compilation not implemented for AF_PACKET yet")
+	// Use pcap to compile the BPF filter for Ethernet
+	pcapBPF, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, 65535, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	raw := make([]bpf.RawInstruction, len(pcapBPF))
+	for i, ins := range pcapBPF {
+		raw[i] = bpf.RawInstruction{
+			Op: ins.Code,
+			Jt: ins.Jt,
+			Jf: ins.Jf,
+			K:  ins.K,
+		}
+	}
+	return raw, nil
 }

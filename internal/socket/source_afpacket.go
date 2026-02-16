@@ -2,8 +2,10 @@ package socket
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"paqet/internal/conf"
+	"strings"
 )
 
 type afpacketSource struct {
@@ -23,6 +25,31 @@ func newAfpacketSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, 
 	if err := handle.SetDirection(DirectionIn); err != nil {
 		handle.Close()
 		return nil, err
+	}
+
+	// Construct BPF filter to prevent waking up for every packet on the interface
+	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)
+	if hopping != nil && hopping.Enabled {
+		ranges, err := hopping.GetRanges()
+		if err == nil && len(ranges) > 0 {
+			var parts []string
+			for _, r := range ranges {
+				if r.Min == r.Max {
+					parts = append(parts, fmt.Sprintf("dst port %d", r.Min))
+				} else {
+					parts = append(parts, fmt.Sprintf("dst portrange %d-%d", r.Min, r.Max))
+				}
+			}
+			filter = fmt.Sprintf("tcp and (%s)", strings.Join(parts, " or "))
+		}
+	}
+
+	// Apply the filter if the handle supports it
+	if h, ok := handle.(interface{ SetBPFFilter(string) error }); ok {
+		if err := h.SetBPFFilter(filter); err != nil {
+			handle.Close()
+			return nil, fmt.Errorf("failed to set BPF filter: %w", err)
+		}
 	}
 
 	s := &afpacketSource{
