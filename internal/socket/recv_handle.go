@@ -3,6 +3,7 @@ package socket
 import (
 	"net"
 	"paqet/internal/conf"
+	"sync"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
@@ -14,7 +15,19 @@ type PacketSource interface {
 }
 
 type RecvHandle struct {
-	source PacketSource
+	source      PacketSource
+	decoderPool sync.Pool
+}
+
+type packetDecoder struct {
+	eth     layers.Ethernet
+	ip4     layers.IPv4
+	ip6     layers.IPv6
+	tcp     layers.TCP
+	udp     layers.UDP
+	payload gopacket.Payload
+	parser  *gopacket.DecodingLayerParser
+	decoded []gopacket.LayerType
 }
 
 func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error) {
@@ -34,7 +47,18 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 		return nil, err
 	}
 
-	return &RecvHandle{source: source}, nil
+	return &RecvHandle{
+		source: source,
+		decoderPool: sync.Pool{
+			New: func() any {
+				d := &packetDecoder{
+					decoded: make([]gopacket.LayerType, 0, 4),
+				}
+				d.parser = gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, &d.eth, &d.ip4, &d.ip6, &d.tcp, &d.udp, &d.payload)
+				return d
+			},
+		},
+	}, nil
 }
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
@@ -42,51 +66,42 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
 
-	netLayer := p.NetworkLayer()
-	if netLayer == nil {
-		return nil, nil, 0, nil
-	}
+	decoder := h.decoderPool.Get().(*packetDecoder)
+	defer h.decoderPool.Put(decoder)
+
+	// Reset decoded slice
+	decoder.decoded = decoder.decoded[:0]
+
+	// Ignore error because we check decoded layers manually
+	_ = decoder.parser.DecodeLayers(data, &decoder.decoded)
 
 	addr := &net.UDPAddr{}
-	switch netLayer.LayerType() {
-	case layers.LayerTypeIPv4:
-		addr.IP = netLayer.(*layers.IPv4).SrcIP
-	case layers.LayerTypeIPv6:
-		addr.IP = netLayer.(*layers.IPv6).SrcIP
-	default:
-		return nil, nil, 0, nil
-	}
-
-	trLayer := p.TransportLayer()
-	if trLayer == nil {
-		return nil, nil, 0, nil
-	}
-
 	var dstPort int
-	switch trLayer.LayerType() {
-	case layers.LayerTypeTCP:
-		tcp := trLayer.(*layers.TCP)
-		addr.Port = int(tcp.SrcPort)
-		dstPort = int(tcp.DstPort)
-	case layers.LayerTypeUDP:
-		udp := trLayer.(*layers.UDP)
-		addr.Port = int(udp.SrcPort)
-		dstPort = int(udp.DstPort)
-	default:
+	hasTransport := false
+
+	for _, typ := range decoder.decoded {
+		switch typ {
+		case layers.LayerTypeIPv4:
+			addr.IP = decoder.ip4.SrcIP
+		case layers.LayerTypeIPv6:
+			addr.IP = decoder.ip6.SrcIP
+		case layers.LayerTypeTCP:
+			addr.Port = int(decoder.tcp.SrcPort)
+			dstPort = int(decoder.tcp.DstPort)
+			hasTransport = true
+		case layers.LayerTypeUDP:
+			addr.Port = int(decoder.udp.SrcPort)
+			dstPort = int(decoder.udp.DstPort)
+			hasTransport = true
+		}
+	}
+
+	if !hasTransport || addr.Port == 0 || len(decoder.payload) == 0 {
 		return nil, nil, 0, nil
 	}
 
-	if addr.Port == 0 {
-		return nil, nil, 0, nil
-	}
-
-	appLayer := p.ApplicationLayer()
-	if appLayer == nil {
-		return nil, nil, 0, nil
-	}
-	return appLayer.Payload(), addr, dstPort, nil
+	return decoder.payload, addr, dstPort, nil
 }
 
 func (h *RecvHandle) Close() {
