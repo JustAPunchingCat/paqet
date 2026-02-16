@@ -17,6 +17,7 @@ type PacketSource interface {
 type RecvHandle struct {
 	source      PacketSource
 	decoderPool sync.Pool
+	protocol    string
 }
 
 type packetDecoder struct {
@@ -58,6 +59,7 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 				return d
 			},
 		},
+		protocol: cfg.Protocol,
 	}, nil
 }
 
@@ -79,6 +81,8 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	addr := &net.UDPAddr{}
 	var dstPort int
 	hasTransport := false
+	hasTCP := false
+	hasUDP := false
 
 	for _, typ := range decoder.decoded {
 		switch typ {
@@ -87,10 +91,12 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		case layers.LayerTypeIPv6:
 			addr.IP = decoder.ip6.SrcIP
 		case layers.LayerTypeTCP:
+			hasTCP = true
 			addr.Port = int(decoder.tcp.SrcPort)
 			dstPort = int(decoder.tcp.DstPort)
 			hasTransport = true
 		case layers.LayerTypeUDP:
+			hasUDP = true
 			addr.Port = int(decoder.udp.SrcPort)
 			dstPort = int(decoder.udp.DstPort)
 			hasTransport = true
@@ -98,6 +104,14 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	}
 
 	if !hasTransport || addr.Port == 0 || len(decoder.payload) == 0 {
+		return nil, nil, 0, nil
+	}
+
+	// Enforce configured protocol
+	if h.protocol == "tcp" && !hasTCP {
+		return nil, nil, 0, nil
+	}
+	if h.protocol == "udp" && !hasUDP {
 		return nil, nil, 0, nil
 	}
 

@@ -17,6 +17,7 @@ type Addr struct {
 type Network struct {
 	Interface_  string         `yaml:"interface"`
 	Driver      string         `yaml:"driver"`
+	Protocol    string         `yaml:"protocol"` // "tcp" (default) or "udp"
 	GUID        string         `yaml:"guid"`
 	IPv4        Addr           `yaml:"ipv4"`
 	IPv6        Addr           `yaml:"ipv6"`
@@ -34,6 +35,9 @@ func (n *Network) setDefaults(role string) {
 	if n.Driver == "" {
 		n.Driver = "pcap"
 	}
+	if n.Protocol == "" {
+		n.Protocol = "tcp"
+	}
 }
 
 func (n *Network) validate() []error {
@@ -42,6 +46,11 @@ func (n *Network) validate() []error {
 	validDrivers := []string{"pcap", "ebpf", "afpacket"}
 	if !slices.Contains(validDrivers, n.Driver) {
 		errors = append(errors, fmt.Errorf("driver must be one of: %v", validDrivers))
+	}
+
+	validProtocols := []string{"tcp", "udp"}
+	if !slices.Contains(validProtocols, n.Protocol) {
+		errors = append(errors, fmt.Errorf("network protocol must be one of: %v", validProtocols))
 	}
 
 	if n.Interface_ == "" {

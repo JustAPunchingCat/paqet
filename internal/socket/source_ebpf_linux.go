@@ -100,6 +100,10 @@ type sharedEBPFSource struct {
 }
 
 func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, error) {
+	if cfg.Protocol == "udp" {
+		return nil, fmt.Errorf("ebpf driver does not support udp protocol yet; use 'pcap' or 'afpacket'")
+	}
+
 	// Allow the current process to lock memory for eBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memlock limit: %w", err)

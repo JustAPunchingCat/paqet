@@ -22,8 +22,12 @@ func newAfpacketSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, 
 	}
 
 	// Construct BPF filter to prevent waking up for every packet on the interface
-	// Base filter: TCP
-	filterParts := []string{"tcp"}
+	// Base filter
+	proto := "tcp"
+	if cfg.Protocol == "udp" {
+		proto = "udp"
+	}
+	filterParts := []string{proto}
 
 	// IP Filter: Only wake up for packets destined to our configured IPs
 	var ipFilters []string

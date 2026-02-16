@@ -28,8 +28,12 @@ func newPcapSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		}
 	}
 
-	// Base filter: TCP
-	filterParts := []string{"tcp"}
+	// Base filter
+	proto := "tcp"
+	if cfg.Protocol == "udp" {
+		proto = "udp"
+	}
+	filterParts := []string{proto}
 
 	// IP Filter
 	var ipFilters []string
