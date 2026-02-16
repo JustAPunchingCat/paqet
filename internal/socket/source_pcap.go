@@ -28,7 +28,23 @@ func newPcapSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		}
 	}
 
-	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)
+	// Base filter: TCP
+	filterParts := []string{"tcp"}
+
+	// IP Filter
+	var ipFilters []string
+	if cfg.IPv4.Addr != nil && !cfg.IPv4.Addr.IP.IsUnspecified() {
+		ipFilters = append(ipFilters, fmt.Sprintf("dst host %s", cfg.IPv4.Addr.IP.String()))
+	}
+	if cfg.IPv6.Addr != nil && !cfg.IPv6.Addr.IP.IsUnspecified() {
+		ipFilters = append(ipFilters, fmt.Sprintf("dst host %s", cfg.IPv6.Addr.IP.String()))
+	}
+	if len(ipFilters) > 0 {
+		filterParts = append(filterParts, fmt.Sprintf("(%s)", strings.Join(ipFilters, " or ")))
+	}
+
+	// Port Filter
+	portFilter := fmt.Sprintf("dst port %d", cfg.Port)
 	if hopping != nil && hopping.Enabled {
 		ranges, err := hopping.GetRanges()
 		if err == nil && len(ranges) > 0 {
@@ -40,9 +56,13 @@ func newPcapSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 					parts = append(parts, fmt.Sprintf("dst portrange %d-%d", r.Min, r.Max))
 				}
 			}
-			filter = fmt.Sprintf("tcp and (%s)", strings.Join(parts, " or "))
+			portFilter = fmt.Sprintf("(%s)", strings.Join(parts, " or "))
 		}
 	}
+	filterParts = append(filterParts, portFilter)
+
+	filter := strings.Join(filterParts, " and ")
+
 	if err := handle.SetBPFFilter(filter); err != nil {
 		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
 	}
