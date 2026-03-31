@@ -3,6 +3,7 @@ package socket
 import (
 	"net"
 	"paqet/internal/conf"
+	"paqet/internal/flog"
 	"sync"
 
 	"github.com/gopacket/gopacket"
@@ -14,9 +15,15 @@ type PacketSource interface {
 	Close()
 }
 
+type ipMapping struct {
+	network *net.IPNet
+	realIP  net.IP
+}
+
 type RecvHandle struct {
 	source      PacketSource
 	decoderPool sync.Pool
+	mappings    []ipMapping
 }
 
 type packetDecoder struct {
@@ -30,12 +37,12 @@ type packetDecoder struct {
 	decoded []gopacket.LayerType
 }
 
-func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error) {
+func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*RecvHandle, error) {
 	var source PacketSource
 	var err error
 
 	switch cfg.Driver {
-	case "ebpf":
+	case "ebpf", "ebpf-generic":
 		source, err = newEBPFSource(cfg, hopping)
 	case "afpacket":
 		source, err = newAfpacketSource(cfg, hopping)
@@ -47,8 +54,42 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping) (*RecvHandle, error
 		return nil, err
 	}
 
+	var mappings []ipMapping
+	if cfg.Spoof != nil {
+		var targetMap map[string]string
+		if role == "client" {
+			targetMap = cfg.Spoof.ServerMappings
+		} else {
+			targetMap = cfg.Spoof.ClientMappings
+		}
+		for spoofStr, realStr := range targetMap {
+			realIP := net.ParseIP(realStr)
+			if realIP == nil {
+				flog.Warnf("Invalid real IP in spoof mapping: %s", realStr)
+				continue
+			}
+			_, spoofNet, err := net.ParseCIDR(spoofStr)
+			if err != nil {
+				spoofIP := net.ParseIP(spoofStr)
+				if spoofIP == nil {
+					flog.Warnf("Invalid spoof IP/CIDR in mapping: %s", spoofStr)
+					continue
+				}
+				var mask net.IPMask
+				if spoofIP.To4() != nil {
+					mask = net.CIDRMask(32, 32)
+				} else {
+					mask = net.CIDRMask(128, 128)
+				}
+				spoofNet = &net.IPNet{IP: spoofIP, Mask: mask}
+			}
+			mappings = append(mappings, ipMapping{network: spoofNet, realIP: realIP})
+		}
+	}
+
 	return &RecvHandle{
-		source: source,
+		source:   source,
+		mappings: mappings,
 		decoderPool: sync.Pool{
 			New: func() any {
 				d := &packetDecoder{
@@ -99,6 +140,16 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 
 	if !hasTransport || addr.Port == 0 || len(decoder.payload) == 0 {
 		return nil, nil, 0, nil
+	}
+
+	// Overwrite source IP if it matches a spoof mapping
+	if len(h.mappings) > 0 {
+		for _, m := range h.mappings {
+			if m.network.Contains(addr.IP) {
+				addr.IP = m.realIP
+				break
+			}
+		}
 	}
 
 	return decoder.payload, addr, dstPort, nil

@@ -53,10 +53,10 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	// Only enable hopping on the receive handle if we are NOT hopping on writes (Server mode).
 	// Clients (writeHopping=true) must listen on their specific source port, not the destination range.
 	var recvHopping *conf.Hopping
-	if !writeHopping {
+	if !writeHopping { // Server mode or client not hopping on writes
 		recvHopping = hopping
 	}
-	recvHandle, err := NewRecvHandle(&connCfg, recvHopping)
+	recvHandle, err := NewRecvHandle(&connCfg, recvHopping, connCfg.Role)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create receive handle on %s: %v", connCfg.Interface.Name, err)
 	}

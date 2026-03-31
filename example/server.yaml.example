@@ -36,7 +36,7 @@ obfuscation:
 # Network interface settings
 network:
   interface: "eth0"                          # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"                # Windows only (Npcap).
 
   # IPv4 configuration
@@ -48,6 +48,19 @@ network:
   ipv6:
     addr: "[::1]:9999"                       # CHANGE ME: Server IPv6 and port (or remove if not using IPv6)
     router_mac: "aa:bb:cc:dd:ee:ff"          # CHANGE ME: Gateway/router MAC address
+
+  # Source IP Spoofing (optional)
+  spoof:
+    enabled: false
+    # List of IPs or CIDRs to use as source addresses.
+    # An address is chosen randomly for each outgoing packet.
+    # Example: ["10.1.0.0/16", "172.16.5.10"]
+    addrs: []
+    # Map clients' spoofed IPs back to their real IPs
+    # Format: "Spoofed_IP_or_CIDR": "Real_IP"
+    client_mappings:
+      "10.100.0.0/24": "203.0.113.5"
+      "172.16.5.10": "198.51.100.2"
 
   # TCP flags for packet crafting (optional - will use defaults)
   tcp:

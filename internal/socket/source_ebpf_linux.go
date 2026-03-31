@@ -240,10 +240,15 @@ func loadRingbuf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	l, err := link.AttachXDP(link.XDPOptions{
+	opts := link.XDPOptions{
 		Program:   objs.XdpMain,
 		Interface: cfg.Interface.Index,
-	})
+	}
+	if cfg.Driver == "ebpf-generic" {
+		opts.Flags = link.XDPGenericMode
+	}
+
+	l, err := link.AttachXDP(opts)
 	if err != nil {
 		objs.Close()
 		return nil, err
@@ -265,10 +270,15 @@ func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	l, err := link.AttachXDP(link.XDPOptions{
+	opts := link.XDPOptions{
 		Program:   objs.XdpMain,
 		Interface: cfg.Interface.Index,
-	})
+	}
+	if cfg.Driver == "ebpf-generic" {
+		opts.Flags = link.XDPGenericMode
+	}
+
+	l, err := link.AttachXDP(opts)
 	if err != nil {
 		objs.Close()
 		return nil, err
@@ -290,10 +300,15 @@ func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	l, err := link.AttachXDP(link.XDPOptions{
+	opts := link.XDPOptions{
 		Program:   objs.XdpMain,
 		Interface: cfg.Interface.Index,
-	})
+	}
+	if cfg.Driver == "ebpf-generic" {
+		opts.Flags = link.XDPGenericMode
+	}
+
+	l, err := link.AttachXDP(opts)
 	if err != nil {
 		objs.Close()
 		return nil, err
