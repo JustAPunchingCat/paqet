@@ -23,7 +23,7 @@ socks5:
 # Network interface settings
 network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
-  driver: "pcap"   # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
+  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
 
   # IPv4 configuration
@@ -36,9 +36,29 @@ network:
     addr: "[2001:db8::1]:0"                 # CHANGE ME: Local IPv6 address and port (optional)
     router_mac: "aa:bb:cc:dd:ee:ff"         # CHANGE ME: Gateway/router MAC address for IPv6
 
+  # Source IP Spoofing (optional)
+  spoof:
+    enabled: false
+    # List of IPs or CIDRs to use as source addresses.
+    # An address is chosen randomly for each outgoing packet.
+    # Example: ["10.1.0.0/16", "172.16.5.10"]
+    addrs: []
+    # Map the server's spoofed IPs back to its real IP.
+    # Format: "Spoofed_IP_or_CIDR": "Real_IP"
+    # This is REQUIRED if the server is also spoofing its source IP.
+    # Without this, the client cannot match incoming spoofed packets to the correct server session.
+    # NOTE: In a multi-server setup, all mappings for all servers must be listed here.
+    server_mappings:
+      # "10.1.0.0/16": "198.51.100.1"  # Map Server A's spoof range to its real IP
+      # "10.2.0.0/16": "203.0.113.4"  # Map Server B's spoof range to its real IP
+
   tcp:
     local_flag: ["PA"]                      # Local TCP flags (Push+Ack default)
     remote_flag: ["PA"]                     # Remote TCP flags (Push+Ack default)
+    
+    # Reverse tunnel flags
+    # local_flag: ["SA"]
+    # remote_flag: ["S"]
 
   # PCAP/AF_PACKET settings (optional - will use defaults)
   # pcap:

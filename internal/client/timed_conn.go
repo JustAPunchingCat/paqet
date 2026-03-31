@@ -38,6 +38,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.rootCfg.Network
 	// Use server-specific transport settings (e.g. Key) for this connection
 	netCfg.Transport = &tc.srvCfg.Transport
+	// Explicitly copy spoof config from root
+	netCfg.Spoof = tc.rootCfg.Network.Spoof
 
 	// Explicitly use the server's obfuscation config
 	// We do not propagate global obfuscation settings to allow mixing obfuscated
@@ -93,8 +95,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		conn, err = transport.DialProto("kcp", remoteAddr, &tCfg, pConn)
 	case "quic":
 		conn, err = transport.DialProto("quic", remoteAddr, &tc.srvCfg.Transport, pConn)
-	case "udp":
-		tCfg := tc.srvCfg.Transport
+	case "udp": // Also needs to pass `tc.rootCfg.Role` to `socket.NewWithHopping` when creating `newPConn` for probing.
+		tCfg := tc.srvCfg.Transport // Create a copy of Transport config
 		udpCfg := *tCfg.UDP
 		if overhead > 0 {
 			if udpCfg.MTU == 0 {
@@ -107,7 +109,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		conn, err = transport.DialProto("udp", remoteAddr, &tCfg, pConn)
 	case "auto":
 		// Probe for best protocol
-		// We need a factory to create new PacketConns for probing
+		// We need a factory to create new PacketConns for probing, ensuring the role is passed
 		newPConn := func() (net.PacketConn, error) {
 			return socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg, tc.srvCfg.Server.Addr.String())
 		}

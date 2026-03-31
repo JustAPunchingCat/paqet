@@ -45,6 +45,9 @@ type SendHandle struct {
 	ipId        uint32
 	obfuscation *conf.Obfuscation
 	// Fingerprinting fields
+	spoofNets []*net.IPNet
+	spoofIPs  []net.IP
+
 	tos       uint8
 	ttl       uint8
 	baseTS    uint32
@@ -79,7 +82,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	var injector PacketInjector
 	var err error
 	switch cfg.Driver {
-	case "ebpf":
+	case "ebpf", "ebpf-generic":
 		injector, err = newRawInjector(cfg)
 	default:
 		injector, err = newPcapInjector(cfg)
@@ -155,6 +158,33 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		sh.srcIPv6 = cfg.IPv6.Addr.IP
 		sh.srcIPv6RHWA = cfg.IPv6.Router
 	}
+
+	// Parse spoofing addresses
+	if cfg.Spoof != nil && cfg.Spoof.Enabled {
+		for _, s := range cfg.Spoof.Addrs {
+			// Try parsing as CIDR
+			ip, ipNet, err := net.ParseCIDR(s)
+			if err == nil {
+				// If it's a /32 or /128, treat it as a single IP
+				ones, bits := ipNet.Mask.Size()
+				if ones == bits {
+					sh.spoofIPs = append(sh.spoofIPs, ip)
+				} else {
+					sh.spoofNets = append(sh.spoofNets, ipNet)
+				}
+				continue
+			}
+
+			// Try parsing as single IP
+			ip = net.ParseIP(s)
+			if ip != nil {
+				sh.spoofIPs = append(sh.spoofIPs, ip)
+				continue
+			}
+			flog.Warnf("Invalid spoofing address (not a CIDR or IP): %s", s)
+		}
+		flog.Infof("Source IP spoofing enabled with %d IPs and %d networks.", len(sh.spoofIPs), len(sh.spoofNets))
+	}
 	return sh, nil
 }
 
@@ -172,16 +202,23 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 		ttl = GenerateRealisticTTL()
 	}
 
+	srcIP := h.srcIPv4
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
+		if spoofedIP := h.getSpoofedIP(true); spoofedIP != nil {
+			flog.Debugf("Spoofing IPv4 packet to %s with source %s", dstIP, spoofedIP)
+			srcIP = spoofedIP
+		}
+	}
+
 	*ip = layers.IPv4{
-		Version:  4,
-		IHL:      5,
-		TOS:      tos,
-		Id:       uint16(id),
-		TTL:      ttl,
-		Flags:    layers.IPv4DontFragment,
-		Protocol: layers.IPProtocolTCP,
-		SrcIP:    h.srcIPv4,
-		DstIP:    dstIP,
+		Version: 4,
+		IHL:     5,
+		TOS:     tos,
+		Id:      uint16(id),
+		TTL:     ttl,
+		Flags:   layers.IPv4DontFragment, Protocol: layers.IPProtocolTCP,
+		SrcIP: srcIP,
+		DstIP: dstIP,
 	}
 	return ip
 }
@@ -199,12 +236,20 @@ func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 		hopLimit = GenerateRealisticTTL()
 	}
 
+	srcIP := h.srcIPv6
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
+		if spoofedIP := h.getSpoofedIP(false); spoofedIP != nil {
+			flog.Debugf("Spoofing IPv6 packet to %s with source %s", dstIP, spoofedIP)
+			srcIP = spoofedIP
+		}
+	}
+
 	*ip = layers.IPv6{
 		Version:      6,
 		TrafficClass: tclass,
 		HopLimit:     hopLimit,
 		NextHeader:   layers.IPProtocolTCP,
-		SrcIP:        h.srcIPv6,
+		SrcIP:        srcIP,
 		DstIP:        dstIP,
 	}
 	return ip
@@ -358,7 +403,7 @@ func (h *SendHandle) reopen() error {
 	var newInjector PacketInjector
 	var err error
 	switch h.driver {
-	case "ebpf":
+	case "ebpf", "ebpf-generic":
 		newInjector, err = newRawInjector(h.cfg)
 	default:
 		newInjector, err = newPcapInjector(h.cfg)
@@ -370,6 +415,82 @@ func (h *SendHandle) reopen() error {
 
 	h.injector = newInjector
 	return nil
+}
+
+// randIPFromCIDR generates a random IP address from a given CIDR.
+func randIPFromCIDR(cidr *net.IPNet) net.IP {
+	if cidr.IP.To4() != nil {
+		// IPv4
+		mask := cidr.Mask
+		netAddr := binary.BigEndian.Uint32(cidr.IP.To4())
+
+		ones, bits := mask.Size()
+		if ones == bits { // /32
+			return cidr.IP
+		}
+
+		hostBits := bits - ones
+		numHosts := uint32(1) << hostBits
+
+		// Generate a random offset within the host range
+		randOffset, err := rand.Int(rand.Reader, big.NewInt(int64(numHosts)))
+		if err != nil {
+			// Fallback for safety, though crypto/rand should not fail here
+			randOffset = big.NewInt(int64(fastRandUint32() % numHosts))
+		}
+
+		// Add offset to network address
+		randIPint := netAddr + uint32(randOffset.Int64())
+
+		ip := make(net.IP, 4)
+		binary.BigEndian.PutUint32(ip, randIPint)
+		return ip
+	} else {
+		// IPv6
+		mask := cidr.Mask
+
+		randBytes := make([]byte, 16)
+		rand.Read(randBytes) // Generate 16 random bytes
+
+		ip := make(net.IP, 16)
+		for i := 0; i < 16; i++ {
+			// Combine network part (from cidr.IP) with random host part
+			ip[i] = (cidr.IP[i] & mask[i]) | (randBytes[i] &^ mask[i])
+		}
+		return ip
+	}
+}
+
+func (h *SendHandle) getSpoofedIP(isIPv4 bool) net.IP {
+	// Filter IPs and Nets by family
+	var validIPs []net.IP
+	var validNets []*net.IPNet
+
+	for _, ip := range h.spoofIPs {
+		if (ip.To4() != nil) == isIPv4 {
+			validIPs = append(validIPs, ip)
+		}
+	}
+	for _, n := range h.spoofNets {
+		if (n.IP.To4() != nil) == isIPv4 {
+			validNets = append(validNets, n)
+		}
+	}
+
+	totalChoices := len(validIPs) + len(validNets)
+	if totalChoices == 0 {
+		return nil
+	}
+
+	choice, _ := rand.Int(rand.Reader, big.NewInt(int64(totalChoices)))
+	idx := int(choice.Int64())
+
+	if idx < len(validIPs) {
+		return validIPs[idx]
+	} else {
+		netIdx := idx - len(validIPs)
+		return randIPFromCIDR(validNets[netIdx])
+	}
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {

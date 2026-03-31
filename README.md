@@ -12,6 +12,7 @@
   - **Padding**: Randomizes packet lengths to hide protocol signatures.
   - **Header Randomization**: Mimics various OS fingerprints (TTL, TOS, Window Size).
   - **TLS Record Obfuscation**: Wraps traffic in TLS records to blend in with HTTPS.
+- **Bidirectional IP Spoofing**: Both client and server can spoof their source IP addresses, with mapping rules to maintain the connection.
 - **Port Hopping**: Dynamically rotates destination ports to evade flow-based blocking and analysis.
 - **eBPF (XDP) Support**: Optional high-performance driver for Linux using XDP for packet capture and AF_PACKET for injection, minimizing CPU usage.
 - **AF_PACKET Support**: High-performance zero-copy packet capture for Linux using memory-mapped ring buffers (TPACKET), faster than pcap.
@@ -205,6 +206,19 @@ servers:
         randomize_ttl: true
         randomize_window: true
 
+    # Source IP Spoofing (Optional)
+    # Enables spoofing of the source IP for all outgoing packets.
+    spoof:
+      enabled: true
+      # List of IPs or CIDRs to use as source addresses.
+      # An address is chosen randomly for each outgoing packet.
+      addrs: ["80.210.52.54"]
+      # Map the server's spoofed IPs back to its real IP.
+      # This is REQUIRED if the server is also spoofing its source IP.
+      # Without this, the client cannot match incoming spoofed packets to the correct server session.
+      server_mappings:
+        "194.59.214.21": "140.174.189.21"
+
     socks5:
       - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
 
@@ -252,6 +266,17 @@ obfuscation:
     randomize_tos: true
     randomize_ttl: true
     randomize_window: true
+
+    # Source IP Spoofing (Optional)
+    spoof:
+      enabled: true
+      # List of IPs or CIDRs to use as source addresses.
+      # An address is chosen randomly for each outgoing packet.
+      addrs: ["194.59.214.21"]
+      # Map clients' spoofed IPs back to their real IPs
+      # This is REQUIRED if clients are spoofing their source IPs.
+      client_mappings:
+        "80.210.52.54": "45.11.185.186"
 
 # Network interface settings
 network:

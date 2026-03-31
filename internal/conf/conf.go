@@ -94,6 +94,10 @@ func (c *Conf) setDefaults() {
 			for j := range c.Servers[i].Forward {
 				c.Servers[i].Forward[j].setDefaults()
 			}
+			if !c.Servers[i].Obfuscation.IsConfigured() {
+				c.Servers[i].Obfuscation = c.Obfuscation
+			}
+			c.Servers[i].Obfuscation.setDefaults()
 			if !c.Servers[i].Hopping.Enabled && c.Hopping.Enabled {
 				c.Servers[i].Hopping = c.Hopping
 			}
@@ -113,6 +117,11 @@ func (c *Conf) setDefaults() {
 	}
 
 	c.Transport.setDefaults(c.Role)
+}
+
+func (o *Obfuscation) IsConfigured() bool {
+	// Consider it configured if any non-default value is set.
+	return o.UseTLS || o.Padding.Enabled || o.Headers.RandomizeTOS || o.Headers.RandomizeTTL || o.Headers.RandomizeWindow
 }
 
 func (c *Conf) validate() error {

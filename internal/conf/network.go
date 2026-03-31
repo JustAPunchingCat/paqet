@@ -14,6 +14,13 @@ type Addr struct {
 	Router     net.HardwareAddr `yaml:"-"`
 }
 
+type Spoof struct {
+	Enabled        bool              `yaml:"enabled"`
+	Addrs          []string          `yaml:"addrs"`
+	ClientMappings map[string]string `yaml:"client_mappings"`
+	ServerMappings map[string]string `yaml:"server_mappings"`
+}
+
 type Network struct {
 	Interface_  string         `yaml:"interface"`
 	Driver      string         `yaml:"driver"`
@@ -26,9 +33,12 @@ type Network struct {
 	Port        int            `yaml:"-"`
 	Transport   *Transport     `yaml:"-"`
 	Obfuscation *Obfuscation   `yaml:"-"`
+	Spoof       *Spoof         `yaml:"spoof"`
+	Role        string         `yaml:"-"`
 }
 
 func (n *Network) setDefaults(role string) {
+	n.Role = role
 	n.PCAP.setDefaults(role)
 	n.TCP.setDefaults()
 	if n.Driver == "" {
@@ -39,7 +49,7 @@ func (n *Network) setDefaults(role string) {
 func (n *Network) validate() []error {
 	var errors []error
 
-	validDrivers := []string{"pcap", "ebpf", "afpacket"}
+	validDrivers := []string{"pcap", "ebpf", "afpacket", "ebpf-generic"}
 	if !slices.Contains(validDrivers, n.Driver) {
 		errors = append(errors, fmt.Errorf("driver must be one of: %v", validDrivers))
 	}
