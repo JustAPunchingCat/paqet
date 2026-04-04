@@ -87,10 +87,11 @@ func (c *Conn) SetDeadline(_ time.Time) error      { return nil }
 func (c *Conn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *Conn) SetWriteDeadline(_ time.Time) error { return nil }
 
-// SupportsDatagrams returns true if the connection supports QUIC datagrams.
+// SupportsDatagrams returns false because paqet currently uses stream-level
+// multiplexing for datagrams, and QUIC streams are reliable byte-streams
+// which would destroy packet boundaries without length prefixes.
 func (c *Conn) SupportsDatagrams() bool {
-	state := c.QConn.ConnectionState()
-	return state.SupportsDatagrams.Local && state.SupportsDatagrams.Remote
+	return false
 }
 
 // SendDatagram sends an unreliable datagram over QUIC.

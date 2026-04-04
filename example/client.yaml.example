@@ -18,7 +18,6 @@ socks5:
 #   - listen: "127.0.0.1:8080"  # Local port to listen on
 #     target: "127.0.0.1:80"    # Target to forward to (via server)
 #     protocol: "tcp"           # Protocol (tcp/udp)
-#     streams: 8                # UDP only: parallel streams for throughput (1-64, default: 8)
 
 # Network interface settings
 network:
@@ -164,8 +163,8 @@ servers:
         key: "your-secret-key-here"       # CHANGE ME: Secret key (must match server)
 
         # Buffer settings (optional)
-        # smuxbuf: 8388608       # 8MB session buffer (default)
-        # streambuf: 4194304     # 4MB per-stream buffer (default)
+        # smuxbuf: 4194304       # 4MB session buffer (default)
+        # streambuf: 262144      # 256KB per-stream buffer (default)
 
       # QUIC protocol settings (used when protocol: "quic")
       # quic:
@@ -182,12 +181,6 @@ servers:
       #   key: "your-secret-key-here"   # Encryption key (must match server)
       #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
       #   mtu: 1280                     # Maximum Transmission Unit (default: 1280)
-      #   unordered: true               # Enable unordered delivery (default: false)
-      #                                 # Set to true for high-performance UDP forwarding (Hysteria, QUIC)
-      #                                 # Set to false if you need strict ordering (e.g. tunneling TCP over UDP)
-      #                                 # Note: SOCKS5 UDP always tries to use unordered mode regardless of this setting.
-      #   smuxbuf: 4194304              # 4MB smux buffer
-      #   streambuf: 2097152            # 2MB stream buffer
 
   # - server:
   #     addr: "10.0.0.101:9999"    # Second server

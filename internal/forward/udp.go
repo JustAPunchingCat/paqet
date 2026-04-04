@@ -63,16 +63,28 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 		return nil
 	}
 
-	strm, new, k, err := f.client.UDPByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
-	if err != nil {
-		flog.Errorf("failed to establish UDP stream for %s -> %s: %v", caddr, f.targetAddr, err)
-		f.client.CloseUDP(f.ServerIdx, k)
-		return err
+	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
+	sess, newDgm, kDgm, errDgm := f.client.UDPDatagramByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
+	if errDgm == nil && sess != nil {
+		if err := sess.Send(buf[:n]); err != nil {
+			flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
+			f.client.CloseUDP(f.ServerIdx, kDgm)
+			return err
+		}
+		if newDgm {
+			flog.Infof("accepted UDP datagram connection %d for %s -> %s", sess.SID(), caddr, f.targetAddr)
+			go f.handleUDPDatagram(ctx, kDgm, sess, conn, caddr)
+		}
+		return nil
 	}
 
-	// Write length prefix (2 bytes) + Data
-	// Combine into a single write to ensure atomicity
-	// Optimization: Use buffer pool
+	// Fallback: Stream Mode with Length Prefixes (Required if using KCP transport)
+	strm, newStrm, kStrm, errStrm := f.client.UDPByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
+	if errStrm != nil {
+		flog.Errorf("failed to establish UDP stream for %s -> %s: %v", caddr, f.targetAddr, errStrm)
+		return errStrm
+	}
+
 	bufp := buffer.UPool.Get().(*[]byte)
 	defer buffer.UPool.Put(bufp)
 	payload := *bufp
@@ -82,14 +94,15 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 	payload = payload[:2+n]
 	binary.BigEndian.PutUint16(payload, uint16(n))
 	copy(payload[2:], buf[:n])
+
 	if _, err := strm.Write(payload); err != nil {
 		flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
-		f.client.CloseUDP(f.ServerIdx, k)
+		f.client.CloseUDP(f.ServerIdx, kStrm)
 		return err
 	}
-	if new {
-		flog.Infof("accepted UDP connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
-		go f.handleUDPStrm(ctx, k, strm, conn, caddr)
+	if newStrm {
+		flog.Infof("accepted UDP stream connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
+		go f.handleUDPStrm(ctx, kStrm, strm, conn, caddr)
 	}
 
 	return nil
@@ -129,6 +142,39 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 				flog.Errorf("UDP stream %d failed for %s -> %s: %v", strm.SID(), caddr, f.targetAddr, err)
 			} else {
 				flog.Debugf("UDP stream %d closed for %s -> %s: %v", strm.SID(), caddr, f.targetAddr, err)
+			}
+			return
+		}
+	}
+}
+
+func (f *Forward) handleUDPDatagram(ctx context.Context, k uint64, sess tnet.Strm, conn *net.UDPConn, caddr *net.UDPAddr) {
+	bufp := buffer.UPool.Get().(*[]byte)
+	defer func() {
+		buffer.UPool.Put(bufp)
+		flog.Debugf("UDP datagram stream %d closed for %s -> %s", sess.SID(), caddr, f.targetAddr)
+		f.client.CloseUDP(f.ServerIdx, k)
+	}()
+	buf := *bufp
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		n, err := sess.Read(buf)
+		if err != nil {
+			flog.Debugf("UDP datagram stream %d closed/error: %v", sess.SID(), err)
+			return
+		}
+		_, err = conn.WriteToUDP(buf[:n], caddr)
+		if err != nil {
+			if err != io.EOF && !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "closed") {
+				flog.Errorf("UDP datagram stream %d failed for %s -> %s: %v", sess.SID(), caddr, f.targetAddr, err)
+			} else {
+				flog.Debugf("UDP datagram stream %d closed for %s -> %s: %v", sess.SID(), caddr, f.targetAddr, err)
 			}
 			return
 		}

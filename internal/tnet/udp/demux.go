@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const clientChanSize = 4096
+const clientChanSize = 65536
 
 // clientConn holds a per-client channel of received packets.
 type clientConn struct {
