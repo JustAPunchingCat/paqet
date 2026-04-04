@@ -36,11 +36,16 @@ func Dial(addr *net.UDPAddr, cfg *conf.UDP, pConn net.PacketConn) (tnet.Conn, er
 				continue
 			}
 
+			// Copy to avoid race conditions since decryption is now in-place
+			pkt := make([]byte, n)
+			copy(pkt, buf[:n])
+
 			// Decrypt
-			dec := cipher.decrypt(buf[:n])
+			dec := cipher.decrypt(pkt)
 			adapter.pushInput(dec)
 		}
 	}()
 
-	return newConn(adapter, false, cfg.Unordered, cfg.MTU), nil
+	// Force default ordered mode. Specific UDP streams will opt-in to unordered.
+	return newConn(adapter, false, false, cfg.MTU), nil
 }

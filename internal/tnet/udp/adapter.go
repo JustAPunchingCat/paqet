@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net"
 	"paqet/internal/flog"
+	"sync"
 	"time"
 )
 
@@ -62,12 +63,32 @@ func (c *connAdapter) Read(b []byte) (n int, err error) {
 	}
 }
 
+var adapterPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 2048)
+		return &b
+	},
+}
+
 func (c *connAdapter) Write(b []byte) (n int, err error) {
-	// Encrypt and write
-	// Prepend magic
-	payload := append([]byte(nil), c.writeMagic...)
-	payload = append(payload, b...)
-	enc := c.cipher.encrypt(payload)
+	bufp := adapterPool.Get().(*[]byte)
+	buf := *bufp
+	defer func() {
+		*bufp = buf
+		adapterPool.Put(bufp)
+	}()
+
+	size := len(c.writeMagic) + len(b)
+	if cap(buf) < size {
+		buf = make([]byte, size)
+	}
+	buf = buf[:size]
+
+	// Prepend magic and data directly into the pooled buffer
+	copy(buf, c.writeMagic)
+	copy(buf[len(c.writeMagic):], b)
+
+	enc := c.cipher.encrypt(buf) // Now operates in-place
 	_, err = c.pConn.WriteTo(enc, c.remoteAddr)
 	if err != nil {
 		return 0, err

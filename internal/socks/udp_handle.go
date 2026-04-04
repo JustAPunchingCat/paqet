@@ -4,10 +4,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"paqet/internal/client"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
-	"time"
 
 	"github.com/txthinking/socks5"
 )
@@ -15,15 +13,8 @@ import (
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
 	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, d.Address())
 
-	// Try to use Datagram Mode (Unreliable/Unordered) first.
-	// This is preferred for UDP-based protocols like Hysteria/QUIC/WebRTC
-	// as it avoids Head-of-Line blocking caused by stream reordering.
-	dgSession, new, k, err := h.client.UDPDatagramByIndex(h.ServerIdx, addr.String(), d.Address())
-	if err == nil && dgSession != nil {
-		return h.handleUDPDatagramSession(server, addr, d, dgSession, new, k)
-	}
-
-	// Fallback to Stream Mode (Reliable/Ordered)
+	// Use Stream Mode for perfect session isolation.
+	// (MuxStream natively supports Unordered delivery to prevent Head-of-Line blocking)
 	strm, new, k, err := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
@@ -106,70 +97,6 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+payloadLen, addr, err)
 						return
 					}
-				}
-			}
-		}()
-	}
-	return nil
-}
-
-func (h *Handler) handleUDPDatagramSession(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram, sess *client.UDPDatagramSession, new bool, k uint64) error {
-	// Send the first packet immediately
-	if err := sess.Send(d.Data); err != nil {
-		flog.Errorf("SOCKS5 failed to send datagram to %s: %v", d.Address(), err)
-		// If send fails, we should probably close the session to force a fresh one next time
-		h.client.CloseUDP(h.ServerIdx, k)
-		return err
-	}
-
-	// Start receive loop ONLY if this is a new session
-	if new {
-		go func() {
-			defer func() {
-				h.client.CloseUDP(h.ServerIdx, k)
-			}()
-
-			// Pre-calculate header for responses
-			// SOCKS5 UDP Header: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
-			// We use the original destination address as the source for the response
-			dAddr := d.Address()
-			atyp := d.Atyp
-			dstAddr := append([]byte(nil), d.DstAddr...)
-			dstPort := append([]byte(nil), d.DstPort...)
-			headerLen := 4 + len(dstAddr) + len(dstPort)
-
-			bufp := buffer.UPool.Get().(*[]byte)
-			defer buffer.UPool.Put(bufp)
-			buf := *bufp
-
-			// Buffer for reading from the stream
-			readBufP := buffer.UPool.Get().(*[]byte)
-			defer buffer.UPool.Put(readBufP)
-			readBuf := *readBufP
-
-			// Pre-fill header
-			if len(buf) > headerLen {
-				buf[0], buf[1], buf[2] = 0, 0, 0
-				buf[3] = atyp
-				copy(buf[4:], dstAddr)
-				copy(buf[4+len(dstAddr):], dstPort)
-			}
-
-			for {
-				// Set a timeout to clean up idle sessions (e.g. DNS queries)
-				sess.SetReadDeadline(time.Now().Add(60 * time.Second))
-				n, err := sess.Read(readBuf)
-				if err != nil {
-					flog.Debugf("SOCKS5 datagram session closed for %s: %v", dAddr, err)
-					return
-				}
-				data := readBuf[:n]
-
-				// Construct SOCKS5 UDP packet: [Header][Data]
-				// Ensure buffer fits
-				if headerLen+len(data) <= len(buf) {
-					copy(buf[headerLen:], data)
-					server.UDPConn.WriteToUDP(buf[:headerLen+len(data)], addr)
 				}
 			}
 		}()
