@@ -85,6 +85,12 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 		return errStrm
 	}
 
+	if f.unordered {
+		if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
+			unorderable.SetUnordered(true)
+		}
+	}
+
 	bufp := buffer.UPool.Get().(*[]byte)
 	defer buffer.UPool.Put(bufp)
 	payload := *bufp

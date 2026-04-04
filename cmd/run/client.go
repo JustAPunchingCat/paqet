@@ -40,7 +40,7 @@ func startClient(cfg *conf.Conf) {
 		}
 		for _, ff := range srvCfg.Forward {
 			go func(ff conf.Forward, idx int) {
-				f, _ := forward.New(c, ff.Listen.String(), ff.Target.String(), idx)
+				f, _ := forward.New(c, ff.Listen.String(), ff.Target.String(), idx, *ff.Unordered)
 				if err := f.Start(ctx, ff.Protocol); err != nil {
 					flog.Errorf("Forward error %v: %v", ff.Listen, err)
 				}

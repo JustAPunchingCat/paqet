@@ -6,14 +6,19 @@ import (
 )
 
 type Forward struct {
-	Listen_  string       `yaml:"listen"`
-	Target_  string       `yaml:"target"`
-	Protocol string       `yaml:"protocol"`
-	Listen   *net.UDPAddr `yaml:"-"`
-	Target   *tnet.Addr   `yaml:"-"`
+	Listen_   string       `yaml:"listen"`
+	Target_   string       `yaml:"target"`
+	Protocol  string       `yaml:"protocol"`
+	Unordered *bool        `yaml:"unordered"`
+	Listen    *net.UDPAddr `yaml:"-"`
+	Target    *tnet.Addr   `yaml:"-"`
 }
 
 func (c *Forward) setDefaults() {
+	if c.Unordered == nil {
+		t := true
+		c.Unordered = &t
+	}
 }
 func (c *Forward) validate() []error {
 	var errors []error

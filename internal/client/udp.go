@@ -68,11 +68,19 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 
 // UDPNew creates a new UDP stream without caching.
 // Used by forward mode for parallel streams to the same target.
-func (c *Client) UDPNew(serverIdx int, tAddr string) (tnet.Strm, uint64, error) {
+func (c *Client) UDPNew(serverIdx int, tAddr string, unordered bool) (tnet.Strm, uint64, error) {
 	strm, err := c.newStrm(serverIdx)
 	if err != nil {
 		flog.Debugf("failed to create stream for UDP -> %s: %v", tAddr, err)
 		return nil, 0, err
+	}
+
+	if unordered {
+		if udpStrm, ok := strm.(*udp.Strm); ok {
+			udpStrm.SetUnordered(true)
+		} else if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
+			unorderable.SetUnordered(true)
+		}
 	}
 
 	taddr, err := tnet.NewAddr(tAddr)

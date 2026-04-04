@@ -177,8 +177,9 @@ func (c *Conn) readLoop() {
 			continue
 		} else {
 			// Check if this is an old ID from a closed stream
+			// Allow a window of 1024 for out-of-order stream creation packets
 			c.mu.RLock()
-			if sid <= c.lastRemoteID {
+			if c.lastRemoteID > 1024 && sid <= c.lastRemoteID-1024 {
 				c.mu.RUnlock()
 				continue
 			}
@@ -186,6 +187,11 @@ func (c *Conn) readLoop() {
 
 			c.mu.Lock()
 			if _, exists := c.streams[sid]; exists {
+				c.mu.Unlock()
+				continue
+			}
+			// Only create a new stream if it contains the start flag
+			if flags&flagStart == 0 {
 				c.mu.Unlock()
 				continue
 			}
@@ -247,7 +253,6 @@ func (c *Conn) keepAliveLoop() {
 func (c *Conn) writePacket(id, seq uint32, data []byte, flags byte) error {
 	// Use pool to reduce GC pressure
 	bufp := packetPool.Get().(*[]byte)
-	defer packetPool.Put(bufp)
 	pkt := *bufp
 
 	if cap(pkt) < 13+len(data) {
@@ -264,6 +269,9 @@ func (c *Conn) writePacket(id, seq uint32, data []byte, flags byte) error {
 
 	// flog.Debugf("Writing UDP packet: id=%d len=%d crc=%x", id, len(data), sum)
 	_, err := c.conn.Write(pkt)
+
+	*bufp = pkt
+	packetPool.Put(bufp)
 
 	return err
 }
@@ -311,6 +319,7 @@ type muxStream struct {
 	dead         chan struct{}
 	unordered    bool // If true, disable reordering logic
 	highestRxSeq uint32
+	writeMu      sync.Mutex
 }
 
 func newMuxStream(conn *Conn, id uint32) *muxStream {
@@ -489,6 +498,9 @@ func (s *muxStream) Write(b []byte) (n int, err error) {
 		return 0, io.ErrClosedPipe
 	default:
 	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
 	// Fragment large writes into MTU-sized packets
 	written := 0

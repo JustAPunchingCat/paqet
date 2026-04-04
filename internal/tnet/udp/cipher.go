@@ -14,12 +14,15 @@ func newCipher(key string) (*cipher, error) {
 }
 
 func (c *cipher) encrypt(data []byte) []byte {
-	// Simple XOR for demonstration/performance
-	out := make([]byte, len(data))
-	for i := 0; i < len(data); i++ {
-		out[i] = data[i] ^ c.key[i%len(c.key)]
+	keyLen := len(c.key)
+	if keyLen == 0 || len(data) == 0 {
+		return data
 	}
-	return out
+	// In-place XOR for zero-allocation performance
+	for i := range data {
+		data[i] ^= c.key[i%keyLen]
+	}
+	return data
 }
 
 func (c *cipher) decrypt(data []byte) []byte {
