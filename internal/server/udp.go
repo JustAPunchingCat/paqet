@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"paqet/internal/flog"
+	"paqet/internal/pkg/buffer"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"paqet/internal/tnet/udp"
@@ -23,14 +24,13 @@ var bufPool = sync.Pool{
 
 func (s *Server) handleDatagramProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
 	// Enable unordered mode for this stream to avoid Head-of-Line blocking
+	// This is now the default for the custom UDP muxer, but we can be explicit.
 	if udpStrm, ok := strm.(*udp.Strm); ok {
 		udpStrm.SetUnordered(true)
+	} else if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
+		unorderable.SetUnordered(true)
 	}
-	// Reuse the existing UDP handling logic, but now on an unordered stream
-	return s.handleUDPProtocol(ctx, strm, p)
-}
 
-func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
 	clientInfo := strm.RemoteAddr().String()
 	if s.pConn != nil {
 		if actualPort := s.pConn.GetClientPort(strm.RemoteAddr()); actualPort > 0 {
@@ -38,11 +38,16 @@ func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 		}
 	}
 
-	// If the user configured 'unordered: true' for high performance, enable it now.
-	// We do this AFTER the handshake (which happened in handleStrm) to ensure setup reliability.
-	if s.cfg.Transport.UDP != nil && s.cfg.Transport.UDP.Unordered {
-		if udpStrm, ok := strm.(*udp.Strm); ok {
-			udpStrm.SetUnordered(true)
+	flog.Infof("accepted UDP Datagram stream %d: %s -> %s", strm.SID(), clientInfo, p.Addr.String())
+	// Use a handler that deals with raw datagrams, not length-prefixed streams.
+	return s.handleDatagram(ctx, strm, p.Addr.String())
+}
+
+func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
+	clientInfo := strm.RemoteAddr().String()
+	if s.pConn != nil {
+		if actualPort := s.pConn.GetClientPort(strm.RemoteAddr()); actualPort > 0 {
+			clientInfo = fmt.Sprintf("%s (via :%d)", strm.RemoteAddr(), actualPort)
 		}
 	}
 
@@ -112,6 +117,47 @@ func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 			return err
 		}
 	}
+}
+
+func (s *Server) handleDatagram(ctx context.Context, strm tnet.Strm, addr string) error {
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		flog.Errorf("failed to establish UDP connection to %s for datagram stream %d: %v", addr, strm.SID(), err)
+		return err
+	}
+	if udpConn, ok := conn.(*net.UDPConn); ok {
+		// Increase socket buffers to 4MB to prevent drops during bursts
+		udpConn.SetReadBuffer(4 * 1024 * 1024)
+		udpConn.SetWriteBuffer(4 * 1024 * 1024)
+	}
+	defer func() {
+		conn.Close()
+		flog.Debugf("closed UDP connection %s for datagram stream %d", addr, strm.SID())
+	}()
+	flog.Debugf("UDP datagram connection established to %s for stream %d", addr, strm.SID())
+
+	errChan := make(chan error, 2)
+	go func() {
+		errChan <- buffer.CopyU(strm, conn)
+	}()
+	go func() {
+		errChan <- buffer.CopyU(conn, strm)
+	}()
+
+	select {
+	case err := <-errChan:
+		// Ignore errors caused by normal closing or timeouts which are expected
+		if err != nil && err != io.EOF &&
+			!strings.Contains(err.Error(), "use of closed network connection") &&
+			!strings.Contains(err.Error(), "timeout") {
+			flog.Errorf("UDP datagram stream %d to %s failed: %v", strm.SID(), addr, err)
+			return err
+		}
+	case <-ctx.Done():
+		return nil
+	}
+
+	return nil
 }
 
 func (s *Server) streamToUDP(strm tnet.Strm, conn net.Conn) error {

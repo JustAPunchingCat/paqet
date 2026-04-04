@@ -123,8 +123,8 @@ transport:
     key: "your-secret-key-here"       # CHANGE ME: Secret key (must match client)
 
     # Buffer settings (optional)
-    # smuxbuf: 8388608       # 8MB session buffer (default)
-    # streambuf: 4194304     # 4MB per-stream buffer (default)
+    # smuxbuf: 4194304       # 4MB session buffer (default)
+    # streambuf: 262144      # 256KB per-stream buffer (default)
 
   # QUIC protocol settings (used when protocol: "quic")
   # quic:
@@ -140,12 +140,6 @@ transport:
   #   key: "your-secret-key-here"   # Encryption key (must match client)
   #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
   #   mtu: 1280                     # Maximum Transmission Unit (default: 1280)
-  #   unordered: true               # Enable unordered delivery (default: false)
-  #                                 # Set to true for high-performance UDP forwarding (Hysteria, QUIC)
-  #                                 # Set to false if you need strict ordering
-  #                                 # Must match client setting for best results.
-  #   smuxbuf: 4194304              # 4MB smux buffer
-  #   streambuf: 2097152            # 2MB stream buffer
 
 
 # Optional Forward Error Correction (FEC) - currently disabled

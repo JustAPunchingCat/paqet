@@ -51,7 +51,7 @@ func newConn(adapter net.Conn, isServer bool, unordered bool, mtu int) *Conn {
 		conn:         adapter,
 		streams:      make(map[uint32]*muxStream),
 		acceptCh:     make(chan *muxStream, 1024),
-		datagramCh:   make(chan []byte, 4096),
+		datagramCh:   make(chan []byte, 65536),
 		closed:       make(chan struct{}),
 		isServer:     isServer,
 		nextID:       1,
@@ -84,13 +84,13 @@ func (c *Conn) OpenStrm() (tnet.Strm, error) {
 	strm := newMuxStream(c, id)
 	strm.SetUnordered(c.unordered)
 	c.streams[id] = strm
-	return strm, nil
+	return &Strm{stream: strm, conn: c}, nil
 }
 
 func (c *Conn) AcceptStrm() (tnet.Strm, error) {
 	select {
 	case s := <-c.acceptCh:
-		return s, nil
+		return &Strm{stream: s, conn: c}, nil
 	case <-c.closed:
 		return nil, net.ErrClosed
 	}
@@ -310,13 +310,14 @@ type muxStream struct {
 	reorderBuf   map[uint32]fragment // Buffer for out-of-order packets
 	dead         chan struct{}
 	unordered    bool // If true, disable reordering logic
+	highestRxSeq uint32
 }
 
 func newMuxStream(conn *Conn, id uint32) *muxStream {
 	return &muxStream{
 		conn:       conn,
 		id:         id,
-		rx:         make(chan fragment, 4096),
+		rx:         make(chan fragment, 65536),
 		reorderBuf: make(map[uint32]fragment),
 		dead:       make(chan struct{}),
 	}
@@ -356,6 +357,11 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 			select {
 			case frag := <-s.rx:
+				// Update highest sequence (handle wrap-around safely)
+				if frag.seq-s.highestRxSeq < 0x7FFFFFFF {
+					s.highestRxSeq = frag.seq
+				}
+
 				// Buffer the fragment
 				s.reorderBuf[frag.seq] = frag
 
@@ -375,10 +381,14 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 				// Prune buffer if too large (simple protection)
 				if len(s.reorderBuf) > 1024 {
-					// Ideally remove oldest, but random map iteration is acceptable for emergency cleanup
 					for k := range s.reorderBuf {
-						delete(s.reorderBuf, k)
-						break
+						// Delete fragments that are more than 512 sequences behind the highest seen
+						if s.highestRxSeq-k > 512 && s.highestRxSeq-k < 0x7FFFFFFF {
+							delete(s.reorderBuf, k)
+						}
+					}
+					if len(s.reorderBuf) > 1024 {
+						s.reorderBuf = make(map[uint32]fragment) // Emergency reset
 					}
 				}
 
@@ -387,6 +397,8 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			case <-s.conn.closed:
 				return 0, io.ErrClosedPipe
 			}
+
+			continue
 		}
 
 		// 1. Check reorder buffer for the next expected fragment

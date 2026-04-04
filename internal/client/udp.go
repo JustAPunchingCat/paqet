@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/hash"
@@ -159,6 +160,11 @@ func (c *Client) UDPDatagramNew(ctx context.Context, serverIdx int, tAddr string
 		return nil, nil
 	}
 
+	// Ensure the underlying transport actually supports boundary-less datagrams
+	if dconn, ok := tc.conn.(interface{ SupportsDatagrams() bool }); !ok || !dconn.SupportsDatagrams() {
+		return nil, fmt.Errorf("transport does not support datagram mode")
+	}
+
 	// Open a control stream to register the datagram session
 	strm, err := tc.conn.OpenStrm()
 	if err != nil {
@@ -168,6 +174,8 @@ func (c *Client) UDPDatagramNew(ctx context.Context, serverIdx int, tAddr string
 	// Enable unordered mode on the client side too
 	if udpStrm, ok := strm.(*udp.Strm); ok {
 		udpStrm.SetUnordered(true)
+	} else if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
+		unorderable.SetUnordered(true)
 	}
 
 	taddr, err := tnet.NewAddr(tAddr)

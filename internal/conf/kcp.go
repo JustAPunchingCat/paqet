@@ -61,7 +61,7 @@ func (k *KCP) setDefaults(role string) {
 		k.Smuxbuf = 4 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 2 * 1024 * 1024
+		k.Streambuf = 256 * 1024
 	}
 }
 

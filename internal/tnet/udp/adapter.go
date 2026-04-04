@@ -25,7 +25,7 @@ func newConnAdapter(pConn net.PacketConn, remoteAddr net.Addr, cipher *cipher, r
 		pConn:      pConn,
 		remoteAddr: remoteAddr,
 		cipher:     cipher,
-		readCh:     make(chan []byte, 4096),
+		readCh:     make(chan []byte, 65536),
 		closeCh:    make(chan struct{}),
 		readMagic:  readMagic,
 		writeMagic: writeMagic,

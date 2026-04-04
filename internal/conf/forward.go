@@ -13,7 +13,8 @@ type Forward struct {
 	Target   *tnet.Addr   `yaml:"-"`
 }
 
-func (c *Forward) setDefaults() {}
+func (c *Forward) setDefaults() {
+}
 func (c *Forward) validate() []error {
 	var errors []error
 	l, err := validateAddr(c.Listen_, true)

@@ -82,7 +82,7 @@ func (c *Conn) SendDatagram(data []byte) error {
 	return fmt.Errorf("kcp does not support datagrams")
 }
 
-// ReceiveDatagram receives an unreliable datagram from QUIC.
+// ReceiveDatagram receives an unreliable datagram from KCP.
 func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return nil, fmt.Errorf("kcp does not support datagrams")
 }
