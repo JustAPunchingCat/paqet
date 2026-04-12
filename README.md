@@ -171,8 +171,12 @@ log:
 
 # Network interface settings
 network:
-  interface: "en0" # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
-  driver: "pcap"   # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
+  interface: "en0"                          # CHANGE ME: Primary network interface
+  # send_interface: "tun0"                  # Optional: Override interface for sending outbound packets
+  # listen_interface: "en0"                 # Optional: Override interface for receiving incoming packets
+  # upstream_socks5: "127.0.0.1:1080"       # Optional: Route outbound data via SOCKS5
+  # upstream_target: "203.0.113.1:8888"     # Required if upstream_socks5 is set. Server's upstream_listen IP:Port
+  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest), "ebpf-generic"
   # guid: "\Device\NPF_{...}" # Windows only (Npcap).
   ipv4:
     addr: "192.168.1.100:0" # CHANGE ME: Local IP (use port 0 for random port)
@@ -258,8 +262,10 @@ obfuscation:
 
 # Network interface settings
 network:
-  interface: "eth0" # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest)
+  interface: "eth0"                          # CHANGE ME: Network interface (eth0, ens3, en0, etc.)
+  # listen_interface: "eth0"                 # Optional: Override interface for receiving incoming packets
+  # upstream_listen: ":8888"                 # Optional: TCP port to receive traffic from client's upstream_socks5
+  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest), "ebpf-generic"
   ipv4:
     addr: "10.0.0.100:9999" # CHANGE ME: Server IPv4 and port (port must match listen.addr)
     router_mac: "aa:bb:cc:dd:ee:ff" # CHANGE ME: Gateway/router MAC address
@@ -425,6 +431,35 @@ The client configuration now supports a `servers` list, allowing you to define m
 
 - **Redundancy & Distribution:** The client initializes connections to all configured servers simultaneously.
 - **Per-Server Configuration:** Each server entry can have its own transport settings, hopping configuration, and forwarding rules.
+
+### Asymmetric Upstream Routing (TCP-to-Raw Bridge)
+
+`paqet` supports a native asymmetric routing bridge. This allows a client to securely route its outbound traffic through a heavily-obfuscated standard SOCKS5 proxy (like `dnstt`, `slipstream`, or `ssh -D`) over standard TCP, while the server blasts the high-speed spoofed replies directly back to the client's real public IP using raw sockets.
+
+**Client Configuration:**
+```yaml
+network:
+  interface: "eth0"
+  upstream_socks5: "127.0.0.1:1080"      # The local stealth SOCKS5 proxy (e.g., dnstt)
+  upstream_target: "203.0.113.1:8888"    # The REAL IP and TCP listen port of your paqet Server
+transport:
+  protocol: "kcp"
+  kcp:
+    mode: "manual"
+    nodelay: 0        # Turn off aggressive low-latency mode
+    interval: 100     # Slow down the internal clock
+    resend: 0         # STRICTLY 0: Disable fast retransmit
+```
+
+**Server Configuration:**
+```yaml
+network:
+  interface: "eth0"
+  upstream_listen: ":8888"               # Standard TCP port to receive traffic from SOCKS5 exit nodes
+  spoof:
+    client_mappings:
+      "<SOCKS5_EXIT_NODE_IP>": "<CLIENT_REAL_HOME_IP>"
+```
 
 ### Traffic Obfuscation
 
