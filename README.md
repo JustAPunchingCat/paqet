@@ -206,18 +206,6 @@ servers:
         randomize_ttl: true
         randomize_window: true
 
-    # Source IP Spoofing (Optional)
-    # Enables spoofing of the source IP for all outgoing packets.
-    spoof:
-      enabled: true
-      # List of IPs or CIDRs to use as source addresses.
-      # An address is chosen randomly for each outgoing packet.
-      addrs: ["80.210.52.54"]
-      # Map the server's spoofed IPs back to its real IP.
-      # This is REQUIRED if the server is also spoofing its source IP.
-      # Without this, the client cannot match incoming spoofed packets to the correct server session.
-      server_mappings:
-        "194.59.214.21": "140.174.189.21"
 
     socks5:
       - listen: "127.0.0.1:1080" # SOCKS5 proxy listen address
@@ -267,16 +255,6 @@ obfuscation:
     randomize_ttl: true
     randomize_window: true
 
-    # Source IP Spoofing (Optional)
-    spoof:
-      enabled: true
-      # List of IPs or CIDRs to use as source addresses.
-      # An address is chosen randomly for each outgoing packet.
-      addrs: ["194.59.214.21"]
-      # Map clients' spoofed IPs back to their real IPs
-      # This is REQUIRED if clients are spoofing their source IPs.
-      client_mappings:
-        "80.210.52.54": "45.11.185.186"
 
 # Network interface settings
 network:

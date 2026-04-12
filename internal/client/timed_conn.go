@@ -86,7 +86,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		kcpCfg := *tCfg.KCP
 		if overhead > 0 {
 			if kcpCfg.MTU == 0 {
-				kcpCfg.MTU = 1350
+				kcpCfg.MTU = 1280
 			}
 			kcpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
@@ -100,7 +100,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		udpCfg := *tCfg.UDP
 		if overhead > 0 {
 			if udpCfg.MTU == 0 {
-				udpCfg.MTU = 1350
+				udpCfg.MTU = 1280
 			}
 			udpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client UDP MTU to %d (overhead: %d)", udpCfg.MTU, overhead)
