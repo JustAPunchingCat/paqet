@@ -39,6 +39,9 @@ network:
   driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"                # Windows only (Npcap).
 
+  # --- Advanced Asymmetric Routing ---
+  # upstream_listen: ":8888"                 # Optional: TCP port to receive traffic from client's upstream_socks5
+
   # IPv4 configuration
   ipv4:
     addr: "10.0.0.100:9999"                  # CHANGE ME: Server IPv4 and port (port must match listen.addr)

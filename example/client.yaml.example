@@ -9,9 +9,13 @@ log:
 
 # Network interface settings
 network:
-  interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
+  interface: "en0"                          # CHANGE ME: Primary network interface
   driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
+
+  # --- Advanced Asymmetric Routing ---
+  # upstream_socks5: "127.0.0.1:1080"       # Optional: TCP-to-Raw Bridge via local SOCKS5 (e.g. dnstt)
+  # upstream_target: "203.0.113.1:8888"     # Required if using upstream_socks5. Server's upstream_listen IP:Port
 
   # IPv4 configuration
   ipv4:

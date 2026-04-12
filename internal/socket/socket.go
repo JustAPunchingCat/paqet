@@ -2,17 +2,32 @@ package socket
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/obfs"
 	"paqet/internal/pkg/hash"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type rawPacket struct {
+	payload []byte
+	addr    net.Addr
+	dstPort int
+	err     error
+}
+
+type tcpPacket struct {
+	data []byte
+	addr net.Addr
+}
 
 type PacketConn struct {
 	cfg           *conf.Network
@@ -26,6 +41,12 @@ type PacketConn struct {
 
 	plugins     *PluginManager
 	clientPorts sync.Map
+
+	// Asymmetric Upstream Fields
+	upstreamConn net.Conn
+	upstreamMu   sync.Mutex
+	tcpRxChan    chan tcpPacket
+	rawRxChan    chan rawPacket
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -103,6 +124,17 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		conn.plugins.Add(hp)
 	}
 
+	if cfg.Role == "server" && cfg.UpstreamListen != "" {
+		conn.tcpRxChan = make(chan tcpPacket, 1024)
+		conn.rawRxChan = make(chan rawPacket, 1024)
+		go conn.listenUpstream(cfg.UpstreamListen)
+		go conn.pollRaw()
+	}
+
+	if cfg.Role == "client" && cfg.UpstreamSOCKS5 != "" {
+		go conn.dialUpstreamKeepalive(cfg.UpstreamSOCKS5, cfg.UpstreamTarget)
+	}
+
 	return conn, nil
 }
 
@@ -116,18 +148,42 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 	}
 
 	for {
-		select {
-		case <-c.ctx.Done():
-			return 0, nil, c.ctx.Err()
-		case <-deadline:
-			return 0, nil, os.ErrDeadlineExceeded
-		default:
+		var payload []byte
+		var dstPort int
+
+		if c.tcpRxChan != nil {
+			select {
+			case <-c.ctx.Done():
+				return 0, nil, c.ctx.Err()
+			case <-deadline:
+				return 0, nil, os.ErrDeadlineExceeded
+			case pkt := <-c.tcpRxChan:
+				payload = pkt.data
+				addr = pkt.addr
+				dstPort = c.cfg.Port
+			case raw := <-c.rawRxChan:
+				if raw.err != nil {
+					return 0, nil, raw.err
+				}
+				payload = raw.payload
+				addr = raw.addr
+				dstPort = raw.dstPort
+			}
+		} else {
+			select {
+			case <-c.ctx.Done():
+				return 0, nil, c.ctx.Err()
+			case <-deadline:
+				return 0, nil, os.ErrDeadlineExceeded
+			default:
+			}
+			var errRead error
+			payload, addr, dstPort, errRead = c.recvHandle.Read()
+			if errRead != nil {
+				return 0, nil, errRead
+			}
 		}
 
-		payload, addr, dstPort, err := c.recvHandle.Read()
-		if err != nil {
-			return 0, nil, err
-		}
 		if payload == nil {
 			continue
 		}
@@ -199,6 +255,28 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		return 0, err
 	}
 
+	// Route via Upstream SOCKS5 if active (Client Outbound)
+	c.upstreamMu.Lock()
+	uConn := c.upstreamConn
+	c.upstreamMu.Unlock()
+
+	if uConn != nil {
+		header := make([]byte, 4)
+		binary.BigEndian.PutUint16(header[0:2], uint16(srcPort))
+		binary.BigEndian.PutUint16(header[2:4], uint16(len(data)))
+		c.upstreamMu.Lock()
+		_, err1 := uConn.Write(header)
+		_, err2 := uConn.Write(data)
+		c.upstreamMu.Unlock()
+		if err1 != nil {
+			return 0, err1
+		}
+		if err2 != nil {
+			return 0, err2
+		}
+		return len(data), nil
+	}
+
 	// Server Echo logic: try to reply from the port the client last contacted.
 	key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
 	if lastPort, ok := c.clientPorts.Load(key); ok {
@@ -218,6 +296,13 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 func (c *PacketConn) Close() error {
 	c.cancel()
 	c.plugins.Close()
+
+	c.upstreamMu.Lock()
+	if c.upstreamConn != nil {
+		c.upstreamConn.Close()
+		c.upstreamConn = nil
+	}
+	c.upstreamMu.Unlock()
 
 	if c.sendHandle != nil {
 		go c.sendHandle.Close()
@@ -292,4 +377,141 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (c *PacketConn) pollRaw() {
+	for {
+		payload, addr, dstPort, err := c.recvHandle.Read()
+		select {
+		case <-c.ctx.Done():
+			return
+		case c.rawRxChan <- rawPacket{payload, addr, dstPort, err}:
+		}
+	}
+}
+
+func dialSOCKS5(proxyAddr, targetAddr string) (net.Conn, error) {
+	conn, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return nil, err
+	}
+	if buf[0] != 0x05 || buf[1] != 0x00 {
+		return nil, fmt.Errorf("socks5 auth failed")
+	}
+	host, portStr, _ := net.SplitHostPort(targetAddr)
+	port, _ := strconv.Atoi(portStr)
+	req := []byte{0x05, 0x01, 0x00}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			req = append(req, 0x01)
+			req = append(req, ip4...)
+		} else {
+			req = append(req, 0x04)
+			req = append(req, ip.To16()...)
+		}
+	} else {
+		req = append(req, 0x03, byte(len(host)))
+		req = append(req, []byte(host)...)
+	}
+	req = append(req, byte(port>>8), byte(port))
+	if _, err := conn.Write(req); err != nil {
+		return nil, err
+	}
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return nil, err
+	}
+	if resp[1] != 0x00 {
+		return nil, fmt.Errorf("socks5 connect failed: %x", resp[1])
+	}
+	return conn, nil
+}
+
+func (c *PacketConn) dialUpstreamKeepalive(proxyAddr, targetAddr string) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+		conn, err := dialSOCKS5(proxyAddr, targetAddr)
+		if err != nil {
+			flog.Errorf("Upstream SOCKS5 connect failed: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		flog.Infof("Upstream SOCKS5 connected to %s via %s", targetAddr, proxyAddr)
+		c.upstreamMu.Lock()
+		c.upstreamConn = conn
+		c.upstreamMu.Unlock()
+
+		buf := make([]byte, 1)
+		_, err = conn.Read(buf)
+
+		c.upstreamMu.Lock()
+		if c.upstreamConn != nil {
+			c.upstreamConn.Close()
+			c.upstreamConn = nil
+		}
+		c.upstreamMu.Unlock()
+		flog.Warnf("Upstream SOCKS5 disconnected: %v. Reconnecting...", err)
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func (c *PacketConn) listenUpstream(addr string) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		flog.Errorf("UpstreamListen failed: %v", err)
+		return
+	}
+	go func() {
+		<-c.ctx.Done()
+		l.Close()
+	}()
+	flog.Infof("Server Upstream TCP listening on %s for inbound SOCKS5 connections", addr)
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			select {
+			case <-c.ctx.Done():
+				return
+			default:
+				continue
+			}
+		}
+		flog.Infof("Accepted inbound upstream TCP from %s", conn.RemoteAddr())
+		go func(conn net.Conn) {
+			defer conn.Close()
+			header := make([]byte, 4)
+			for {
+				if _, err := io.ReadFull(conn, header); err != nil {
+					return
+				}
+				clientPort := binary.BigEndian.Uint16(header[0:2])
+				length := binary.BigEndian.Uint16(header[2:4])
+				data := make([]byte, length)
+				if _, err := io.ReadFull(conn, data); err != nil {
+					return
+				}
+
+				taddr := conn.RemoteAddr().(*net.TCPAddr)
+				mappedIP := c.recvHandle.MapIP(taddr.IP)
+				newAddr := &net.UDPAddr{IP: mappedIP, Port: int(clientPort)}
+
+				select {
+				case <-c.ctx.Done():
+					return
+				case c.tcpRxChan <- tcpPacket{data: data, addr: newAddr}:
+				}
+			}
+		}(conn)
+	}
 }

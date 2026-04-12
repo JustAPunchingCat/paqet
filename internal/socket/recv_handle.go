@@ -102,6 +102,17 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 	}, nil
 }
 
+func (h *RecvHandle) MapIP(ip net.IP) net.IP {
+	if len(h.mappings) > 0 {
+		for _, m := range h.mappings {
+			if m.network.Contains(ip) {
+				return m.realIP
+			}
+		}
+	}
+	return ip
+}
+
 func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	data, err := h.source.ReadPacketData()
 	if err != nil {

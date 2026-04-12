@@ -323,7 +323,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	}()
 
 	var ethLayer *layers.Ethernet
-	if h.driver != "tun" {
+	if h.driver != "tun" && len(h.cfg.Interface.HardwareAddr) > 0 {
 		ethLayer = h.ethPool.Get().(*layers.Ethernet)
 		defer h.ethPool.Put(ethLayer)
 	}
