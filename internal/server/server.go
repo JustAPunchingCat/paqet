@@ -62,7 +62,7 @@ func (s *Server) Start() error {
 		// Adjust KCP MTU
 		if s.cfg.Transport.KCP != nil {
 			if s.cfg.Transport.KCP.MTU == 0 {
-				s.cfg.Transport.KCP.MTU = 1350
+				s.cfg.Transport.KCP.MTU = 1280
 			}
 			s.cfg.Transport.KCP.MTU -= overhead
 			flog.Debugf("Adjusted Server KCP MTU to %d (overhead: %d)", s.cfg.Transport.KCP.MTU, overhead)
@@ -70,7 +70,7 @@ func (s *Server) Start() error {
 		// Adjust UDP MTU
 		if s.cfg.Transport.UDP != nil {
 			if s.cfg.Transport.UDP.MTU == 0 {
-				s.cfg.Transport.UDP.MTU = 1350
+				s.cfg.Transport.UDP.MTU = 1280
 			}
 			s.cfg.Transport.UDP.MTU -= overhead
 			flog.Debugf("Adjusted Server UDP MTU to %d (overhead: %d)", s.cfg.Transport.UDP.MTU, overhead)

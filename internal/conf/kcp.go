@@ -36,7 +36,7 @@ func (k *KCP) setDefaults(role string) {
 		k.Mode = "fast"
 	}
 	if k.MTU == 0 {
-		k.MTU = 1350
+		k.MTU = 1280
 	}
 
 	if k.Rcvwnd == 0 {
