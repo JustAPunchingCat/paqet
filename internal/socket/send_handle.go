@@ -192,6 +192,16 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 	ip := h.ipv4Pool.Get().(*layers.IPv4)
 	id := atomic.AddUint32(&h.ipId, 1)
 
+	srcIP := h.srcIPv4
+	isSpoofed := false
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
+		if spoofedIP := h.getSpoofedIP(true); spoofedIP != nil {
+			flog.Debugf("Spoofing IPv4 packet to %s with source %s", dstIP, spoofedIP)
+			srcIP = spoofedIP
+			isSpoofed = true
+		}
+	}
+
 	tos := h.tos
 	ttl := h.ttl
 
@@ -200,13 +210,14 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 	}
 	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTTL {
 		ttl = GenerateRealisticTTL()
-	}
-
-	srcIP := h.srcIPv4
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
-		if spoofedIP := h.getSpoofedIP(true); spoofedIP != nil {
-			flog.Debugf("Spoofing IPv4 packet to %s with source %s", dstIP, spoofedIP)
-			srcIP = spoofedIP
+	} else if isSpoofed {
+		// Deterministic TTL based on the spoofed IP so every IP has its own unique, stable distance!
+		sum := 0
+		if ipBytes := srcIP.To4(); ipBytes != nil {
+			for _, b := range ipBytes {
+				sum += int(b)
+			}
+			ttl = uint8(60 + (sum % 9)) // Stable TTL between 60 and 68 for this specific IP
 		}
 	}
 
@@ -226,6 +237,16 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 	ip := h.ipv6Pool.Get().(*layers.IPv6)
 
+	srcIP := h.srcIPv6
+	isSpoofed := false
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
+		if spoofedIP := h.getSpoofedIP(false); spoofedIP != nil {
+			flog.Debugf("Spoofing IPv6 packet to %s with source %s", dstIP, spoofedIP)
+			srcIP = spoofedIP
+			isSpoofed = true
+		}
+	}
+
 	tclass := h.tos
 	hopLimit := h.ttl
 
@@ -234,13 +255,14 @@ func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 	}
 	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTTL {
 		hopLimit = GenerateRealisticTTL()
-	}
-
-	srcIP := h.srcIPv6
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
-		if spoofedIP := h.getSpoofedIP(false); spoofedIP != nil {
-			flog.Debugf("Spoofing IPv6 packet to %s with source %s", dstIP, spoofedIP)
-			srcIP = spoofedIP
+	} else if isSpoofed {
+		// Deterministic TTL based on the spoofed IPv6 address
+		sum := 0
+		if ipBytes := srcIP.To16(); ipBytes != nil {
+			for _, b := range ipBytes {
+				sum += int(b)
+			}
+			hopLimit = uint8(60 + (sum % 9))
 		}
 	}
 
