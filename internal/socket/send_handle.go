@@ -29,6 +29,13 @@ type TCPF struct {
 	mu         sync.Mutex
 }
 
+type flowState struct {
+	ipId      uint32
+	baseTS    uint32
+	seq       uint32
+	tsCounter uint32
+}
+
 type SendHandle struct {
 	injector    PacketInjector
 	cfg         *conf.Network
@@ -41,8 +48,6 @@ type SendHandle struct {
 	synOptions  []layers.TCPOption
 	ackOptions  []layers.TCPOption
 	time        uint32
-	tsCounter   uint32
-	ipId        uint32
 	obfuscation *conf.Obfuscation
 	// Fingerprinting fields
 	spoofNets []*net.IPNet
@@ -50,15 +55,18 @@ type SendHandle struct {
 
 	tos       uint8
 	ttl       uint8
-	baseTS    uint32
 	startTime time.Time
 
-	tcpF        TCPF
-	ethPool     sync.Pool
-	ipv4Pool    sync.Pool
-	ipv6Pool    sync.Pool
-	tcpPool     sync.Pool
-	bufPool     sync.Pool
+	tcpF     TCPF
+	ethPool  sync.Pool
+	ipv4Pool sync.Pool
+	ipv6Pool sync.Pool
+	tcpPool  sync.Pool
+	bufPool  sync.Pool
+
+	globalState *flowState
+	spoofStates map[string]*flowState
+	statesMu    sync.Mutex
 	closeOnce   sync.Once
 	lastErrTime time.Time
 	errMu       sync.Mutex
@@ -111,19 +119,19 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	ttl := uint8(randRange(60, 68))
 
 	sh := &SendHandle{
-		injector:   injector,
-		cfg:        cfg,
-		driver:     cfg.Driver,
-		srcPort:    uint16(cfg.Port),
-		synOptions: synOptions,
-		ackOptions: ackOptions,
-		tcpF:       TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
-		time:       uint32(time.Now().UnixNano() / int64(time.Millisecond)),
-		ipId:       uint32(time.Now().UnixNano()),
-		tos:        tos,
-		ttl:        ttl,
-		baseTS:     randUint32(),
-		startTime:  time.Now(),
+		injector:    injector,
+		cfg:         cfg,
+		driver:      cfg.Driver,
+		srcPort:     uint16(cfg.Port),
+		synOptions:  synOptions,
+		ackOptions:  ackOptions,
+		tcpF:        TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		time:        uint32(time.Now().UnixNano() / int64(time.Millisecond)),
+		tos:         tos,
+		ttl:         ttl,
+		startTime:   time.Now(),
+		globalState: &flowState{ipId: randUint32(), baseTS: randUint32(), seq: randUint32()},
+		spoofStates: make(map[string]*flowState),
 		ethPool: sync.Pool{
 			New: func() any {
 				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
@@ -188,19 +196,9 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	return sh, nil
 }
 
-func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
+func (h *SendHandle) buildIPv4Header(srcIP, dstIP net.IP, isSpoofed bool, state *flowState) *layers.IPv4 {
 	ip := h.ipv4Pool.Get().(*layers.IPv4)
-	id := atomic.AddUint32(&h.ipId, 1)
-
-	srcIP := h.srcIPv4
-	isSpoofed := false
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
-		if spoofedIP := h.getSpoofedIP(true); spoofedIP != nil {
-			flog.Debugf("Spoofing IPv4 packet to %s with source %s", dstIP, spoofedIP)
-			srcIP = spoofedIP
-			isSpoofed = true
-		}
-	}
+	id := atomic.AddUint32(&state.ipId, 1)
 
 	tos := h.tos
 	ttl := h.ttl
@@ -234,18 +232,8 @@ func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
 	return ip
 }
 
-func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
+func (h *SendHandle) buildIPv6Header(srcIP, dstIP net.IP, isSpoofed bool, state *flowState) *layers.IPv6 {
 	ip := h.ipv6Pool.Get().(*layers.IPv6)
-
-	srcIP := h.srcIPv6
-	isSpoofed := false
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
-		if spoofedIP := h.getSpoofedIP(false); spoofedIP != nil {
-			flog.Debugf("Spoofing IPv6 packet to %s with source %s", dstIP, spoofedIP)
-			srcIP = spoofedIP
-			isSpoofed = true
-		}
-	}
 
 	tclass := h.tos
 	hopLimit := h.ttl
@@ -277,7 +265,7 @@ func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
 	return ip
 }
 
-func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF) *layers.TCP {
+func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF, state *flowState) *layers.TCP {
 	tcp := h.tcpPool.Get().(*layers.TCP)
 
 	winSize := uint16(randRange(64240, 65535))
@@ -292,15 +280,15 @@ func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF) *layer
 		Window: winSize,
 	}
 
-	counter := atomic.AddUint32(&h.tsCounter, 1)
+	counter := atomic.AddUint32(&state.tsCounter, 1)
 
 	// Compute realistic TCP timestamp from real elapsed time + random base + jitter
 	elapsed := time.Since(h.startTime)
-	tsVal := h.baseTS + uint32(elapsed.Milliseconds()) + uint32(randRange(0, 9))
+	tsVal := state.baseTS + uint32(elapsed.Milliseconds()) + uint32(randRange(0, 9))
 
 	// Unified Sequence Number Generation
 	// Use the same formula for SYN and Data so they appear to be in the same window.
-	seq := h.baseTS + (counter << 7) // Use baseTS for sequence base too
+	seq := state.seq + (counter << 7)
 
 	// Use local slice for options to avoid data race on h.synOptions/h.ackOptions
 	// We must allocate new OptionData for the timestamp to avoid racing on the backing array.
@@ -353,13 +341,38 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
+	isIPv4 := dstIP.To4() != nil
+	var srcIP net.IP
+	var isSpoofed bool
+
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
+		if spoofedIP := h.getSpoofedIP(isIPv4); spoofedIP != nil {
+			srcIP = spoofedIP
+			isSpoofed = true
+			// flog.Debugf("Spoofing packet to %s with source %s", dstIP, spoofedIP)
+		}
+	}
+
+	var state *flowState
+	if isSpoofed {
+		state = h.getFlowState(srcIP)
+	} else {
+		state = h.globalState
+	}
+
 	f := h.getClientTCPF(dstIP, dstPort)
-	tcpLayer := h.buildTCPHeader(uint16(srcPort), dstPort, f)
+	tcpLayer := h.buildTCPHeader(uint16(srcPort), dstPort, f, state)
 	defer h.tcpPool.Put(tcpLayer)
 
 	var ipLayer gopacket.SerializableLayer
-	if dstIP.To4() != nil {
-		ip := h.buildIPv4Header(dstIP)
+	if isIPv4 {
+		ip := h.buildIPv4Header(srcIP, dstIP, isSpoofed, state)
 		defer h.ipv4Pool.Put(ip)
 		ipLayer = ip
 		tcpLayer.SetNetworkLayerForChecksum(ip)
@@ -368,7 +381,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 			ethLayer.EthernetType = layers.EthernetTypeIPv4
 		}
 	} else {
-		ip := h.buildIPv6Header(dstIP)
+		ip := h.buildIPv6Header(srcIP, dstIP, isSpoofed, state)
 		defer h.ipv6Pool.Put(ip)
 		ipLayer = ip
 		tcpLayer.SetNetworkLayerForChecksum(ip)
@@ -513,6 +526,24 @@ func (h *SendHandle) getSpoofedIP(isIPv4 bool) net.IP {
 		netIdx := idx - len(validIPs)
 		return randIPFromCIDR(validNets[netIdx])
 	}
+}
+
+func (h *SendHandle) getFlowState(ip net.IP) *flowState {
+	ipStr := string(ip)
+	h.statesMu.Lock()
+	defer h.statesMu.Unlock()
+
+	if state, ok := h.spoofStates[ipStr]; ok {
+		return state
+	}
+
+	state := &flowState{
+		ipId:   randUint32(),
+		baseTS: randUint32(),
+		seq:    randUint32(),
+	}
+	h.spoofStates[ipStr] = state
+	return state
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
