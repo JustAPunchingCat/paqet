@@ -81,8 +81,8 @@ servers:
           min: 32           # Minimum padding bytes
           max: 64           # Maximum padding bytes
         headers:
-          randomize_tos: true
-          randomize_ttl: true
+        randomize_tos: false      # Turn off to act like a standard OS
+        randomize_ttl: false      # Turn off to prevent 'packet crafting' signatures
           randomize_window: true
 
       socks5:
