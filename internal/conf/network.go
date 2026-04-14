@@ -15,10 +15,25 @@ type Addr struct {
 }
 
 type Spoof struct {
-	Enabled        bool              `yaml:"enabled"`
-	Addrs          []string          `yaml:"addrs"`
-	ClientMappings map[string]string `yaml:"client_mappings"`
-	ServerMappings map[string]string `yaml:"server_mappings"`
+	Enabled          bool                `yaml:"enabled"`
+	Addrs            []string            `yaml:"addrs"`
+	ClientMappings   map[string]string   `yaml:"client_mappings"`
+	ServerMappings   map[string]string   `yaml:"server_mappings"`
+	TargetSpoofAddrs map[string][]string `yaml:"target_spoof_addrs"`
+	Clients          []SpoofClient       `yaml:"clients"`
+	Servers          []SpoofServer       `yaml:"servers"`
+}
+
+type SpoofClient struct {
+	RealClientIP     string   `yaml:"real_client_ip"`
+	SpoofedClientIPs []string `yaml:"spoofed_client_ips"`
+	SpoofedServerIPs []string `yaml:"spoofed_server_ips"`
+}
+
+type SpoofServer struct {
+	RealServerIP     string   `yaml:"real_server_ip"`
+	SpoofedServerIPs []string `yaml:"spoofed_server_ips"`
+	SpoofedClientIPs []string `yaml:"spoofed_client_ips"`
 }
 
 type Network struct {
@@ -48,6 +63,43 @@ func (n *Network) setDefaults(role string) {
 
 func (n *Network) validate() []error {
 	var errors []error
+
+	// Dynamically build the legacy maps from the clean list-based config
+	if n.Spoof != nil {
+		if n.Spoof.ClientMappings == nil {
+			n.Spoof.ClientMappings = make(map[string]string)
+		}
+		if n.Spoof.ServerMappings == nil {
+			n.Spoof.ServerMappings = make(map[string]string)
+		}
+		if n.Spoof.TargetSpoofAddrs == nil {
+			n.Spoof.TargetSpoofAddrs = make(map[string][]string)
+		}
+		for _, c := range n.Spoof.Clients {
+			if c.RealClientIP != "" {
+				for _, spoofed := range c.SpoofedClientIPs {
+					if spoofed != "" {
+						n.Spoof.ClientMappings[spoofed] = c.RealClientIP
+					}
+				}
+				if len(c.SpoofedServerIPs) > 0 {
+					n.Spoof.TargetSpoofAddrs[c.RealClientIP] = c.SpoofedServerIPs
+				}
+			}
+		}
+		for _, srv := range n.Spoof.Servers {
+			if srv.RealServerIP != "" {
+				for _, spoofed := range srv.SpoofedServerIPs {
+					if spoofed != "" {
+						n.Spoof.ServerMappings[spoofed] = srv.RealServerIP
+					}
+				}
+				if len(srv.SpoofedClientIPs) > 0 {
+					n.Spoof.TargetSpoofAddrs[srv.RealServerIP] = srv.SpoofedClientIPs
+				}
+			}
+		}
+	}
 
 	validDrivers := []string{"pcap", "ebpf", "afpacket", "ebpf-generic"}
 	if !slices.Contains(validDrivers, n.Driver) {

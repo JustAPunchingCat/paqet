@@ -52,15 +52,17 @@ network:
   # Source IP Spoofing (optional)
   spoof:
     enabled: false
-    # List of IPs or CIDRs to use as source addresses.
-    # An address is chosen randomly for each outgoing packet.
-    # Example: ["10.1.0.0/16", "172.16.5.10"]
-    addrs: []
-    # Map clients' spoofed IPs back to their real IPs
-    # Format: "Spoofed_IP_or_CIDR": "Real_IP"
-    client_mappings:
-      "10.100.0.0/24": "203.0.113.5"
-      "172.16.5.10": "198.51.100.2"
+    # Define clients and their spoofing rules
+    clients:
+      - real_client_ip: "203.0.113.5"
+        spoofed_client_ips: ["10.100.0.0/24", "10.200.0.0/24"]
+        # Optional: Map this client to a dedicated list of server source IPs.
+        # The server will pretend to be one of these IPs when replying.
+        # Note: The client MUST map these IPs in its 'servers' list!
+        spoofed_server_ips: ["192.0.2.0/24", "198.51.100.2"]
+        
+      - real_client_ip: "203.0.113.10"
+        spoofed_client_ips: ["172.16.5.0/24"]
 
   # TCP flags for packet crafting (optional - will use defaults)
   tcp:

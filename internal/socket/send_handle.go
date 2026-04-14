@@ -36,6 +36,13 @@ type flowState struct {
 	tsCounter uint32
 }
 
+type targetSpoofRule struct {
+	targetNet *net.IPNet
+	targetIP  net.IP
+	spoofIPs  []net.IP
+	spoofNets []*net.IPNet
+}
+
 type SendHandle struct {
 	injector    PacketInjector
 	cfg         *conf.Network
@@ -50,8 +57,9 @@ type SendHandle struct {
 	time        uint32
 	obfuscation *conf.Obfuscation
 	// Fingerprinting fields
-	spoofNets []*net.IPNet
-	spoofIPs  []net.IP
+	spoofNets        []*net.IPNet
+	spoofIPs         []net.IP
+	targetSpoofRules []targetSpoofRule
 
 	tos       uint8
 	ttl       uint8
@@ -190,6 +198,45 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 				continue
 			}
 			flog.Warnf("Invalid spoofing address (not a CIDR or IP): %s", s)
+		}
+
+		if cfg.Spoof.TargetSpoofAddrs != nil {
+			for targetStr, addrs := range cfg.Spoof.TargetSpoofAddrs {
+				var rule targetSpoofRule
+				_, ipNet, err := net.ParseCIDR(targetStr)
+				if err == nil {
+					rule.targetNet = ipNet
+				} else {
+					ip := net.ParseIP(targetStr)
+					if ip != nil {
+						rule.targetIP = ip
+					} else {
+						flog.Warnf("Invalid target IP/CIDR in target_spoof_addrs: %s", targetStr)
+						continue
+					}
+				}
+
+				for _, s := range addrs {
+					ip, ipNet, err := net.ParseCIDR(s)
+					if err == nil {
+						ones, bits := ipNet.Mask.Size()
+						if ones == bits {
+							rule.spoofIPs = append(rule.spoofIPs, ip)
+						} else {
+							rule.spoofNets = append(rule.spoofNets, ipNet)
+						}
+						continue
+					}
+
+					ip = net.ParseIP(s)
+					if ip != nil {
+						rule.spoofIPs = append(rule.spoofIPs, ip)
+						continue
+					}
+					flog.Warnf("Invalid spoofing address for target %s: %s", targetStr, s)
+				}
+				sh.targetSpoofRules = append(sh.targetSpoofRules, rule)
+			}
 		}
 		flog.Infof("Source IP spoofing enabled with %d IPs and %d networks.", len(sh.spoofIPs), len(sh.spoofNets))
 	}
@@ -351,8 +398,8 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 		srcIP = h.srcIPv6
 	}
 
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
-		if spoofedIP := h.getSpoofedIP(isIPv4); spoofedIP != nil {
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 || len(h.targetSpoofRules) > 0 {
+		if spoofedIP := h.getSpoofedIP(isIPv4, dstIP); spoofedIP != nil {
 			srcIP = spoofedIP
 			isSpoofed = true
 			// flog.Debugf("Spoofing packet to %s with source %s", dstIP, spoofedIP)
@@ -496,17 +543,16 @@ func randIPFromCIDR(cidr *net.IPNet) net.IP {
 	}
 }
 
-func (h *SendHandle) getSpoofedIP(isIPv4 bool) net.IP {
-	// Filter IPs and Nets by family
+func pickRandomIP(isIPv4 bool, ips []net.IP, nets []*net.IPNet) net.IP {
 	var validIPs []net.IP
 	var validNets []*net.IPNet
 
-	for _, ip := range h.spoofIPs {
+	for _, ip := range ips {
 		if (ip.To4() != nil) == isIPv4 {
 			validIPs = append(validIPs, ip)
 		}
 	}
-	for _, n := range h.spoofNets {
+	for _, n := range nets {
 		if (n.IP.To4() != nil) == isIPv4 {
 			validNets = append(validNets, n)
 		}
@@ -526,6 +572,18 @@ func (h *SendHandle) getSpoofedIP(isIPv4 bool) net.IP {
 		netIdx := idx - len(validIPs)
 		return randIPFromCIDR(validNets[netIdx])
 	}
+}
+
+func (h *SendHandle) getSpoofedIP(isIPv4 bool, dstIP net.IP) net.IP {
+	for _, rule := range h.targetSpoofRules {
+		if (rule.targetNet != nil && rule.targetNet.Contains(dstIP)) || (rule.targetIP != nil && rule.targetIP.Equal(dstIP)) {
+			ip := pickRandomIP(isIPv4, rule.spoofIPs, rule.spoofNets)
+			if ip != nil {
+				return ip
+			}
+		}
+	}
+	return pickRandomIP(isIPv4, h.spoofIPs, h.spoofNets)
 }
 
 func (h *SendHandle) getFlowState(ip net.IP) *flowState {
