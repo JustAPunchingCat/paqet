@@ -143,6 +143,7 @@ servers:
                                   # false = batch ACKs (more bandwidth efficient)
                                   # Setting true reduces latency but increases bandwidth usage
 
+        # Window & MTU settings (Applies to ALL modes)
         # mtu: 0                 # Maximum transmission unit (0=auto PMTUD, 50-1500). Default 1280.
         # rcvwnd: 2048           # Receive window size (default: 2048)
         # sndwnd: 2048           # Send window size (default: 2048)
@@ -169,7 +170,7 @@ servers:
       # udp:
       #   key: "your-secret-key-here"   # Encryption key (must match server)
       #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
-      #   mtu: 1280                     # Maximum Transmission Unit (default: 1280)
+      #   mtu: 0                        # Maximum transmission unit (0=auto PMTUD, 50-1500). Default 1280.
 
   # - server:
   #     addr: "10.0.0.101:9999"    # Second server
