@@ -23,7 +23,8 @@ hopping:
 
 # Obfuscation Configuration (Optional)
 obfuscation:
-  use_tls: false      # NOT RECOMMENDED: Mimics HTTPS but lacks handshake. Use padding instead.
+  use_tls: true       # Wraps traffic in TLS Application Data (0x17)
+  fake_handshake: "sciencedirect.com" # Expect and spoof a TLS 1.3 Handshake to bypass DPI
   padding:
     enabled: true    # Enable random padding
     min: 32           # Minimum padding bytes

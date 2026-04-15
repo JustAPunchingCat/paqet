@@ -84,10 +84,15 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		// Make a shallow copy of Transport config to avoid modifying the global config
 		tCfg := tc.srvCfg.Transport
 		kcpCfg := *tCfg.KCP
+
+		isAutoMTU := kcpCfg.MTU == 0
+		if isAutoMTU {
+			// Start with a safe 1380 MTU for Auto PMTUD before probing upward
+			kcpCfg.MTU = 1380
+			flog.Infof("Auto PMTUD enabled: Starting KCP with safe MTU %d", kcpCfg.MTU)
+		}
+
 		if overhead > 0 {
-			if kcpCfg.MTU == 0 {
-				kcpCfg.MTU = 1280
-			}
 			kcpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
 		}
@@ -98,10 +103,14 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	case "udp": // Also needs to pass `tc.rootCfg.Role` to `socket.NewWithHopping` when creating `newPConn` for probing.
 		tCfg := tc.srvCfg.Transport // Create a copy of Transport config
 		udpCfg := *tCfg.UDP
+
+		isAutoMTU := udpCfg.MTU == 0
+		if isAutoMTU {
+			udpCfg.MTU = 1380
+			flog.Infof("Auto PMTUD enabled: Starting UDP with safe MTU %d", udpCfg.MTU)
+		}
+
 		if overhead > 0 {
-			if udpCfg.MTU == 0 {
-				udpCfg.MTU = 1280
-			}
 			udpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client UDP MTU to %d (overhead: %d)", udpCfg.MTU, overhead)
 		}
