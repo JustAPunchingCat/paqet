@@ -113,6 +113,13 @@ func (c *Conn) Close() error {
 	return nil
 }
 
+func (c *Conn) SetMtu(mtu int) bool {
+	c.mu.Lock()
+	c.mtu = mtu
+	c.mu.Unlock()
+	return true
+}
+
 func (c *Conn) readLoop() {
 	defer c.readLoopWg.Done()
 	buf := make([]byte, 65536)

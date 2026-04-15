@@ -70,6 +70,9 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 
 	var conn tnet.Conn
 
+	var isAutoMTU bool
+	var baseMTU int
+
 	// Calculate obfuscation overhead
 	overhead := 0
 	if obfsCfg.UseTLS {
@@ -85,10 +88,11 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		tCfg := tc.srvCfg.Transport
 		kcpCfg := *tCfg.KCP
 
-		isAutoMTU := kcpCfg.MTU == 0
+		isAutoMTU = kcpCfg.MTU == 0
 		if isAutoMTU {
 			// Start with a safe 1380 MTU for Auto PMTUD before probing upward
 			kcpCfg.MTU = 1380
+			baseMTU = 1380
 			flog.Infof("Auto PMTUD enabled: Starting KCP with safe MTU %d", kcpCfg.MTU)
 		}
 
@@ -104,9 +108,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		tCfg := tc.srvCfg.Transport // Create a copy of Transport config
 		udpCfg := *tCfg.UDP
 
-		isAutoMTU := udpCfg.MTU == 0
+		isAutoMTU = udpCfg.MTU == 0
 		if isAutoMTU {
 			udpCfg.MTU = 1380
+			baseMTU = 1380
 			flog.Infof("Auto PMTUD enabled: Starting UDP with safe MTU %d", udpCfg.MTU)
 		}
 
@@ -142,6 +147,11 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if isAutoMTU {
+		tc.startPMTUD(conn, baseMTU, overhead)
+	}
+
 	return conn, nil
 }
 
@@ -164,4 +174,67 @@ func (tc *timedConn) close() {
 	if tc.conn != nil {
 		tc.conn.Close()
 	}
+}
+
+func (tc *timedConn) startPMTUD(conn tnet.Conn, baseMTU, overhead int) {
+	go func() {
+		// Give the connection a moment to stabilize
+		time.Sleep(1 * time.Second)
+
+		type mtuSetter interface {
+			SetMtu(int) bool
+		}
+		setter, ok := conn.(mtuSetter)
+		if !ok {
+			return
+		}
+
+		// Standard MTU steps to probe
+		probeSizes := []int{1400, 1420, 1440, 1460, 1492, 1500}
+		bestPayloadMTU := baseMTU - overhead
+
+		for _, targetMTU := range probeSizes {
+			testPayloadMTU := targetMTU - overhead
+			if testPayloadMTU <= bestPayloadMTU {
+				continue
+			}
+
+			// Dynamically update the transport MTU limit
+			setter.SetMtu(testPayloadMTU)
+
+			strm, err := conn.OpenStrm()
+			if err != nil {
+				break
+			}
+
+			// Send a PPING header to the server
+			p := protocol.Proto{Type: protocol.PPING}
+			if err := p.Write(strm); err != nil {
+				strm.Close()
+				break
+			}
+
+			// Write dummy data to force the transport layer to generate full-sized MTU packets.
+			// We write 2x the MTU size to guarantee it fragments at the exact new MTU boundary.
+			dummy := make([]byte, testPayloadMTU*2)
+			strm.Write(dummy)
+
+			// Wait for the PPONG response from the server
+			strm.SetReadDeadline(time.Now().Add(2 * time.Second))
+			err = p.Read(strm)
+			strm.Close()
+
+			if err != nil || p.Type != protocol.PPONG {
+				flog.Infof("Auto PMTUD: Network bottleneck reached. Packet dropped at %d bytes.", targetMTU)
+				break
+			}
+
+			bestPayloadMTU = testPayloadMTU
+			flog.Debugf("Auto PMTUD: Successfully probed MTU %d (Payload MTU: %d)", targetMTU, testPayloadMTU)
+		}
+
+		// Lock in the highest successful MTU
+		setter.SetMtu(bestPayloadMTU)
+		flog.Infof("Auto PMTUD completed. Optimal Payload MTU set to: %d", bestPayloadMTU)
+	}()
 }
