@@ -60,6 +60,7 @@ type SendHandle struct {
 	spoofNets        []*net.IPNet
 	spoofIPs         []net.IP
 	targetSpoofRules []targetSpoofRule
+	nameMapping      map[string]string
 
 	tos       uint8
 	ttl       uint8
@@ -140,6 +141,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		startTime:   time.Now(),
 		globalState: &flowState{ipId: randUint32(), baseTS: randUint32(), seq: randUint32()},
 		spoofStates: make(map[string]*flowState),
+		nameMapping: make(map[string]string),
 		ethPool: sync.Pool{
 			New: func() any {
 				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
@@ -177,6 +179,22 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 
 	// Parse spoofing addresses
 	if cfg.Spoof != nil && cfg.Spoof.Enabled {
+		// Build name mapping for log masking
+		for _, c := range cfg.Spoof.Clients {
+			if c.Name != "" {
+				for _, ip := range c.RealClientIPs {
+					sh.nameMapping[ip] = c.Name
+				}
+			}
+		}
+		for _, s := range cfg.Spoof.Servers {
+			if s.Name != "" {
+				for _, ip := range s.RealServerIPs {
+					sh.nameMapping[ip] = s.Name
+				}
+			}
+		}
+
 		for _, s := range cfg.Spoof.Addrs {
 			// Try parsing as CIDR
 			ip, ipNet, err := net.ParseCIDR(s)
@@ -211,7 +229,11 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 					if ip != nil {
 						rule.targetIP = ip
 					} else {
-						flog.Warnf("Invalid target IP/CIDR in target_spoof_addrs: %s", targetStr)
+						targetDisp := targetStr
+						if name, ok := sh.nameMapping[targetStr]; ok {
+							targetDisp = name
+						}
+						flog.Warnf("Invalid target IP/CIDR in target_spoof_addrs: %s", targetDisp)
 						continue
 					}
 				}
@@ -233,7 +255,11 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 						rule.spoofIPs = append(rule.spoofIPs, ip)
 						continue
 					}
-					flog.Warnf("Invalid spoofing address for target %s: %s", targetStr, s)
+					targetDisp := targetStr
+					if name, ok := sh.nameMapping[targetStr]; ok {
+						targetDisp = name
+					}
+					flog.Warnf("Invalid spoofing address for target %s: %s", targetDisp, s)
 				}
 				sh.targetSpoofRules = append(sh.targetSpoofRules, rule)
 			}
@@ -518,7 +544,7 @@ func randIPFromCIDR(cidr *net.IPNet) net.IP {
 		randOffset, err := rand.Int(rand.Reader, big.NewInt(int64(numHosts)))
 		if err != nil {
 			// Fallback for safety, though crypto/rand should not fail here
-			randOffset = big.NewInt(int64(fastRandUint32() % numHosts))
+			randOffset = big.NewInt(int64(randUint32() % numHosts))
 		}
 
 		// Add offset to network address

@@ -17,21 +17,23 @@ type Addr struct {
 type Spoof struct {
 	Enabled          bool                `yaml:"enabled"`
 	Addrs            []string            `yaml:"addrs"`
-	ClientMappings   map[string]string   `yaml:"client_mappings"`
-	ServerMappings   map[string]string   `yaml:"server_mappings"`
+	ClientMappings   map[string][]string `yaml:"client_mappings"`
+	ServerMappings   map[string][]string `yaml:"server_mappings"`
 	TargetSpoofAddrs map[string][]string `yaml:"target_spoof_addrs"`
 	Clients          []SpoofClient       `yaml:"clients"`
 	Servers          []SpoofServer       `yaml:"servers"`
 }
 
 type SpoofClient struct {
-	RealClientIP     string   `yaml:"real_client_ip"`
+	Name             string   `yaml:"name"`
+	RealClientIPs    []string `yaml:"real_client_ips"`
 	SpoofedClientIPs []string `yaml:"spoofed_client_ips"`
 	SpoofedServerIPs []string `yaml:"spoofed_server_ips"`
 }
 
 type SpoofServer struct {
-	RealServerIP     string   `yaml:"real_server_ip"`
+	Name             string   `yaml:"name"`
+	RealServerIPs    []string `yaml:"real_server_ips"`
 	SpoofedServerIPs []string `yaml:"spoofed_server_ips"`
 	SpoofedClientIPs []string `yaml:"spoofed_client_ips"`
 }
@@ -67,35 +69,39 @@ func (n *Network) validate() []error {
 	// Dynamically build the legacy maps from the clean list-based config
 	if n.Spoof != nil {
 		if n.Spoof.ClientMappings == nil {
-			n.Spoof.ClientMappings = make(map[string]string)
+			n.Spoof.ClientMappings = make(map[string][]string)
 		}
 		if n.Spoof.ServerMappings == nil {
-			n.Spoof.ServerMappings = make(map[string]string)
+			n.Spoof.ServerMappings = make(map[string][]string)
 		}
 		if n.Spoof.TargetSpoofAddrs == nil {
 			n.Spoof.TargetSpoofAddrs = make(map[string][]string)
 		}
 		for _, c := range n.Spoof.Clients {
-			if c.RealClientIP != "" {
+			if len(c.RealClientIPs) > 0 {
 				for _, spoofed := range c.SpoofedClientIPs {
 					if spoofed != "" {
-						n.Spoof.ClientMappings[spoofed] = c.RealClientIP
+						n.Spoof.ClientMappings[spoofed] = append(n.Spoof.ClientMappings[spoofed], c.RealClientIPs...)
 					}
 				}
-				if len(c.SpoofedServerIPs) > 0 {
-					n.Spoof.TargetSpoofAddrs[c.RealClientIP] = c.SpoofedServerIPs
+				for _, realIP := range c.RealClientIPs {
+					if len(c.SpoofedServerIPs) > 0 {
+						n.Spoof.TargetSpoofAddrs[realIP] = append(n.Spoof.TargetSpoofAddrs[realIP], c.SpoofedServerIPs...)
+					}
 				}
 			}
 		}
 		for _, srv := range n.Spoof.Servers {
-			if srv.RealServerIP != "" {
+			if len(srv.RealServerIPs) > 0 {
 				for _, spoofed := range srv.SpoofedServerIPs {
 					if spoofed != "" {
-						n.Spoof.ServerMappings[spoofed] = srv.RealServerIP
+						n.Spoof.ServerMappings[spoofed] = append(n.Spoof.ServerMappings[spoofed], srv.RealServerIPs...)
 					}
 				}
-				if len(srv.SpoofedClientIPs) > 0 {
-					n.Spoof.TargetSpoofAddrs[srv.RealServerIP] = srv.SpoofedClientIPs
+				for _, realIP := range srv.RealServerIPs {
+					if len(srv.SpoofedClientIPs) > 0 {
+						n.Spoof.TargetSpoofAddrs[realIP] = append(n.Spoof.TargetSpoofAddrs[realIP], srv.SpoofedClientIPs...)
+					}
 				}
 			}
 		}

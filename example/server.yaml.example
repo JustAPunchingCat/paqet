@@ -55,14 +55,16 @@ network:
     enabled: false
     # Define clients and their spoofing rules
     clients:
-      - real_client_ip: "203.0.113.5"
+      - name: "home-network-client"
+        real_client_ips: ["203.0.113.5"]
         spoofed_client_ips: ["10.100.0.0/24", "10.200.0.0/24"]
         # Optional: Map this client to a dedicated list of server source IPs.
         # The server will pretend to be one of these IPs when replying.
         # Note: The client MUST map these IPs in its 'servers' list!
         spoofed_server_ips: ["192.0.2.0/24", "198.51.100.2"]
         
-      - real_client_ip: "203.0.113.10"
+      - name: "mobile-laptop-client"
+        real_client_ips: ["203.0.113.10", "203.0.113.11"]
         spoofed_client_ips: ["172.16.5.0/24"]
 
   # TCP flags for packet crafting (optional - will use defaults)
