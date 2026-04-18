@@ -25,17 +25,17 @@ type Spoof struct {
 }
 
 type SpoofClient struct {
-	Name             string   `yaml:"name"`
-	RealClientIPs    []string `yaml:"real_client_ips"`
-	SpoofedClientIPs []string `yaml:"spoofed_client_ips"`
-	SpoofedServerIPs []string `yaml:"spoofed_server_ips"`
+	Name              string   `yaml:"name"`
+	RealClientIPs     []string `yaml:"real_client_ips"`
+	SpoofedClientIPs  []string `yaml:"spoofed_client_ips"`
+	SpoofingServerIPs []string `yaml:"spoofing_server_ips"`
 }
 
 type SpoofServer struct {
-	Name             string   `yaml:"name"`
-	RealServerIPs    []string `yaml:"real_server_ips"`
-	SpoofedServerIPs []string `yaml:"spoofed_server_ips"`
-	SpoofedClientIPs []string `yaml:"spoofed_client_ips"`
+	Name              string   `yaml:"name"`
+	RealServerIPs     []string `yaml:"real_server_ips"`
+	SpoofedServerIPs  []string `yaml:"spoofed_server_ips"`
+	SpoofingClientIPs []string `yaml:"spoofing_client_ips"`
 }
 
 type Network struct {
@@ -85,8 +85,8 @@ func (n *Network) validate() []error {
 					}
 				}
 				for _, realIP := range c.RealClientIPs {
-					if len(c.SpoofedServerIPs) > 0 {
-						n.Spoof.TargetSpoofAddrs[realIP] = append(n.Spoof.TargetSpoofAddrs[realIP], c.SpoofedServerIPs...)
+					if len(c.SpoofingServerIPs) > 0 {
+						n.Spoof.TargetSpoofAddrs[realIP] = append(n.Spoof.TargetSpoofAddrs[realIP], c.SpoofingServerIPs...)
 					}
 				}
 			}
@@ -99,8 +99,8 @@ func (n *Network) validate() []error {
 					}
 				}
 				for _, realIP := range srv.RealServerIPs {
-					if len(srv.SpoofedClientIPs) > 0 {
-						n.Spoof.TargetSpoofAddrs[realIP] = append(n.Spoof.TargetSpoofAddrs[realIP], srv.SpoofedClientIPs...)
+					if len(srv.SpoofingClientIPs) > 0 {
+						n.Spoof.TargetSpoofAddrs[realIP] = append(n.Spoof.TargetSpoofAddrs[realIP], srv.SpoofingClientIPs...)
 					}
 				}
 			}

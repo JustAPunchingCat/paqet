@@ -34,7 +34,7 @@ network:
         # Optional: Map this server to a dedicated list of client source IPs.
         # The client will pretend to be one of these IPs when connecting to this server.
         # Note: The server MUST map these IPs in its 'clients' list!
-        spoofed_client_ips: ["10.100.0.0/24"]
+        spoofing_client_ips: ["10.100.0.0/24"]
 
       - name: "backup-upstream"
         real_server_ips: ["203.0.113.4", "203.0.113.5"]
