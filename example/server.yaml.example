@@ -61,7 +61,7 @@ network:
         # Optional: Map this client to a dedicated list of server source IPs.
         # The server will pretend to be one of these IPs when replying.
         # Note: The client MUST map these IPs in its 'servers' list!
-        spoofed_server_ips: ["192.0.2.0/24", "198.51.100.2"]
+        spoofing_server_ips: ["192.0.2.0/24", "198.51.100.2"]
         
       - name: "mobile-laptop-client"
         real_client_ips: ["203.0.113.10", "203.0.113.11"]
