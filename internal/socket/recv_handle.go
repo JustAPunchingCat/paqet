@@ -56,13 +56,17 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 
 	var mappings []ipMapping
 	if cfg.Spoof != nil {
-		var targetMap map[string]string
+		var targetMap map[string][]string
 		if role == "client" {
 			targetMap = cfg.Spoof.ServerMappings
 		} else {
 			targetMap = cfg.Spoof.ClientMappings
 		}
-		for spoofStr, realStr := range targetMap {
+		for spoofStr, realStrs := range targetMap {
+			if len(realStrs) == 0 {
+				continue
+			}
+			realStr := realStrs[0] // Use the first real IP for consistent reverse mapping
 			realIP := net.ParseIP(realStr)
 			if realIP == nil {
 				flog.Warnf("Invalid real IP in spoof mapping: %s", realStr)
