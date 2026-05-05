@@ -10,6 +10,7 @@ type Forward struct {
 	Target_   string       `yaml:"target"`
 	Protocol  string       `yaml:"protocol"`
 	Unordered *bool        `yaml:"unordered"`
+	SockBuf   int          `yaml:"sockbuf"`
 	Listen    *net.UDPAddr `yaml:"-"`
 	Target    *tnet.Addr   `yaml:"-"`
 }
@@ -18,6 +19,9 @@ func (c *Forward) setDefaults() {
 	if c.Unordered == nil {
 		t := true
 		c.Unordered = &t
+	}
+	if c.SockBuf == 0 {
+		c.SockBuf = 4194304 // 4MB default
 	}
 }
 func (c *Forward) validate() []error {

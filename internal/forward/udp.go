@@ -23,10 +23,10 @@ func (f *Forward) listenUDP(ctx context.Context) {
 		flog.Errorf("failed to bind UDP socket on %s: %v", laddr, err)
 		return
 	}
-	// Increase socket buffers to 4MB to handle high-throughput bursts (e.g. QUIC/Hysteria)
-	// Default OS buffers (~200KB) are too small and cause packet drops.
-	conn.SetReadBuffer(4 * 1024 * 1024)
-	conn.SetWriteBuffer(4 * 1024 * 1024)
+	// Set UDP socket buffer sizes to handle high-throughput bursts
+	// Requires corresponding net.core.rmem_max/wmem_max sysctl increases on Linux.
+	conn.SetReadBuffer(f.sockBuf)
+	conn.SetWriteBuffer(f.sockBuf)
 	defer conn.Close()
 	go func() {
 		<-ctx.Done()
