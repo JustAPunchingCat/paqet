@@ -15,15 +15,17 @@ type Forward struct {
 	wg         sync.WaitGroup
 	ServerIdx  int
 	unordered  bool
+	sockBuf    int
 }
 
-func New(client *client.Client, listenAddr, targetAddr string, serverIdx int, unordered bool) (*Forward, error) {
+func New(client *client.Client, listenAddr, targetAddr string, serverIdx int, unordered bool, sockBuf int) (*Forward, error) {
 	return &Forward{
 		client:     client,
 		listenAddr: listenAddr,
 		targetAddr: targetAddr,
 		ServerIdx:  serverIdx,
 		unordered:  unordered,
+		sockBuf:    sockBuf,
 	}, nil
 }
 

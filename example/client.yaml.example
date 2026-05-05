@@ -10,7 +10,7 @@ log:
 # Network interface settings
 network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
-  driver: "pcap"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
+  driver: "ebpf"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
 
   # IPv4 configuration
@@ -96,7 +96,8 @@ servers:
     #     target: "127.0.0.1:80"
     #     protocol: "tcp"
     #     unordered: true       # Disable reordering for UDP (default: true)
-    
+    #     sockbuf: 67108864     # Socket buffer size for the local forwarder (default: 4194304)
+                                # Requires corresponding net.core.rmem_max/wmem_max sysctl increases on Linux.
     # Transport protocol configuration for this server
     transport:
       protocol: "kcp"  # Transport protocol: "kcp", "quic", "udp", or "auto"
