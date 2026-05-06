@@ -52,18 +52,20 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 		return nil, false, 0, err
 	}
 
+	ts := newTrackedStrm(strm)
+
 	pool.mu.Lock()
 	// Double-check if created concurrently
 	if existing, exists := pool.strms[key]; exists {
 		pool.mu.Unlock()
-		strm.Close()
+		ts.Close()
 		return existing, false, key, nil
 	}
-	pool.strms[key] = strm
+	pool.strms[key] = ts
 	pool.mu.Unlock()
 
-	flog.Debugf("established UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
-	return strm, true, key, nil
+	flog.Debugf("established UDP stream %d for %s -> %s", ts.SID(), lAddr, tAddr)
+	return ts, true, key, nil
 }
 
 // UDPNew creates a new UDP stream without caching.
@@ -204,20 +206,23 @@ func (c *Client) UDPDatagramNew(ctx context.Context, serverIdx int, tAddr string
 	flog.Infof("established UDP datagram session for -> %s", tAddr)
 
 	return &UDPDatagramSession{
-		strm:   strm,
-		ctx:    sessCtx,
-		cancel: cancel,
+		strm:         strm,
+		ctx:          sessCtx,
+		cancel:       cancel,
+		lastActivity: time.Now().UnixNano(),
 	}, nil
 }
 
 type UDPDatagramSession struct {
-	strm   tnet.Strm
-	ctx    context.Context
-	cancel context.CancelFunc
+	strm         tnet.Strm
+	ctx          context.Context
+	cancel       context.CancelFunc
+	lastActivity int64
 }
 
 // Send sends a UDP packet via QUIC datagram.
 func (s *UDPDatagramSession) Send(data []byte) error {
+	atomic.StoreInt64(&s.lastActivity, time.Now().UnixNano())
 	_, err := s.strm.Write(data)
 	return err
 }
@@ -229,11 +234,50 @@ func (s *UDPDatagramSession) Close() error {
 }
 
 // Implement tnet.Strm interface for UDPDatagramSession so it can be stored in udpPool
-func (s *UDPDatagramSession) Read(b []byte) (int, error)         { return s.strm.Read(b) }
-func (s *UDPDatagramSession) Write(b []byte) (int, error)        { return s.strm.Write(b) }
+func (s *UDPDatagramSession) Read(b []byte) (int, error) {
+	n, err := s.strm.Read(b)
+	if n > 0 {
+		atomic.StoreInt64(&s.lastActivity, time.Now().UnixNano())
+	}
+	return n, err
+}
+func (s *UDPDatagramSession) Write(b []byte) (int, error) {
+	atomic.StoreInt64(&s.lastActivity, time.Now().UnixNano())
+	return s.strm.Write(b)
+}
 func (s *UDPDatagramSession) LocalAddr() net.Addr                { return s.strm.LocalAddr() }
 func (s *UDPDatagramSession) RemoteAddr() net.Addr               { return s.strm.RemoteAddr() }
 func (s *UDPDatagramSession) SetDeadline(t time.Time) error      { return s.strm.SetDeadline(t) }
 func (s *UDPDatagramSession) SetReadDeadline(t time.Time) error  { return s.strm.SetReadDeadline(t) }
 func (s *UDPDatagramSession) SetWriteDeadline(t time.Time) error { return s.strm.SetWriteDeadline(t) }
 func (s *UDPDatagramSession) SID() int                           { return s.strm.SID() }
+func (s *UDPDatagramSession) activity() int64                    { return atomic.LoadInt64(&s.lastActivity) }
+
+type trackedStrm struct {
+	tnet.Strm
+	lastActivity int64
+}
+
+func newTrackedStrm(s tnet.Strm) *trackedStrm {
+	return &trackedStrm{
+		Strm:         s,
+		lastActivity: time.Now().UnixNano(),
+	}
+}
+
+func (s *trackedStrm) Read(b []byte) (int, error) {
+	n, err := s.Strm.Read(b)
+	if n > 0 {
+		atomic.StoreInt64(&s.lastActivity, time.Now().UnixNano())
+	}
+	return n, err
+}
+
+func (s *trackedStrm) Write(b []byte) (int, error) {
+	atomic.StoreInt64(&s.lastActivity, time.Now().UnixNano())
+	return s.Strm.Write(b)
+}
+
+func (s *trackedStrm) activity() int64 {
+	return atomic.LoadInt64(&s.lastActivity)
+}

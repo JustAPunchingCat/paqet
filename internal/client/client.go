@@ -8,6 +8,7 @@ import (
 	"paqet/internal/pkg/iterator"
 	"paqet/internal/tnet"
 	"sync"
+	"time"
 )
 
 type Client struct {
@@ -74,6 +75,7 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	go c.ticker(ctx)
+	go c.udpIdleSweeper(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -105,6 +107,38 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	flog.Infof("Client started: IPv4:%s IPv6:%s -> %d upstream servers (%d total connections)", ipv4Addr, ipv6Addr, activeServers, totalConns)
 	return nil
+}
+
+func (c *Client) udpIdleSweeper(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now().UnixNano()
+			timeout := (2 * time.Minute).Nanoseconds()
+
+			for _, pool := range c.udpPools {
+				if pool == nil {
+					continue
+				}
+				pool.mu.Lock()
+				for key, strm := range pool.strms {
+					if ts, ok := strm.(interface{ activity() int64 }); ok {
+						if last := ts.activity(); last > 0 && now-last > timeout {
+							flog.Debugf("Client UDP stream %d idle timeout, closing", strm.SID())
+							strm.Close() // Unblocks Read() in forward
+							delete(pool.strms, key)
+						}
+					}
+				}
+				pool.mu.Unlock()
+			}
+		}
+	}
 }
 
 func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
