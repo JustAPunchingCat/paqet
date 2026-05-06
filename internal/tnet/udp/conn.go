@@ -223,7 +223,7 @@ func (c *Conn) readLoop() {
 			select {
 			case c.acceptCh <- strm:
 			default:
-				c.closeStream(sid)
+				strm.closeInternal()
 			}
 		}
 	}

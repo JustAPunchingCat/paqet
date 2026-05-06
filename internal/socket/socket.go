@@ -103,6 +103,8 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		conn.plugins.Add(hp)
 	}
 
+	go conn.purgeClientPorts()
+
 	return conn, nil
 }
 
@@ -251,6 +253,22 @@ func (c *PacketConn) GetClientPort(addr net.Addr) int {
 		return port.(int)
 	}
 	return 0
+}
+
+func (c *PacketConn) purgeClientPorts() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			c.clientPorts.Range(func(key, value any) bool {
+				c.clientPorts.Delete(key)
+				return true
+			})
+		}
+	}
 }
 
 func (c *PacketConn) SetDeadline(t time.Time) error {

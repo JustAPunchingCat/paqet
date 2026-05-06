@@ -9,10 +9,11 @@ import (
 	"time"
 )
 
-const clientChanSize = 65536
+const clientChanSize = 65536 // Safe to raise: channels are now instantly destroyed on close
 
 // clientConn holds a per-client channel of received packets.
 type clientConn struct {
+	key          uint64
 	ch           chan packet
 	addr         net.Addr
 	cipher       *cipher
@@ -140,16 +141,18 @@ func (d *Demux) readLoop() {
 		} else {
 			// New client
 			cc := &clientConn{
+				key:          key,
 				ch:           make(chan packet, clientChanSize),
 				addr:         addr,
 				cipher:       d.cipher,
 				lastActivity: time.Now().UnixNano(),
 			}
-			cc.ch <- pkt
-			d.clients.Store(key, cc)
 			select {
 			case d.newConn <- cc:
+				cc.ch <- pkt
+				d.clients.Store(key, cc)
 			default:
+				pkt.putBack() // Correctly applies backpressure if server is overloaded
 			}
 		}
 	}
@@ -183,6 +186,18 @@ func (d *Demux) gcLoop() {
 	}
 }
 
+func (d *Demux) removeClient(key uint64) {
+	if cc, ok := d.clients.LoadAndDelete(key); ok {
+		c := cc.(*clientConn)
+		c.mu.Lock()
+		if !c.closed {
+			c.closed = true
+			close(c.ch)
+		}
+		c.mu.Unlock()
+	}
+}
+
 // Accept waits for a new client connection.
 func (d *Demux) Accept() (*clientConn, error) {
 	cc, ok := <-d.newConn
@@ -207,10 +222,11 @@ type clientConnReader struct {
 	curPkt     packet // current packet for putBack (stored by value)
 	readMagic  []byte
 	writeMagic []byte
+	onClose    func()
 }
 
-func newClientConnReader(cc *clientConn, pConn net.PacketConn, cipher *cipher, readMagic, writeMagic []byte) *clientConnReader {
-	return &clientConnReader{cc: cc, pConn: pConn, cipher: cipher, readMagic: readMagic, writeMagic: writeMagic}
+func newClientConnReader(cc *clientConn, pConn net.PacketConn, cipher *cipher, readMagic, writeMagic []byte, onClose func()) *clientConnReader {
+	return &clientConnReader{cc: cc, pConn: pConn, cipher: cipher, readMagic: readMagic, writeMagic: writeMagic, onClose: onClose}
 }
 
 func (r *clientConnReader) Read(b []byte) (int, error) {
@@ -261,7 +277,12 @@ func (r *clientConnReader) Write(b []byte) (int, error) {
 	return r.pConn.WriteTo(data, r.cc.addr)
 }
 
-func (r *clientConnReader) Close() error                       { return nil }
+func (r *clientConnReader) Close() error {
+	if r.onClose != nil {
+		r.onClose()
+	}
+	return nil
+}
 func (r *clientConnReader) LocalAddr() net.Addr                { return r.pConn.LocalAddr() }
 func (r *clientConnReader) RemoteAddr() net.Addr               { return r.cc.addr }
 func (r *clientConnReader) SetDeadline(_ time.Time) error      { return nil }
