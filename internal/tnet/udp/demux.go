@@ -5,6 +5,7 @@ import (
 	"net"
 	"paqet/internal/pkg/hash"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,9 +13,12 @@ const clientChanSize = 65536
 
 // clientConn holds a per-client channel of received packets.
 type clientConn struct {
-	ch     chan packet
-	addr   net.Addr
-	cipher *cipher
+	ch           chan packet
+	addr         net.Addr
+	cipher       *cipher
+	lastActivity int64
+	mu           sync.Mutex
+	closed       bool
 }
 
 type packet struct {
@@ -72,6 +76,7 @@ func NewDemux(pConn net.PacketConn, cipher *cipher) *Demux {
 		done:    make(chan struct{}),
 	}
 	go d.readLoop()
+	go d.gcLoop()
 	return d
 }
 
@@ -118,17 +123,27 @@ func (d *Demux) readLoop() {
 
 		pkt := packet{data: data, n: len(data), pool: pool, bp: bp}
 		if cc, ok := d.clients.Load(key); ok {
-			select {
-			case cc.(*clientConn).ch <- pkt:
-			default: // drop if channel full
+			c := cc.(*clientConn)
+			atomic.StoreInt64(&c.lastActivity, time.Now().UnixNano())
+			c.mu.Lock()
+			if c.closed {
+				c.mu.Unlock()
 				pkt.putBack()
+			} else {
+				select {
+				case c.ch <- pkt:
+				default: // drop if channel full
+					pkt.putBack()
+				}
+				c.mu.Unlock()
 			}
 		} else {
 			// New client
 			cc := &clientConn{
-				ch:     make(chan packet, clientChanSize),
-				addr:   addr,
-				cipher: d.cipher,
+				ch:           make(chan packet, clientChanSize),
+				addr:         addr,
+				cipher:       d.cipher,
+				lastActivity: time.Now().UnixNano(),
 			}
 			cc.ch <- pkt
 			d.clients.Store(key, cc)
@@ -136,6 +151,34 @@ func (d *Demux) readLoop() {
 			case d.newConn <- cc:
 			default:
 			}
+		}
+	}
+}
+
+func (d *Demux) gcLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.done:
+			return
+		case <-ticker.C:
+			now := time.Now().UnixNano()
+			timeout := (2 * time.Minute).Nanoseconds()
+			d.clients.Range(func(key, value any) bool {
+				c := value.(*clientConn)
+				if now-atomic.LoadInt64(&c.lastActivity) > timeout {
+					d.clients.Delete(key)
+					c.mu.Lock()
+					if !c.closed {
+						c.closed = true
+						close(c.ch)
+					}
+					c.mu.Unlock()
+				}
+				return true
+			})
 		}
 	}
 }

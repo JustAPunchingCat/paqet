@@ -174,6 +174,9 @@ func (c *Conn) readLoop() {
 		c.mu.RUnlock()
 
 		if exists {
+			strm.writeMu.Lock()
+			strm.lastActivity = time.Now()
+			strm.writeMu.Unlock()
 			select {
 			case strm.rx <- fragment{seq: seq, data: payload, more: flags&flagMoreFrags != 0, flags: flags}:
 			default:
@@ -253,6 +256,23 @@ func (c *Conn) keepAliveLoop() {
 
 			// Send KeepAlive packet (SID=0, Seq=0, Flags=KeepAlive, Empty Data)
 			c.writePacket(0, 0, nil, flagKeepAlive)
+
+			c.mu.Lock()
+			now := time.Now()
+			var idleStreams []*muxStream
+			for _, s := range c.streams {
+				s.writeMu.Lock()
+				idle := now.Sub(s.lastActivity)
+				s.writeMu.Unlock()
+				if idle > connectionTimeout {
+					idleStreams = append(idleStreams, s)
+				}
+			}
+			c.mu.Unlock()
+
+			for _, s := range idleStreams {
+				s.closeInternal()
+			}
 		}
 	}
 }
@@ -327,15 +347,17 @@ type muxStream struct {
 	unordered    bool // If true, disable reordering logic
 	highestRxSeq uint32
 	writeMu      sync.Mutex
+	lastActivity time.Time
 }
 
 func newMuxStream(conn *Conn, id uint32) *muxStream {
 	return &muxStream{
-		conn:       conn,
-		id:         id,
-		rx:         make(chan fragment, 65536),
-		reorderBuf: make(map[uint32]fragment),
-		dead:       make(chan struct{}),
+		conn:         conn,
+		id:           id,
+		rx:           make(chan fragment, 65536),
+		reorderBuf:   make(map[uint32]fragment),
+		dead:         make(chan struct{}),
+		lastActivity: time.Now(),
 	}
 }
 
@@ -446,6 +468,12 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			}
 			if frag.seq > s.nextReadSeq {
 				s.reorderBuf[frag.seq] = frag
+
+				// Prevent infinite memory leak in ordered mode if a packet is permanently lost
+				if len(s.reorderBuf) > 1024 {
+					flog.Debugf("UDP stream %d ordered buffer overflow, dropping stuck packets", s.id)
+					s.reorderBuf = make(map[uint32]fragment)
+				}
 				continue // Buffered
 			}
 
@@ -507,6 +535,7 @@ func (s *muxStream) Write(b []byte) (n int, err error) {
 	}
 
 	s.writeMu.Lock()
+	s.lastActivity = time.Now()
 	defer s.writeMu.Unlock()
 
 	// Fragment large writes into MTU-sized packets

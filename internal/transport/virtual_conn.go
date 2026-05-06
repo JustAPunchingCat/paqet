@@ -155,7 +155,7 @@ type DemuxedPacketConn struct {
 }
 
 type demuxPacket struct {
-	data []byte
+	ptr  *[]byte
 	n    int
 	addr net.Addr
 	pool *sync.Pool
@@ -163,8 +163,7 @@ type demuxPacket struct {
 
 func (p *demuxPacket) putBack() {
 	if p.pool != nil {
-		b := p.data
-		p.pool.Put(&b)
+		p.pool.Put(p.ptr)
 	}
 }
 
@@ -181,14 +180,14 @@ func newDemuxedPacketConn(tag byte, writer net.PacketConn) *DemuxedPacketConn {
 // into a pooled buffer and enqueues it. This is one unavoidable copy since
 // the demux read buffer is reused immediately after deliver returns.
 func (d *DemuxedPacketConn) deliver(data []byte, addr net.Addr) {
-	pool, buf := getDemuxBuf(len(data))
+	pool, ptr, buf := getDemuxBuf(len(data))
 	copy(buf, data)
 	select {
-	case d.ch <- demuxPacket{data: buf, n: len(data), addr: addr, pool: pool}:
+	case d.ch <- demuxPacket{ptr: ptr, n: len(data), addr: addr, pool: pool}:
 	case <-d.done:
-		pool.Put(&buf)
+		pool.Put(ptr)
 	default:
-		pool.Put(&buf)
+		pool.Put(ptr)
 	}
 }
 
@@ -198,7 +197,8 @@ func (d *DemuxedPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		if !ok {
 			return 0, nil, net.ErrClosed
 		}
-		n := copy(p, pkt.data[:pkt.n])
+		buf := (*pkt.ptr)[:pkt.n]
+		n := copy(p, buf)
 		addr := pkt.addr
 		pkt.putBack()
 		return n, addr, nil
@@ -259,11 +259,11 @@ var (
 	demuxLargePool = sync.Pool{New: func() any { b := make([]byte, 65536); return &b }}
 )
 
-func getDemuxBuf(n int) (*sync.Pool, []byte) {
+func getDemuxBuf(n int) (*sync.Pool, *[]byte, []byte) {
 	if n <= 1500 {
 		bp := demuxSmallPool.Get().(*[]byte)
-		return &demuxSmallPool, (*bp)[:n]
+		return &demuxSmallPool, bp, (*bp)[:n]
 	}
 	bp := demuxLargePool.Get().(*[]byte)
-	return &demuxLargePool, (*bp)[:n]
+	return &demuxLargePool, bp, (*bp)[:n]
 }
