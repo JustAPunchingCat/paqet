@@ -125,7 +125,7 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 	// Create the source
 	s := &sharedEBPFSource{
 		mgr: mgr,
-		ch:  make(chan []byte, 1024), // Buffer for high throughput
+		ch:  make(chan []byte, 65536),
 	}
 
 	// Register IP
