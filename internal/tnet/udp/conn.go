@@ -104,11 +104,15 @@ func (c *Conn) Close() error {
 		close(c.closed)
 		c.conn.Close()
 		c.mu.Lock()
+		var streamsToClose []*muxStream
 		for _, s := range c.streams {
+			streamsToClose = append(streamsToClose, s)
+		}
+		c.streams = make(map[uint32]*muxStream)
+		c.mu.Unlock()
+		for _, s := range streamsToClose {
 			s.closeInternal()
 		}
-		c.streams = nil
-		c.mu.Unlock()
 	}
 	return nil
 }
