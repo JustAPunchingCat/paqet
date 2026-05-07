@@ -59,7 +59,7 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 			return err
 		}
 		msg := err.Error()
-		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "closed pipe") {
 			return nil
 		}
 		flog.Errorf("failed to read protocol message from stream %d: %v", strm.SID(), err)

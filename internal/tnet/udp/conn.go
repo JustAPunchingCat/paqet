@@ -475,8 +475,9 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 				// Prevent infinite memory leak in ordered mode if a packet is permanently lost
 				if len(s.reorderBuf) > 1024 {
-					flog.Debugf("UDP stream %d ordered buffer overflow, dropping stuck packets", s.id)
-					s.reorderBuf = make(map[uint32]fragment)
+					flog.Errorf("UDP stream %d ordered buffer overflow, stream irreparably broken due to lost packet, closing", s.id)
+					s.closeInternal()
+					return 0, io.ErrClosedPipe
 				}
 				continue // Buffered
 			}

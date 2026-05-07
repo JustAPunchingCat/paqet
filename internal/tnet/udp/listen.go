@@ -21,7 +21,7 @@ func Listen(cfg *conf.UDP, pConn net.PacketConn) (tnet.Listener, error) {
 		return nil, err
 	}
 
-	demux := NewDemux(pConn, cipher)
+	demux := NewDemux(pConn, cipher, MagicClient)
 	flog.Debugf("UDP listener started with packet demuxing")
 
 	return &Listener{packetConn: pConn, cfg: cfg, demux: demux}, nil

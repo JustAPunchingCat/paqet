@@ -13,17 +13,75 @@ import (
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
 	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, d.Address())
 
-	// Use Stream Mode for perfect session isolation.
-	// (MuxStream natively supports Unordered delivery to prevent Head-of-Line blocking)
-	strm, new, k, err := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
-	if err != nil {
-		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
-		return err
+	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
+	sess, newDgm, kDgm, errDgm := h.client.UDPDatagramByIndex(h.ServerIdx, addr.String(), d.Address())
+	if errDgm == nil && sess != nil {
+		err := sess.Send(d.Data)
+		if err != nil {
+			flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
+			h.client.CloseUDP(h.ServerIdx, kDgm)
+			return err
+		}
+
+		if newDgm {
+			flog.Infof("SOCKS5 accepted UDP datagram connection %s -> %s via %s", addr, d.Address(), sess.RemoteAddr())
+
+			// Capture needed fields to avoid accessing d in goroutine (safety against reuse)
+			dAddr := d.Address()
+			atyp := d.Atyp
+			dstAddr := append([]byte(nil), d.DstAddr...)
+			dstPort := append([]byte(nil), d.DstPort...)
+
+			go func() {
+				bufp := buffer.UPool.Get().(*[]byte)
+				defer buffer.UPool.Put(bufp)
+				buf := *bufp
+
+				defer func() {
+					flog.Debugf("SOCKS5 UDP datagram stream %d closed for %s -> %s", sess.SID(), addr, dAddr)
+					h.client.CloseUDP(h.ServerIdx, kDgm)
+				}()
+
+				// Pre-calculate header length: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
+				headerLen := 4 + len(dstAddr) + len(dstPort)
+
+				// Pre-fill header in buffer (constant for this stream)
+				if len(buf) > headerLen {
+					buf[0], buf[1], buf[2] = 0, 0, 0 // RSV, FRAG
+					buf[3] = atyp
+					copy(buf[4:], dstAddr)
+					copy(buf[4+len(dstAddr):], dstPort)
+				}
+
+				for {
+					select {
+					case <-h.ctx.Done():
+						return
+					default:
+						n, err := sess.Read(buf[headerLen:])
+						if err != nil {
+							flog.Debugf("SOCKS5 UDP datagram stream %d read error for %s -> %s: %v", sess.SID(), addr, dAddr, err)
+							return
+						}
+						_, err = server.UDPConn.WriteToUDP(buf[:headerLen+n], addr)
+						if err != nil {
+							flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+n, addr, err)
+							return
+						}
+					}
+				}
+			}()
+		}
+		return nil
 	}
 
-	// Write length prefix (2 bytes) + Data to preserve packet boundaries in the stream
-	// Combine into a single write to ensure atomicity on the stream
-	// Optimization: Use buffer pool to avoid allocation per packet
+	// Fallback to Stream Mode with Length Prefixes (Required if using KCP transport)
+	strm, newStrm, kStrm, errStrm := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
+	if errStrm != nil {
+		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), errStrm)
+		return errStrm
+	}
+
 	bufp := buffer.UPool.Get().(*[]byte)
 	defer buffer.UPool.Put(bufp)
 	payload := *bufp
@@ -33,14 +91,14 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	payload = payload[:2+len(d.Data)]
 	binary.BigEndian.PutUint16(payload, uint16(len(d.Data)))
 	copy(payload[2:], d.Data)
-	_, err = strm.Write(payload)
+	_, err := strm.Write(payload)
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
-		h.client.CloseUDP(h.ServerIdx, k)
+		h.client.CloseUDP(h.ServerIdx, kStrm)
 		return err
 	}
 
-	if new {
+	if newStrm {
 		flog.Infof("SOCKS5 accepted UDP connection %s -> %s via %s", addr, d.Address(), strm.RemoteAddr())
 
 		// Capture needed fields to avoid accessing d in goroutine (safety against reuse)
@@ -56,7 +114,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 
 			defer func() {
 				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, dAddr)
-				h.client.CloseUDP(h.ServerIdx, k)
+				h.client.CloseUDP(h.ServerIdx, kStrm)
 			}()
 
 			// Pre-calculate header length: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)

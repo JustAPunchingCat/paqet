@@ -121,6 +121,7 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 		buffer.UPool.Put(bufp)
 		flog.Debugf("UDP stream %d closed for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(f.ServerIdx, k)
+		strm.Close()
 	}()
 	buf := *bufp
 
@@ -161,6 +162,7 @@ func (f *Forward) handleUDPDatagram(ctx context.Context, k uint64, sess tnet.Str
 		buffer.UPool.Put(bufp)
 		flog.Debugf("UDP datagram stream %d closed for %s -> %s", sess.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(f.ServerIdx, k)
+		sess.Close()
 	}()
 	buf := *bufp
 
