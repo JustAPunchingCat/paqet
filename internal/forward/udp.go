@@ -96,6 +96,7 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 	payload := *bufp
 	if cap(payload) < 2+n {
 		payload = make([]byte, 2+n)
+		*bufp = payload // Ensure the newly grown slice is returned to the pool!
 	}
 	payload = payload[:2+n]
 	binary.BigEndian.PutUint16(payload, uint16(n))
