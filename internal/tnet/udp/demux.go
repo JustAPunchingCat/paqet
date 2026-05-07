@@ -61,20 +61,22 @@ func getPacketBuf(n int) (*sync.Pool, *[]byte, []byte) {
 
 // Demux reads from a single PacketConn and routes packets to per-client channels by source address.
 type Demux struct {
-	pConn   net.PacketConn
-	cipher  *cipher
-	clients sync.Map // uint64 -> *clientConn
-	newConn chan *clientConn
-	done    chan struct{}
+	pConn     net.PacketConn
+	cipher    *cipher
+	readMagic []byte
+	clients   sync.Map // uint64 -> *clientConn
+	newConn   chan *clientConn
+	done      chan struct{}
 }
 
 // NewDemux creates a new packet demultiplexer.
-func NewDemux(pConn net.PacketConn, cipher *cipher) *Demux {
+func NewDemux(pConn net.PacketConn, cipher *cipher, readMagic []byte) *Demux {
 	d := &Demux{
-		pConn:   pConn,
-		cipher:  cipher,
-		newConn: make(chan *clientConn, 64),
-		done:    make(chan struct{}),
+		pConn:     pConn,
+		cipher:    cipher,
+		readMagic: readMagic,
+		newConn:   make(chan *clientConn, 64),
+		done:      make(chan struct{}),
 	}
 	go d.readLoop()
 	go d.gcLoop()
@@ -110,6 +112,16 @@ func (d *Demux) readLoop() {
 				pool = nil // decrypted data is not pooled
 			}
 			data = plain
+		}
+
+		// Pre-filter invalid magic bytes to instantly drop scanners without allocating connection memory
+		if len(d.readMagic) > 0 {
+			if len(data) < len(d.readMagic) || !bytes.Equal(data[:len(d.readMagic)], d.readMagic) {
+				if pool != nil {
+					pool.Put(bp)
+				}
+				continue
+			}
 		}
 
 		udpAddr, ok := addr.(*net.UDPAddr)

@@ -59,6 +59,7 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		flog.Errorf("failed to establish UDP connection to %s for stream %d: %v", addr, strm.SID(), err)
+		strm.Close()
 		return err
 	}
 	if udpConn, ok := conn.(*net.UDPConn); ok {
@@ -68,6 +69,7 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 	}
 	defer func() {
 		conn.Close()
+		strm.Close()
 		flog.Debugf("closed UDP connection %s for stream %d", addr, strm.SID())
 	}()
 	flog.Debugf("UDP connection established to %s for stream %d", addr, strm.SID())
@@ -123,6 +125,7 @@ func (s *Server) handleDatagram(ctx context.Context, strm tnet.Strm, addr string
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		flog.Errorf("failed to establish UDP connection to %s for datagram stream %d: %v", addr, strm.SID(), err)
+		strm.Close()
 		return err
 	}
 	if udpConn, ok := conn.(*net.UDPConn); ok {
@@ -132,6 +135,7 @@ func (s *Server) handleDatagram(ctx context.Context, strm tnet.Strm, addr string
 	}
 	defer func() {
 		conn.Close()
+		strm.Close()
 		flog.Debugf("closed UDP connection %s for datagram stream %d", addr, strm.SID())
 	}()
 	flog.Debugf("UDP datagram connection established to %s for stream %d", addr, strm.SID())
