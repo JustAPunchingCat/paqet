@@ -49,6 +49,10 @@ network:
   ipv6:
     addr: "[::1]:9999"                       # CHANGE ME: Server IPv6 and port (or remove if not using IPv6)
     router_mac: "aa:bb:cc:dd:ee:ff"          # CHANGE ME: Gateway/router MAC address
+    
+  # Allowed Client IPs (optional)
+  # Only process packets from these IPs or CIDRs to instantly drop scanners.
+  # allowed_client_ips: ["203.0.113.5", "10.0.0.0/8"]
 
   # Source IP Spoofing (optional)
   spoof:

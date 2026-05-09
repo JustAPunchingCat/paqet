@@ -24,6 +24,8 @@ type RecvHandle struct {
 	source      PacketSource
 	decoderPool sync.Pool
 	mappings    []ipMapping
+	allowedIPs  []net.IP
+	allowedNets []*net.IPNet
 }
 
 type packetDecoder struct {
@@ -91,9 +93,24 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 		}
 	}
 
+	var allowedIPs []net.IP
+	var allowedNets []*net.IPNet
+	for _, s := range cfg.AllowedClientIPs {
+		_, ipNet, err := net.ParseCIDR(s)
+		if err == nil {
+			allowedNets = append(allowedNets, ipNet)
+		} else if ip := net.ParseIP(s); ip != nil {
+			allowedIPs = append(allowedIPs, ip)
+		} else {
+			flog.Warnf("Invalid IP/CIDR in allowed_client_ips: %s", s)
+		}
+	}
+
 	return &RecvHandle{
-		source:   source,
-		mappings: mappings,
+		source:      source,
+		mappings:    mappings,
+		allowedIPs:  allowedIPs,
+		allowedNets: allowedNets,
 		decoderPool: sync.Pool{
 			New: func() any {
 				d := &packetDecoder{
@@ -153,6 +170,28 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 				addr.IP = m.realIP
 				break
 			}
+		}
+	}
+
+	// Enforce Allowed IPs (only if explicitly configured)
+	if len(h.allowedIPs) > 0 || len(h.allowedNets) > 0 {
+		allowed := false
+		for _, ip := range h.allowedIPs {
+			if ip.Equal(addr.IP) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			for _, net := range h.allowedNets {
+				if net.Contains(addr.IP) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			return nil, nil, 0, nil // Silently ignore the packet without killing the read loop!
 		}
 	}
 

@@ -295,8 +295,10 @@ func (r *clientConnReader) Close() error {
 	}
 	return nil
 }
-func (r *clientConnReader) LocalAddr() net.Addr                { return r.pConn.LocalAddr() }
-func (r *clientConnReader) RemoteAddr() net.Addr               { return r.cc.addr }
+func (r *clientConnReader) LocalAddr() net.Addr { return r.pConn.LocalAddr() }
+func (r *clientConnReader) RemoteAddr() net.Addr {
+	return r.cc.addr
+}
 func (r *clientConnReader) SetDeadline(_ time.Time) error      { return nil }
 func (r *clientConnReader) SetReadDeadline(_ time.Time) error  { return nil }
 func (r *clientConnReader) SetWriteDeadline(_ time.Time) error { return nil }
