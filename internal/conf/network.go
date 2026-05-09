@@ -39,19 +39,20 @@ type SpoofServer struct {
 }
 
 type Network struct {
-	Interface_  string         `yaml:"interface"`
-	Driver      string         `yaml:"driver"`
-	GUID        string         `yaml:"guid"`
-	IPv4        Addr           `yaml:"ipv4"`
-	IPv6        Addr           `yaml:"ipv6"`
-	PCAP        PCAP           `yaml:"pcap"`
-	TCP         TCP            `yaml:"tcp"`
-	Interface   *net.Interface `yaml:"-"`
-	Port        int            `yaml:"-"`
-	Transport   *Transport     `yaml:"-"`
-	Obfuscation *Obfuscation   `yaml:"-"`
-	Spoof       *Spoof         `yaml:"spoof"`
-	Role        string         `yaml:"-"`
+	Interface_       string         `yaml:"interface"`
+	Driver           string         `yaml:"driver"`
+	GUID             string         `yaml:"guid"`
+	IPv4             Addr           `yaml:"ipv4"`
+	IPv6             Addr           `yaml:"ipv6"`
+	PCAP             PCAP           `yaml:"pcap"`
+	TCP              TCP            `yaml:"tcp"`
+	Interface        *net.Interface `yaml:"-"`
+	Port             int            `yaml:"-"`
+	Transport        *Transport     `yaml:"-"`
+	Obfuscation      *Obfuscation   `yaml:"-"`
+	Spoof            *Spoof         `yaml:"spoof"`
+	Role             string         `yaml:"-"`
+	AllowedClientIPs []string       `yaml:"allowed_client_ips"`
 }
 
 func (n *Network) setDefaults(role string) {

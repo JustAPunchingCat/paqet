@@ -171,7 +171,7 @@ func newDemuxedPacketConn(tag byte, writer net.PacketConn) *DemuxedPacketConn {
 	return &DemuxedPacketConn{
 		tag:    tag,
 		writer: writer,
-		ch:     make(chan demuxPacket, 512),
+		ch:     make(chan demuxPacket, 65536),
 		done:   make(chan struct{}),
 	}
 }
