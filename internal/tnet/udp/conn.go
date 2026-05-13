@@ -373,6 +373,9 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 	if len(s.buf) > 0 {
 		n = copy(b, s.buf)
 		s.buf = s.buf[n:]
+		if len(s.buf) == 0 {
+			s.buf = nil // Explicitly free reference
+		}
 		return n, nil
 	}
 
@@ -410,6 +413,8 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 						n = copy(b, data)
 						if n < len(data) {
 							s.buf = data[n:]
+						} else {
+							s.buf = nil // Let GC free the backing array instantly
 						}
 						return n, nil
 					}
@@ -455,6 +460,8 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			if n < len(s.reassembly) {
 				s.buf = make([]byte, len(s.reassembly)-n)
 				copy(s.buf, s.reassembly[n:])
+			} else {
+				s.buf = nil
 			}
 
 			// Reuse backing array capacity instead of abandoning it to GC
@@ -495,6 +502,8 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			if n < len(s.reassembly) {
 				s.buf = make([]byte, len(s.reassembly)-n)
 				copy(s.buf, s.reassembly[n:])
+			} else {
+				s.buf = nil
 			}
 
 			// Reuse backing array capacity instead of abandoning it to GC
