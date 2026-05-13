@@ -45,7 +45,7 @@ var packetPool = sync.Pool{
 
 func newConn(adapter net.Conn, isServer bool, unordered bool, mtu int) *Conn {
 	if mtu <= 0 {
-		mtu = 1200
+		mtu = 1350
 	}
 	c := &Conn{
 		conn:         adapter,
@@ -376,18 +376,37 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 		return n, nil
 	}
 
-	for {
-		// Fast path for unordered streams (Datagram mode)
-		if s.unordered {
-			// Check if we have any complete messages in the buffer
-			// Iterate over all buffered fragments to find Start fragments
-			for seq, frag := range s.reorderBuf {
-				// Check for Start flag
-				// Note: We need to store flags in fragment struct to do this
-				// Let's update fragment struct first (see below)
-				if frag.flags&flagStart != 0 {
-					// Attempt to reassemble from this start fragment
-					if data, ok := s.tryReassemble(seq); ok {
+	// Fast path for unordered streams (Datagram mode)
+	if s.unordered {
+		for {
+			select {
+			case frag := <-s.rx:
+				// Update highest sequence (handle wrap-around safely)
+				if diff := int32(frag.seq - s.highestRxSeq); diff > 0 {
+					s.highestRxSeq = frag.seq
+				}
+
+				// Buffer the fragment
+				s.reorderBuf[frag.seq] = frag
+
+				// Search backwards to find the start of this message
+				startSeq := frag.seq
+				foundStart := false
+				for {
+					if f, ok := s.reorderBuf[startSeq]; ok {
+						if f.flags&flagStart != 0 {
+							foundStart = true
+							break // Found the start!
+						}
+						startSeq--
+					} else {
+						// Missing a preceding fragment, so the message is not complete yet
+						break
+					}
+				}
+
+				if foundStart {
+					if data, ok := s.tryReassemble(startSeq); ok {
 						n = copy(b, data)
 						if n < len(data) {
 							s.buf = data[n:]
@@ -395,42 +414,20 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 						return n, nil
 					}
 				}
-			}
-
-			select {
-			case frag := <-s.rx:
-				// Update highest sequence (handle wrap-around safely)
-				if frag.seq-s.highestRxSeq < 0x7FFFFFFF {
-					s.highestRxSeq = frag.seq
-				}
-
-				// Buffer the fragment
-				s.reorderBuf[frag.seq] = frag
-
-				// Check if this fragment completes ANY pending message
-				// We iterate the map to find any start fragments that might now be complete
-				for seq, f := range s.reorderBuf {
-					if f.flags&flagStart != 0 {
-						if data, ok := s.tryReassemble(seq); ok {
-							n = copy(b, data)
-							if n < len(data) {
-								s.buf = data[n:]
-							}
-							return n, nil
-						}
-					}
-				}
 
 				// Prune buffer if too large (simple protection)
-				if len(s.reorderBuf) > 1024 {
+				if len(s.reorderBuf) > 4096 {
 					for k := range s.reorderBuf {
-						// Delete fragments that are more than 512 sequences behind the highest seen
-						if s.highestRxSeq-k > 512 && s.highestRxSeq-k < 0x7FFFFFFF {
+						// Delete fragments that are more than 2048 sequences behind the highest seen
+						if diff := int32(s.highestRxSeq - k); diff > 2048 {
 							delete(s.reorderBuf, k)
 						}
 					}
-					if len(s.reorderBuf) > 1024 {
-						s.reorderBuf = make(map[uint32]fragment) // Emergency reset
+					if len(s.reorderBuf) > 4096 {
+						// Fast clear using Go's optimized map clearing (no new map allocation)
+						for k := range s.reorderBuf {
+							delete(s.reorderBuf, k)
+						}
 					}
 				}
 
@@ -439,10 +436,10 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			case <-s.conn.closed:
 				return 0, io.ErrClosedPipe
 			}
-
-			continue
 		}
+	}
 
+	for {
 		// 1. Check reorder buffer for the next expected fragment
 		if frag, ok := s.reorderBuf[s.nextReadSeq]; ok {
 			delete(s.reorderBuf, s.nextReadSeq)
@@ -454,23 +451,26 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			}
 
 			// Packet complete
-			data := s.reassembly
-			s.reassembly = nil
-
-			n = copy(b, data)
-			if n < len(data) {
-				s.buf = data[n:]
+			n = copy(b, s.reassembly)
+			if n < len(s.reassembly) {
+				s.buf = make([]byte, len(s.reassembly)-n)
+				copy(s.buf, s.reassembly[n:])
 			}
+
+			// Reuse backing array capacity instead of abandoning it to GC
+			s.reassembly = s.reassembly[:0]
 			return n, nil
 		}
 
 		// 2. Wait for next fragment from network
 		select {
 		case frag := <-s.rx:
-			if frag.seq < s.nextReadSeq {
+			// int32 cast ensures safe math when sequence wraps from 4.2 Billion to 0
+			diff := int32(frag.seq - s.nextReadSeq)
+			if diff < 0 {
 				continue // Duplicate/old
 			}
-			if frag.seq > s.nextReadSeq {
+			if diff > 0 {
 				s.reorderBuf[frag.seq] = frag
 
 				// Prevent infinite memory leak in ordered mode if a packet is permanently lost
@@ -491,13 +491,14 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			}
 
 			// Packet complete
-			data := s.reassembly
-			s.reassembly = nil
-
-			n = copy(b, data)
-			if n < len(data) {
-				s.buf = data[n:]
+			n = copy(b, s.reassembly)
+			if n < len(s.reassembly) {
+				s.buf = make([]byte, len(s.reassembly)-n)
+				copy(s.buf, s.reassembly[n:])
 			}
+
+			// Reuse backing array capacity instead of abandoning it to GC
+			s.reassembly = s.reassembly[:0]
 			return n, nil
 
 		case <-s.dead:
@@ -510,6 +511,12 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 // tryReassemble attempts to build a message starting at startSeq
 func (s *muxStream) tryReassemble(startSeq uint32) ([]byte, bool) {
+	// Fast path: single-fragment message (zero allocation)
+	if frag, ok := s.reorderBuf[startSeq]; ok && frag.flags&flagMoreFrags == 0 {
+		delete(s.reorderBuf, startSeq)
+		return frag.data, true
+	}
+
 	var msg []byte
 	curr := startSeq
 
@@ -522,9 +529,12 @@ func (s *muxStream) tryReassemble(startSeq uint32) ([]byte, bool) {
 		msg = append(msg, frag.data...)
 		if frag.flags&flagMoreFrags == 0 {
 			// End of message found
-			// Cleanup used fragments
-			for i := startSeq; i <= curr; i++ {
+			// Cleanup used fragments (safe against sequence wrap-around)
+			for i := startSeq; ; i++ {
 				delete(s.reorderBuf, i)
+				if i == curr {
+					break
+				}
 			}
 			return msg, true
 		}
