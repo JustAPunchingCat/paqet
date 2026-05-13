@@ -358,7 +358,7 @@ func newMuxStream(conn *Conn, id uint32) *muxStream {
 	return &muxStream{
 		conn:         conn,
 		id:           id,
-		rx:           make(chan fragment, 65536),
+		rx:           make(chan fragment, 1024),
 		reorderBuf:   make(map[uint32]fragment),
 		dead:         make(chan struct{}),
 		lastActivity: time.Now(),
@@ -456,16 +456,13 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			}
 
 			// Packet complete
-			n = copy(b, s.reassembly)
-			if n < len(s.reassembly) {
-				s.buf = make([]byte, len(s.reassembly)-n)
-				copy(s.buf, s.reassembly[n:])
-			} else {
-				s.buf = nil
-			}
+			data := s.reassembly
+			s.reassembly = nil // Abandon to GC instantly
 
-			// Reuse backing array capacity instead of abandoning it to GC
-			s.reassembly = s.reassembly[:0]
+			n = copy(b, data)
+			if n < len(data) {
+				s.buf = data[n:] // Keep exact reference to remainder
+			}
 			return n, nil
 		}
 
@@ -498,16 +495,13 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			}
 
 			// Packet complete
-			n = copy(b, s.reassembly)
-			if n < len(s.reassembly) {
-				s.buf = make([]byte, len(s.reassembly)-n)
-				copy(s.buf, s.reassembly[n:])
-			} else {
-				s.buf = nil
-			}
+			data := s.reassembly
+			s.reassembly = nil // Abandon to GC instantly
 
-			// Reuse backing array capacity instead of abandoning it to GC
-			s.reassembly = s.reassembly[:0]
+			n = copy(b, data)
+			if n < len(data) {
+				s.buf = data[n:] // Keep exact reference to remainder
+			}
 			return n, nil
 
 		case <-s.dead:
