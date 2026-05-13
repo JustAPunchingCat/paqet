@@ -29,10 +29,12 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		flog.Errorf("failed to establish TCP connection to %s for stream %d: %v", addr, strm.SID(), err)
+		strm.Close()
 		return err
 	}
 	defer func() {
 		conn.Close()
+		strm.Close()
 		flog.Debugf("closed TCP connection %s for stream %d", addr, strm.SID())
 	}()
 	flog.Debugf("TCP connection established to %s for stream %d", addr, strm.SID())
