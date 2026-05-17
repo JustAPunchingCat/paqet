@@ -116,9 +116,6 @@ func (n *Network) validate() []error {
 	if n.Interface_ == "" {
 		errors = append(errors, fmt.Errorf("network interface is required"))
 	}
-	if len(n.Interface_) > 15 {
-		errors = append(errors, fmt.Errorf("network interface name too long (max 15 characters): '%s'", n.Interface_))
-	}
 	lIface, err := net.InterfaceByName(n.Interface_)
 	if err != nil {
 		errors = append(errors, fmt.Errorf("failed to find network interface %s: %v", n.Interface_, err))
