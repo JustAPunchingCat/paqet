@@ -57,7 +57,7 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 	}
 
 	var mappings []ipMapping
-	if cfg.Spoof != nil {
+	if cfg.Spoof != nil && cfg.Spoof.Enabled {
 		var targetMap map[string][]string
 		if role == "client" {
 			targetMap = cfg.Spoof.ServerMappings
@@ -90,6 +90,10 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 				spoofNet = &net.IPNet{IP: spoofIP, Mask: mask}
 			}
 			mappings = append(mappings, ipMapping{network: spoofNet, realIP: realIP})
+		}
+
+		if len(mappings) > 0 {
+			flog.Infof("Incoming IP spoofing reverse-mapping enabled with %d rules.", len(mappings))
 		}
 	}
 

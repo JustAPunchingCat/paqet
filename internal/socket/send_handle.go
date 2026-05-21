@@ -264,7 +264,17 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 				sh.targetSpoofRules = append(sh.targetSpoofRules, rule)
 			}
 		}
-		flog.Infof("Source IP spoofing enabled with %d IPs and %d networks.", len(sh.spoofIPs), len(sh.spoofNets))
+
+		var totalIPs, totalNets int
+		totalIPs += len(sh.spoofIPs)
+		totalNets += len(sh.spoofNets)
+		for _, rule := range sh.targetSpoofRules {
+			totalIPs += len(rule.spoofIPs)
+			totalNets += len(rule.spoofNets)
+		}
+		if totalIPs > 0 || totalNets > 0 {
+			flog.Infof("Outgoing IP spoofing enabled with %d IPs and %d networks.", totalIPs, totalNets)
+		}
 	}
 	return sh, nil
 }
