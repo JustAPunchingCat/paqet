@@ -30,6 +30,9 @@ func startClient(cfg *conf.Conf) {
 	}
 
 	for i, srvCfg := range cfg.Servers {
+		if !*srvCfg.Enabled {
+			continue
+		}
 		for _, ss := range srvCfg.SOCKS5 {
 			go func(ss conf.SOCKS5, idx int) {
 				s, _ := socks.New(c, idx)

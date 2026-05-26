@@ -144,6 +144,9 @@ func (c *Conf) validate() error {
 
 		for i := range c.Servers {
 			srv := &c.Servers[i]
+			if !*srv.Enabled {
+				continue
+			}
 			if len(srv.SOCKS5) == 0 && len(srv.Forward) == 0 {
 				flog.Warnf("warning: server[%d] configured but no SOCKS5 or forward rules found", i)
 			}
