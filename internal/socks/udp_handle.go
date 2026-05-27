@@ -6,6 +6,7 @@ import (
 	"net"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
+	"time"
 
 	"github.com/txthinking/socks5"
 )
@@ -58,6 +59,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					case <-h.ctx.Done():
 						return
 					default:
+						sess.SetReadDeadline(time.Now().Add(2 * time.Minute))
 						n, err := sess.Read(buf[headerLen:])
 						if err != nil {
 							flog.Debugf("SOCKS5 UDP datagram stream %d read error for %s -> %s: %v", sess.SID(), addr, dAddr, err)
@@ -87,6 +89,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	payload := *bufp
 	if cap(payload) < 2+len(d.Data) {
 		payload = make([]byte, 2+len(d.Data))
+		*bufp = payload
 	}
 	payload = payload[:2+len(d.Data)]
 	binary.BigEndian.PutUint16(payload, uint16(len(d.Data)))
@@ -134,6 +137,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 				case <-h.ctx.Done():
 					return
 				default:
+					strm.SetReadDeadline(time.Now().Add(2 * time.Minute))
 					// Read length prefix (2 bytes)
 					if _, err := io.ReadFull(strm, lenBuf); err != nil {
 						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, dAddr, err)

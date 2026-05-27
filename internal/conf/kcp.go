@@ -31,7 +31,7 @@ type KCP struct {
 	Block kcp.BlockCrypt `yaml:"-"`
 }
 
-func (k *KCP) setDefaults(role string) {
+func (k *KCP) setDefaults() {
 	if k == nil {
 		return
 	}

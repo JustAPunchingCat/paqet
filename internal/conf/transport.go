@@ -35,7 +35,10 @@ func (t *Transport) setDefaults(role string) {
 
 	switch t.Protocol {
 	case "kcp":
-		t.KCP.setDefaults(role)
+		if t.KCP == nil {
+			t.KCP = &KCP{}
+		}
+		t.KCP.setDefaults()
 	case "quic":
 		if t.QUIC == nil {
 			t.QUIC = &QUIC{}
@@ -50,7 +53,7 @@ func (t *Transport) setDefaults(role string) {
 		if t.KCP == nil {
 			t.KCP = &KCP{}
 		}
-		t.KCP.setDefaults(role)
+		t.KCP.setDefaults()
 		if t.QUIC == nil {
 			t.QUIC = &QUIC{}
 		}

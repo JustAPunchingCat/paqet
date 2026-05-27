@@ -579,6 +579,11 @@ func (s *muxStream) Write(b []byte) (n int, err error) {
 	return written, nil
 }
 func (s *muxStream) Close() error { s.closeInternal(); return nil }
+func (s *muxStream) activity() int64 {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.lastActivity.UnixNano()
+}
 func (s *muxStream) closeInternal() {
 	select {
 	case <-s.dead:
