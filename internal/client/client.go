@@ -74,6 +74,22 @@ func (c *Client) Start(ctx context.Context) error {
 		return ctx.Err()
 	}
 
+	for sIdx := range c.cfg.Servers {
+		srv := &c.cfg.Servers[sIdx]
+		if !*srv.Enabled {
+			continue
+		}
+		if len(c.iters[sIdx].Items) == 0 {
+			flog.Errorf("Server %d failed to initialize any connections, disabling server to prevent panics", sIdx+1)
+			*srv.Enabled = false
+			activeServers--
+		}
+	}
+
+	if activeServers == 0 {
+		return fmt.Errorf("no upstream servers successfully initialized")
+	}
+
 	go c.ticker(ctx)
 	go c.udpIdleSweeper(ctx)
 
