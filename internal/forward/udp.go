@@ -133,7 +133,7 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 			return
 		default:
 		}
-		strm.SetReadDeadline(time.Now().Add(2 * time.Minute))
+		strm.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 		// Inline CopyU logic to avoid function call overhead and reuse lenBuf
 		if _, err := io.ReadFull(strm, lenBuf); err != nil {
@@ -174,7 +174,7 @@ func (f *Forward) handleUDPDatagram(ctx context.Context, k uint64, sess tnet.Str
 			return
 		default:
 		}
-		sess.SetReadDeadline(time.Now().Add(2 * time.Minute))
+		sess.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 		n, err := sess.Read(buf)
 		if err != nil {

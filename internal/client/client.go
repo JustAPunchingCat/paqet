@@ -110,7 +110,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) udpIdleSweeper(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -119,7 +119,7 @@ func (c *Client) udpIdleSweeper(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := time.Now().UnixNano()
-			timeout := (2 * time.Minute).Nanoseconds()
+			timeout := (30 * time.Second).Nanoseconds()
 
 			for _, pool := range c.udpPools {
 				if pool == nil {

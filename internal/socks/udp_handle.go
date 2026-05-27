@@ -60,7 +60,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					case <-h.ctx.Done():
 						return
 					default:
-						sess.SetReadDeadline(time.Now().Add(2 * time.Minute))
+						sess.SetReadDeadline(time.Now().Add(30 * time.Second))
 						n, err := sess.Read(buf[headerLen:])
 						if err != nil {
 							flog.Debugf("SOCKS5 UDP datagram stream %d read error for %s -> %s: %v", sess.SID(), addr, dAddr, err)
@@ -139,7 +139,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 				case <-h.ctx.Done():
 					return
 				default:
-					strm.SetReadDeadline(time.Now().Add(2 * time.Minute))
+					strm.SetReadDeadline(time.Now().Add(30 * time.Second))
 					// Read length prefix (2 bytes)
 					if _, err := io.ReadFull(strm, lenBuf); err != nil {
 						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, dAddr, err)
