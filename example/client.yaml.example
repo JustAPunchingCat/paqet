@@ -159,6 +159,11 @@ servers:
         # smuxbuf: 4194304       # 4MB session buffer (default)
         # streambuf: 262144      # 256KB per-stream buffer (default)
 
+        # Optional Forward Error Correction (FEC) - currently disabled
+        # Use these only if you need FEC for very lossy networks:
+        # dshard: 10    # Data shards for FEC
+        # pshard: 3     # Parity shards for FEC
+
       # QUIC protocol settings (used when protocol: "quic")
       # quic:
       #   key: "your-secret-key-here"   # Shared secret for deterministic TLS cert (must match server)
@@ -175,14 +180,9 @@ servers:
       #   block: "aes"                  # Encryption: aes, salsa20, none, etc.
       #   mtu: 0                        # Maximum transmission unit (0=auto PMTUD, 50-1500). Default 1280.
 
-  # - server:
+  # - enabled: false
+  #   server:
   #     addr: "10.0.0.101:9999"    # Second server
   #   socks5:
   #     - listen: "127.0.0.1:1081" # CHANGE ME: Must be different from the first server's SOCKS port!
   #   transport: ...
-
-
-# Optional Forward Error Correction (FEC) - currently disabled
-# Use these only if you need FEC for very lossy networks:
-#   dshard: 10    # Data shards for FEC
-#   pshard: 3     # Parity shards for FEC
