@@ -2,11 +2,14 @@ package socks
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"net"
 	"paqet/internal/client"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
+	"strconv"
 
 	"github.com/txthinking/socks5"
 )
@@ -124,6 +127,42 @@ func (s *SOCKS5) negotiate(conn *net.TCPConn, cfg conf.SOCKS5) error {
 	return nil
 }
 
+func parseSocks5UDP(b []byte) (reqDst string, data []byte, atyp byte, dstAddr, dstPort []byte, err error) {
+	if len(b) < 10 {
+		return "", nil, 0, nil, nil, errors.New("packet too short")
+	}
+	if b[0] != 0 || b[1] != 0 || b[2] != 0 {
+		return "", nil, 0, nil, nil, errors.New("invalid header or fragmentation")
+	}
+	atyp = b[3]
+	var addrLen int
+	switch atyp {
+	case socks5.ATYPIPv4:
+		addrLen = 4
+	case socks5.ATYPIPv6:
+		addrLen = 16
+	case socks5.ATYPDomain:
+		addrLen = int(b[4]) + 1
+	default:
+		return "", nil, 0, nil, nil, errors.New("invalid ATYP")
+	}
+	if len(b) < 4+addrLen+2 {
+		return "", nil, 0, nil, nil, errors.New("packet too short")
+	}
+	dstAddr = b[4 : 4+addrLen]
+	dstPort = b[4+addrLen : 4+addrLen+2]
+	data = b[4+addrLen+2:]
+
+	var host string
+	if atyp == socks5.ATYPIPv4 || atyp == socks5.ATYPIPv6 {
+		host = net.IP(dstAddr).String()
+	} else if atyp == socks5.ATYPDomain {
+		host = string(dstAddr[1:])
+	}
+	port := binary.BigEndian.Uint16(dstPort)
+	return net.JoinHostPort(host, strconv.Itoa(int(port))), data, atyp, dstAddr, dstPort, nil
+}
+
 func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 	for {
 		bufp := buffer.UPool.Get().(*[]byte)
@@ -141,7 +180,7 @@ func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 			}
 		}
 
-		d, err := socks5.NewDatagramFromBytes(buf[:n])
+		reqDst, data, atyp, dstAddr, dstPort, err := parseSocks5UDP(buf[:n])
 		if err != nil {
 			buffer.UPool.Put(bufp)
 			continue
@@ -149,17 +188,17 @@ func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 
 		select {
 		case s.handle.udpSem <- struct{}{}:
-			go func(bufp *[]byte, addr *net.UDPAddr, d *socks5.Datagram) {
+			go func(bufp *[]byte, addr *net.UDPAddr, reqDst string, data []byte, atyp byte, dstAddr, dstPort []byte) {
 				defer func() {
 					buffer.UPool.Put(bufp)
 					<-s.handle.udpSem
 				}()
-				if err := s.handle.UDPHandle(addr, d); err != nil {
+				if err := s.handle.UDPHandle(addr, reqDst, data, atyp, dstAddr, dstPort); err != nil {
 					if ctx.Err() == nil {
 						flog.Errorf("SOCKS5 UDP handle error: %v", err)
 					}
 				}
-			}(bufp, addr, d)
+			}(bufp, addr, reqDst, data, atyp, dstAddr, dstPort)
 		default:
 			buffer.UPool.Put(bufp)
 		}

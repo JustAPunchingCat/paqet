@@ -11,27 +11,26 @@ import (
 	"github.com/txthinking/socks5"
 )
 
-func (h *Handler) UDPHandle(addr *net.UDPAddr, d *socks5.Datagram) error {
-	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, d.Address())
+func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, atyp byte, dstAddrRaw, dstPortRaw []byte) error {
+	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, reqDst)
 
 	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
-	sess, newDgm, kDgm, errDgm := h.client.UDPDatagramByIndex(h.ServerIdx, addr.String(), d.Address())
+	sess, newDgm, kDgm, errDgm := h.client.UDPDatagramByIndex(h.ServerIdx, addr.String(), reqDst)
 	if errDgm == nil && sess != nil {
-		err := sess.Send(d.Data)
+		err := sess.Send(reqData)
 		if err != nil {
-			flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
+			flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(reqData), addr, reqDst, err)
 			h.client.CloseUDP(h.ServerIdx, kDgm)
 			return err
 		}
 
 		if newDgm {
-			flog.Infof("SOCKS5 accepted UDP datagram connection %s -> %s via %s", addr, d.Address(), sess.RemoteAddr())
+			flog.Infof("SOCKS5 accepted UDP datagram connection %s -> %s via %s", addr, reqDst, sess.RemoteAddr())
 
 			// Capture needed fields to avoid accessing d in goroutine (safety against reuse)
-			dAddr := d.Address()
-			atyp := d.Atyp
-			dstAddr := append([]byte(nil), d.DstAddr...)
-			dstPort := append([]byte(nil), d.DstPort...)
+			dAddr := reqDst
+			dstAddr := append([]byte(nil), dstAddrRaw...)
+			dstPort := append([]byte(nil), dstPortRaw...)
 
 			go func() {
 				bufp := buffer.UPool.Get().(*[]byte)
@@ -79,37 +78,36 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, d *socks5.Datagram) error {
 	}
 
 	// Fallback to Stream Mode with Length Prefixes (Required if using KCP transport)
-	strm, newStrm, kStrm, errStrm := h.client.UDPByIndex(h.ServerIdx, addr.String(), d.Address())
+	strm, newStrm, kStrm, errStrm := h.client.UDPByIndex(h.ServerIdx, addr.String(), reqDst)
 	if errStrm != nil {
-		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), errStrm)
+		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, reqDst, errStrm)
 		return errStrm
 	}
 
 	bufp := buffer.UPool.Get().(*[]byte)
 	defer buffer.UPool.Put(bufp)
 	payload := *bufp
-	if cap(payload) < 2+len(d.Data) {
-		payload = make([]byte, 2+len(d.Data))
+	if cap(payload) < 2+len(reqData) {
+		payload = make([]byte, 2+len(reqData))
 		*bufp = payload
 	}
-	payload = payload[:2+len(d.Data)]
-	binary.BigEndian.PutUint16(payload, uint16(len(d.Data)))
-	copy(payload[2:], d.Data)
+	payload = payload[:2+len(reqData)]
+	binary.BigEndian.PutUint16(payload, uint16(len(reqData)))
+	copy(payload[2:], reqData)
 	_, err := strm.Write(payload)
 	if err != nil {
-		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(d.Data), addr, d.Address(), err)
+		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(reqData), addr, reqDst, err)
 		h.client.CloseUDP(h.ServerIdx, kStrm)
 		return err
 	}
 
 	if newStrm {
-		flog.Infof("SOCKS5 accepted UDP connection %s -> %s via %s", addr, d.Address(), strm.RemoteAddr())
+		flog.Infof("SOCKS5 accepted UDP connection %s -> %s via %s", addr, reqDst, strm.RemoteAddr())
 
 		// Capture needed fields to avoid accessing d in goroutine (safety against reuse)
-		dAddr := d.Address()
-		atyp := d.Atyp
-		dstAddr := append([]byte(nil), d.DstAddr...)
-		dstPort := append([]byte(nil), d.DstPort...)
+		dAddr := reqDst
+		dstAddr := append([]byte(nil), dstAddrRaw...)
+		dstPort := append([]byte(nil), dstPortRaw...)
 
 		go func() {
 			bufp := buffer.UPool.Get().(*[]byte)
