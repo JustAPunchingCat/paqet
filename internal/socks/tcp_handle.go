@@ -11,7 +11,7 @@ import (
 	"github.com/txthinking/socks5"
 )
 
-func (h *Handler) TCPHandle(server *socks5.Server, conn *net.TCPConn, r *socks5.Request) error {
+func (h *Handler) TCPHandle(conn *net.TCPConn, r *socks5.Request) error {
 	if r.Cmd == socks5.CmdUDP {
 		flog.Debugf("SOCKS5 UDP_ASSOCIATE from %s", conn.RemoteAddr())
 		return h.handleUDPAssociate(conn)

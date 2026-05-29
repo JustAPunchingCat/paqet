@@ -134,8 +134,8 @@ transport:
     key: "your-secret-key-here"       # CHANGE ME: Secret key (must match client)
 
     # Buffer settings (optional)
-    # smuxbuf: 4194304       # 4MB session buffer (default)
-    # streambuf: 262144      # 256KB per-stream buffer (default)
+    # smuxbuf: 4194304       # 4MB session buffer (default). Reduce to 2097152 for low-RAM devices.
+    # streambuf: 262144      # 256KB per-stream buffer (default). Reduce to 65536 for low-RAM devices.
 
     # Optional Forward Error Correction (FEC) - currently disabled
     # Use these only if you need FEC for very lossy networks:

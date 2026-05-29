@@ -2,6 +2,7 @@ package socks
 
 import (
 	"context"
+	"net"
 	"paqet/internal/client"
 	"sync"
 )
@@ -17,4 +18,6 @@ type Handler struct {
 	client    *client.Client
 	ctx       context.Context
 	ServerIdx int
+	udpConn   *net.UDPConn
+	udpSem    chan struct{}
 }

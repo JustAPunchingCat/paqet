@@ -11,7 +11,7 @@ import (
 	"github.com/txthinking/socks5"
 )
 
-func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
+func (h *Handler) UDPHandle(addr *net.UDPAddr, d *socks5.Datagram) error {
 	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, d.Address())
 
 	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
@@ -66,7 +66,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 							flog.Debugf("SOCKS5 UDP datagram stream %d read error for %s -> %s: %v", sess.SID(), addr, dAddr, err)
 							return
 						}
-						_, err = server.UDPConn.WriteToUDP(buf[:headerLen+n], addr)
+						_, err = h.udpConn.WriteToUDP(buf[:headerLen+n], addr)
 						if err != nil {
 							flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+n, addr, err)
 							return
@@ -156,7 +156,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					if err != nil {
 						return
 					}
-					_, err = server.UDPConn.WriteToUDP(buf[:headerLen+payloadLen], addr)
+					_, err = h.udpConn.WriteToUDP(buf[:headerLen+payloadLen], addr)
 					if err != nil {
 						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", headerLen+payloadLen, addr, err)
 						return
