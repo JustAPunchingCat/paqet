@@ -13,6 +13,7 @@ import (
 	"paqet/internal/tnet/udp"
 	"strings"
 	"sync"
+	"time"
 )
 
 var bufPool = sync.Pool{
@@ -115,8 +116,11 @@ func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 		// Write length prefix (2 bytes) + Data
 		binary.BigEndian.PutUint16(buf[:2], uint16(n))
 
-		if _, err := strm.Write(buf[:2+n]); err != nil {
-			return err
+		strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, errWrite := strm.Write(buf[:2+n])
+		strm.SetWriteDeadline(time.Time{})
+		if errWrite != nil {
+			return errWrite
 		}
 	}
 }

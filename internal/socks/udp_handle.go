@@ -17,7 +17,9 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
 	sess, newDgm, kDgm, errDgm := h.client.UDPDatagramByIndex(h.ServerIdx, addr.String(), reqDst)
 	if errDgm == nil && sess != nil {
+		sess.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		err := sess.Send(reqData)
+		sess.SetWriteDeadline(time.Time{})
 		if err != nil {
 			flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(reqData), addr, reqDst, err)
 			h.client.CloseUDP(h.ServerIdx, kDgm)
@@ -94,7 +96,9 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 	payload = payload[:2+len(reqData)]
 	binary.BigEndian.PutUint16(payload, uint16(len(reqData)))
 	copy(payload[2:], reqData)
+	strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := strm.Write(payload)
+	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(reqData), addr, reqDst, err)
 		h.client.CloseUDP(h.ServerIdx, kStrm)

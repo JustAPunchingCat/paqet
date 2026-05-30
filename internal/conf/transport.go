@@ -15,7 +15,7 @@ type Transport struct {
 	UDP      *UDP   `yaml:"udp"`
 }
 
-func (t *Transport) setDefaults(role string) {
+func (t *Transport) setDefaults() {
 	if t.Conn == 0 {
 		t.Conn = 1
 	}
@@ -27,7 +27,7 @@ func (t *Transport) setDefaults(role string) {
 		t.TCPBuf = 4 * 1024
 	}
 	if t.UDPBuf == 0 {
-		t.UDPBuf = 4 * 1024 * 1024
+		t.UDPBuf = 65536
 	}
 	if t.UDPBuf < 2*1024 {
 		t.UDPBuf = 2 * 1024

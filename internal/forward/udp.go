@@ -89,7 +89,10 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 		// Try Datagram Mode first
 		sess, newDgm, kDgm, errDgm := f.client.UDPDatagramByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
 		if errDgm == nil && sess != nil {
-			if err := sess.Send(payload[2 : 2+n]); err != nil {
+			sess.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			err := sess.Send(payload[2 : 2+n])
+			sess.SetWriteDeadline(time.Time{})
+			if err != nil {
 				flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
 				f.client.CloseUDP(f.ServerIdx, kDgm)
 				return
@@ -116,7 +119,10 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 
 		binary.BigEndian.PutUint16(payload, uint16(n))
 
-		if _, err := strm.Write(payload); err != nil {
+		strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, err := strm.Write(payload)
+		strm.SetWriteDeadline(time.Time{})
+		if err != nil {
 			flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
 			f.client.CloseUDP(f.ServerIdx, kStrm)
 			return

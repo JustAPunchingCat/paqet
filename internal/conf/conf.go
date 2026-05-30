@@ -112,11 +112,11 @@ func (c *Conf) setDefaults() {
 				c.Servers[i].Transport.KCP.Key = c.Transport.KCP.Key
 			}
 
-			c.Servers[i].Transport.setDefaults(c.Role)
+			c.Servers[i].Transport.setDefaults()
 		}
 	}
 
-	c.Transport.setDefaults(c.Role)
+	c.Transport.setDefaults()
 }
 
 func (o *Obfuscation) IsConfigured() bool {
