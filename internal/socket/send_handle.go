@@ -66,12 +66,13 @@ type SendHandle struct {
 	ttl       uint8
 	startTime time.Time
 
-	tcpF     TCPF
-	ethPool  sync.Pool
-	ipv4Pool sync.Pool
-	ipv6Pool sync.Pool
-	tcpPool  sync.Pool
-	bufPool  sync.Pool
+	tcpF       TCPF
+	ethPool    sync.Pool
+	ipv4Pool   sync.Pool
+	ipv6Pool   sync.Pool
+	tcpPool    sync.Pool
+	bufPool    sync.Pool
+	packetPool sync.Pool
 
 	globalState *flowState
 	spoofStates map[string]*flowState
@@ -165,6 +166,12 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		bufPool: sync.Pool{
 			New: func() any {
 				return gopacket.NewSerializeBuffer()
+			},
+		},
+		packetPool: sync.Pool{
+			New: func() any {
+				b := make([]byte, 65536)
+				return &b
 			},
 		},
 	}
@@ -408,19 +415,63 @@ func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF, state 
 	return tcp
 }
 
-func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error {
-	buf := h.bufPool.Get().(gopacket.SerializeBuffer)
-	defer func() {
-		buf.Clear()
-		h.bufPool.Put(buf)
-	}()
+// checksum calculates the ones' complement checksum of a single byte slice.
+func checksum(data []byte) uint16 {
+	var sum uint32
+	n := len(data)
+	for i := 0; i < n-1; i += 2 {
+		sum += uint32(data[i])<<8 | uint32(data[i+1])
+	}
+	if n%2 == 1 {
+		sum += uint32(data[n-1]) << 8
+	}
+	for sum > 0xffff {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return uint16(^sum)
+}
 
-	var ethLayer *layers.Ethernet
-	if h.driver != "tun" {
-		ethLayer = h.ethPool.Get().(*layers.Ethernet)
-		defer h.ethPool.Put(ethLayer)
+// checksumMultiple calculates the ones' complement checksum of multiple contiguous slices without copying or allocating.
+func checksumMultiple(slices ...[]byte) uint16 {
+	var sum uint32
+	var oddByte uint8
+	var hasOdd bool
+
+	for _, slice := range slices {
+		n := len(slice)
+		if n == 0 {
+			continue
+		}
+
+		i := 0
+		if hasOdd {
+			// Combine the odd byte from the previous slice with the first byte of this slice
+			sum += uint32(oddByte)<<8 | uint32(slice[0])
+			i = 1
+			hasOdd = false
+		}
+
+		for ; i < n-1; i += 2 {
+			sum += uint32(slice[i])<<8 | uint32(slice[i+1])
+		}
+
+		if i < n {
+			oddByte = slice[i]
+			hasOdd = true
+		}
 	}
 
+	if hasOdd {
+		sum += uint32(oddByte) << 8
+	}
+
+	for sum > 0xffff {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return uint16(^sum)
+}
+
+func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error {
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
@@ -438,7 +489,6 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 		if spoofedIP := h.getSpoofedIP(isIPv4, dstIP); spoofedIP != nil {
 			srcIP = spoofedIP
 			isSpoofed = true
-			// flog.Debugf("Spoofing packet to %s with source %s", dstIP, spoofedIP)
 		}
 	}
 
@@ -450,47 +500,242 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	}
 
 	f := h.getClientTCPF(dstIP, dstPort)
-	tcpLayer := h.buildTCPHeader(uint16(srcPort), dstPort, f, state)
-	defer h.tcpPool.Put(tcpLayer)
 
-	var ipLayer gopacket.SerializableLayer
-	if isIPv4 {
-		ip := h.buildIPv4Header(srcIP, dstIP, isSpoofed, state)
-		defer h.ipv4Pool.Put(ip)
-		ipLayer = ip
-		tcpLayer.SetNetworkLayerForChecksum(ip)
-		if ethLayer != nil {
-			ethLayer.DstMAC = h.srcIPv4RHWA
-			ethLayer.EthernetType = layers.EthernetTypeIPv4
+	// Fetch dynamic header variables
+	tos := h.tos
+	ttl := h.ttl
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTOS {
+		tos = GenerateRealisticTOS()
+	}
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTTL {
+		ttl = GenerateRealisticTTL()
+	} else if isSpoofed && isIPv4 {
+		sum := 0
+		if ipBytes := srcIP.To4(); ipBytes != nil {
+			for _, b := range ipBytes {
+				sum += int(b)
+			}
+			ttl = uint8(60 + (sum % 9))
+		}
+	}
+
+	winSize := uint16(randRange(64240, 65535))
+	if h.obfuscation != nil && h.obfuscation.Headers.RandomizeWindow {
+		winSize = GenerateRealisticWindow()
+	}
+
+	id := atomic.AddUint32(&state.ipId, 1)
+	counter := atomic.AddUint32(&state.tsCounter, 1)
+
+	elapsed := time.Since(h.startTime)
+	tsVal := state.baseTS + uint32(elapsed.Milliseconds()) + uint32(randRange(0, 9))
+
+	seq := state.seq + (counter << 7)
+	var ack uint32
+	if f.SYN {
+		ack = 0
+		if f.ACK {
+			ack = seq + 1
 		}
 	} else {
-		ip := h.buildIPv6Header(srcIP, dstIP, isSpoofed, state)
-		defer h.ipv6Pool.Put(ip)
-		ipLayer = ip
-		tcpLayer.SetNetworkLayerForChecksum(ip)
-		if ethLayer != nil {
-			ethLayer.DstMAC = h.srcIPv6RHWA
-			ethLayer.EthernetType = layers.EthernetTypeIPv6
+		ack = seq - (counter & 0x3FF) + 1400
+	}
+
+	var tsEcr uint32
+	if !f.SYN {
+		tsEcr = tsVal - uint32(randRange(50, 250))
+	}
+
+	// Calculate header lengths
+	var ethLen int
+	if h.driver != "tun" {
+		ethLen = 14
+	}
+
+	var ipLen int
+	if isIPv4 {
+		ipLen = 20
+	} else {
+		ipLen = 40
+	}
+
+	var tcpLen int
+	if f.SYN {
+		tcpLen = 40 // 20 bytes basic + 20 bytes options
+	} else {
+		tcpLen = 32 // 20 bytes basic + 12 bytes options
+	}
+
+	totalLen := ethLen + ipLen + tcpLen + len(payload)
+
+	// Retrieve a packet buffer from the pool
+	bufPtr := h.packetPool.Get().(*[]byte)
+	defer h.packetPool.Put(bufPtr)
+	buf := *bufPtr
+
+	// 1. Ethernet Header (if not TUN driver)
+	if ethLen == 14 {
+		var dstMAC net.HardwareAddr
+		if isIPv4 {
+			dstMAC = h.srcIPv4RHWA
+		} else {
+			dstMAC = h.srcIPv6RHWA
+		}
+		copy(buf[0:6], dstMAC)
+		copy(buf[6:12], h.cfg.Interface.HardwareAddr)
+		if isIPv4 {
+			binary.BigEndian.PutUint16(buf[12:14], 0x0800) // EthernetTypeIPv4
+		} else {
+			binary.BigEndian.PutUint16(buf[12:14], 0x86dd) // EthernetTypeIPv6
 		}
 	}
 
-	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
-	layersToSerialize := []gopacket.SerializableLayer{ipLayer, tcpLayer}
-	if len(payload) > 0 {
-		layersToSerialize = append(layersToSerialize, gopacket.Payload(payload))
-	}
-	if ethLayer != nil {
-		layersToSerialize = append([]gopacket.SerializableLayer{ethLayer}, layersToSerialize...)
+	// 2. IP Header
+	ipStart := ethLen
+	if isIPv4 {
+		buf[ipStart] = 0x45 // Version 4, IHL 5
+		buf[ipStart+1] = tos
+		binary.BigEndian.PutUint16(buf[ipStart+2:ipStart+4], uint16(ipLen+tcpLen+len(payload)))
+		binary.BigEndian.PutUint16(buf[ipStart+4:ipStart+6], uint16(id))
+		binary.BigEndian.PutUint16(buf[ipStart+6:ipStart+8], 0x4000) // DF Flag set, FragmentOffset = 0
+		buf[ipStart+8] = ttl
+		buf[ipStart+9] = 6 // TCP protocol
+		binary.BigEndian.PutUint16(buf[ipStart+10:ipStart+12], 0) // Checksum initially 0
+		copy(buf[ipStart+12:ipStart+16], srcIP.To4())
+		copy(buf[ipStart+16:ipStart+20], dstIP.To4())
+
+		// Compute and set IPv4 Header Checksum
+		ipChecksum := checksum(buf[ipStart : ipStart+20])
+		binary.BigEndian.PutUint16(buf[ipStart+10:ipStart+12], ipChecksum)
+	} else {
+		// IPv6
+		tclass := h.tos
+		hopLimit := h.ttl
+		if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTOS {
+			tclass = GenerateRealisticTOS()
+		}
+		if h.obfuscation != nil && h.obfuscation.Headers.RandomizeTTL {
+			hopLimit = GenerateRealisticTTL()
+		} else if isSpoofed {
+			sum := 0
+			if ipBytes := srcIP.To16(); ipBytes != nil {
+				for _, b := range ipBytes {
+					sum += int(b)
+				}
+				hopLimit = uint8(60 + (sum % 9))
+			}
+		}
+
+		vtf := 0x60000000 | (uint32(tclass) << 20)
+		binary.BigEndian.PutUint32(buf[ipStart:ipStart+4], vtf)
+		binary.BigEndian.PutUint16(buf[ipStart+4:ipStart+6], uint16(tcpLen+len(payload)))
+		buf[ipStart+6] = 6 // Next Header is TCP
+		buf[ipStart+7] = hopLimit
+		copy(buf[ipStart+8:ipStart+24], srcIP.To16())
+		copy(buf[ipStart+24:ipStart+40], dstIP.To16())
 	}
 
-	if err := gopacket.SerializeLayers(buf, opts, layersToSerialize...); err != nil {
-		return err
+	// 3. TCP Header
+	tcpStart := ipStart + ipLen
+	binary.BigEndian.PutUint16(buf[tcpStart:tcpStart+2], uint16(srcPort))
+	binary.BigEndian.PutUint16(buf[tcpStart+2:tcpStart+4], dstPort)
+	binary.BigEndian.PutUint32(buf[tcpStart+4:tcpStart+8], seq)
+	binary.BigEndian.PutUint32(buf[tcpStart+8:tcpStart+12], ack)
+
+	// Data Offset & Reserved & Flags
+	var offsetByte byte
+	if f.SYN {
+		offsetByte = 10 << 4 // 40 bytes / 4 = 10
+	} else {
+		offsetByte = 8 << 4  // 32 bytes / 4 = 8
 	}
-	err := h.injector.WritePacketData(buf.Bytes())
+	buf[tcpStart+12] = offsetByte
+
+	var flags byte
+	if f.FIN { flags |= 0x01 }
+	if f.SYN { flags |= 0x02 }
+	if f.RST { flags |= 0x04 }
+	if f.PSH { flags |= 0x08 }
+	if f.ACK { flags |= 0x10 }
+	if f.URG { flags |= 0x20 }
+	if f.ECE { flags |= 0x40 }
+	if f.CWR { flags |= 0x80 }
+	buf[tcpStart+13] = flags
+
+	binary.BigEndian.PutUint16(buf[tcpStart+14:tcpStart+16], winSize)
+	binary.BigEndian.PutUint16(buf[tcpStart+16:tcpStart+18], 0) // Checksum initially 0
+	binary.BigEndian.PutUint16(buf[tcpStart+18:tcpStart+20], 0) // Urgent pointer
+
+	// Write TCP Options
+	if f.SYN {
+		// Option 1: MSS. Type 2, Length 4, Value 1460 (0x05b4)
+		buf[tcpStart+20] = 2
+		buf[tcpStart+21] = 4
+		binary.BigEndian.PutUint16(buf[tcpStart+22:tcpStart+24], 1460)
+
+		// Option 2: SACK Permitted. Type 4, Length 2
+		buf[tcpStart+24] = 4
+		buf[tcpStart+25] = 2
+
+		// Option 3: Timestamps. Type 8, Length 10, TSval, TSecr
+		buf[tcpStart+26] = 8
+		buf[tcpStart+27] = 10
+		binary.BigEndian.PutUint32(buf[tcpStart+28:tcpStart+32], tsVal)
+		binary.BigEndian.PutUint32(buf[tcpStart+32:tcpStart+36], 0)
+
+		// Option 4: Nop. Type 1
+		buf[tcpStart+36] = 1
+
+		// Option 5: Window Scale. Type 3, Length 3, Value 8
+		buf[tcpStart+37] = 3
+		buf[tcpStart+38] = 3
+		buf[tcpStart+39] = 8
+	} else {
+		// Option 1: Nop
+		buf[tcpStart+20] = 1
+		// Option 2: Nop
+		buf[tcpStart+21] = 1
+		// Option 3: Timestamps. Type 8, Length 10, TSval, TSecr
+		buf[tcpStart+22] = 8
+		buf[tcpStart+23] = 10
+		binary.BigEndian.PutUint32(buf[tcpStart+24:tcpStart+28], tsVal)
+		binary.BigEndian.PutUint32(buf[tcpStart+28:tcpStart+32], tsEcr)
+	}
+
+	// 4. Copy Payload
+	if len(payload) > 0 {
+		copy(buf[tcpStart+tcpLen:], payload)
+	}
+
+	// 5. Compute and write TCP Checksum using the pseudo-header and the contiguous TCP segment
+	var pseudo [40]byte
+	var pseudoSlice []byte
+	if isIPv4 {
+		copy(pseudo[0:4], srcIP.To4())
+		copy(pseudo[4:8], dstIP.To4())
+		pseudo[8] = 0
+		pseudo[9] = 6 // TCP Protocol
+		binary.BigEndian.PutUint16(pseudo[10:12], uint16(tcpLen+len(payload)))
+		pseudoSlice = pseudo[:12]
+	} else {
+		copy(pseudo[0:16], srcIP.To16())
+		copy(pseudo[16:32], dstIP.To16())
+		binary.BigEndian.PutUint32(pseudo[32:36], uint32(tcpLen+len(payload)))
+		pseudo[36] = 0
+		pseudo[37] = 0
+		pseudo[38] = 0
+		pseudo[39] = 6 // TCP Protocol
+		pseudoSlice = pseudo[:40]
+	}
+
+	tcpSegment := buf[tcpStart : tcpStart+tcpLen+len(payload)]
+	tcpChecksum := checksumMultiple(pseudoSlice, tcpSegment)
+	binary.BigEndian.PutUint16(buf[tcpStart+16:tcpStart+18], tcpChecksum)
+
+	// Inject the packet
+	err := h.injector.WritePacketData(buf[:totalLen])
 	if err != nil {
-		// Suppress log spam for common Windows Npcap "device not functioning" error (code 31)
 		if strings.Contains(err.Error(), "device attached to the system is not functioning") {
-			// Attempt to reopen the handle to recover from the device error
 			if reopenErr := h.reopen(); reopenErr != nil {
 				flog.Errorf("Failed to reopen injection handle: %v", reopenErr)
 			}
@@ -501,7 +746,6 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 				h.lastErrTime = time.Now()
 			}
 			h.errMu.Unlock()
-			// Return nil to prevent upper layers from spamming "send error" logs.
 			return nil
 		}
 	}
