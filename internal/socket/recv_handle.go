@@ -1,6 +1,7 @@
 package socket
 
 import (
+	"encoding/binary"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
@@ -133,38 +134,114 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		return nil, nil, 0, err
 	}
 
-	decoder := h.decoderPool.Get().(*packetDecoder)
-	defer h.decoderPool.Put(decoder)
+	if len(data) < 20 {
+		return nil, nil, 0, nil
+	}
 
-	// Reset decoded slice
-	decoder.decoded = decoder.decoded[:0]
+	var ipStart int
+	var isIPv4 bool
+	var ipLen int
+	var srcIP net.IP
+	var protocol byte
 
-	// Ignore error because we check decoded layers manually
-	_ = decoder.parser.DecodeLayers(data, &decoder.decoded)
-
-	addr := &net.UDPAddr{}
-	var dstPort int
-	hasTransport := false
-
-	for _, typ := range decoder.decoded {
-		switch typ {
-		case layers.LayerTypeIPv4:
-			addr.IP = decoder.ip4.SrcIP
-		case layers.LayerTypeIPv6:
-			addr.IP = decoder.ip6.SrcIP
-		case layers.LayerTypeTCP:
-			addr.Port = int(decoder.tcp.SrcPort)
-			dstPort = int(decoder.tcp.DstPort)
-			hasTransport = true
-		case layers.LayerTypeUDP:
-			addr.Port = int(decoder.udp.SrcPort)
-			dstPort = int(decoder.udp.DstPort)
-			hasTransport = true
+	// Check if there is an Ethernet header by parsing EtherType
+	etherType := binary.BigEndian.Uint16(data[12:14])
+	if etherType == 0x0800 {
+		ipStart = 14
+		isIPv4 = true
+	} else if etherType == 0x86dd {
+		ipStart = 14
+		isIPv4 = false
+	} else {
+		// Fallback for direct IP (no Ethernet header, e.g. TUN)
+		version := data[0] >> 4
+		if version == 4 {
+			ipStart = 0
+			isIPv4 = true
+		} else if version == 6 {
+			ipStart = 0
+			isIPv4 = false
+		} else {
+			return nil, nil, 0, nil // Unsupported link type or protocol
 		}
 	}
 
-	if !hasTransport || addr.Port == 0 || len(decoder.payload) == 0 {
+	if isIPv4 {
+		if len(data) < ipStart+20 {
+			return nil, nil, 0, nil
+		}
+		versionIHL := data[ipStart]
+		version := versionIHL >> 4
+		if version != 4 {
+			return nil, nil, 0, nil
+		}
+		ihl := versionIHL & 0x0f
+		ipLen = int(ihl) * 4
+		if len(data) < ipStart+ipLen {
+			return nil, nil, 0, nil
+		}
+		protocol = data[ipStart+9]
+		srcIP = net.IP(data[ipStart+12 : ipStart+16])
+	} else {
+		// IPv6
+		if len(data) < ipStart+40 {
+			return nil, nil, 0, nil
+		}
+		version := data[ipStart] >> 4
+		if version != 6 {
+			return nil, nil, 0, nil
+		}
+		ipLen = 40
+		protocol = data[ipStart+6]
+		srcIP = net.IP(data[ipStart+8 : ipStart+24])
+	}
+
+	// Only process TCP (6) or UDP (17)
+	if protocol != 6 && protocol != 17 {
 		return nil, nil, 0, nil
+	}
+
+	transStart := ipStart + ipLen
+	if len(data) < transStart+4 {
+		return nil, nil, 0, nil
+	}
+
+	srcPort := int(binary.BigEndian.Uint16(data[transStart : transStart+2]))
+	dstPort := int(binary.BigEndian.Uint16(data[transStart+2 : transStart+4]))
+
+	var payload []byte
+	if protocol == 6 { // TCP
+		if len(data) < transStart+20 {
+			return nil, nil, 0, nil
+		}
+		dataOffset := data[transStart+12] >> 4
+		tcpLen := int(dataOffset) * 4
+		if len(data) < transStart+tcpLen {
+			return nil, nil, 0, nil
+		}
+		payload = data[transStart+tcpLen:]
+	} else { // UDP
+		if len(data) < transStart+8 {
+			return nil, nil, 0, nil
+		}
+		udpLen := int(binary.BigEndian.Uint16(data[transStart+4 : transStart+6]))
+		if len(data) < transStart+8 || udpLen < 8 {
+			return nil, nil, 0, nil
+		}
+		pEnd := transStart + udpLen
+		if pEnd > len(data) {
+			pEnd = len(data)
+		}
+		payload = data[transStart+8 : pEnd]
+	}
+
+	if len(payload) == 0 {
+		return nil, nil, 0, nil
+	}
+
+	addr := &net.UDPAddr{
+		IP:   srcIP,
+		Port: srcPort,
 	}
 
 	// Overwrite source IP if it matches a spoof mapping
@@ -195,11 +272,11 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 			}
 		}
 		if !allowed {
-			return nil, nil, 0, nil // Silently ignore the packet without killing the read loop!
+			return nil, nil, 0, nil // Silently ignore the packet without killing the read loop
 		}
 	}
 
-	return decoder.payload, addr, dstPort, nil
+	return payload, addr, dstPort, nil
 }
 
 func (h *RecvHandle) Close() {
