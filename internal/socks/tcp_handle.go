@@ -60,7 +60,9 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 		flog.Errorf("SOCKS5 failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), r.Address(), err)
 		return err
 	}
-	defer strm.Close()
+	defer func() {
+		go strm.Close() // Prevents smux FIN deadlock
+	}()
 	flog.Infof("SOCKS5 accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), r.Address(), strm.RemoteAddr())
 	flog.Debugf("SOCKS5 stream %d created for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
 

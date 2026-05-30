@@ -64,54 +64,68 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 		return nil
 	}
 
-	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
-	sess, newDgm, kDgm, errDgm := f.client.UDPDatagramByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
-	if errDgm == nil && sess != nil {
-		if err := sess.Send(buf[:n]); err != nil {
-			flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
-			f.client.CloseUDP(f.ServerIdx, kDgm)
-			return err
-		}
-		if newDgm {
-			flog.Infof("accepted UDP datagram connection %d for %s -> %s", sess.SID(), caddr, f.targetAddr)
-			go f.handleUDPDatagram(ctx, kDgm, sess, conn, caddr)
-		}
+	select {
+	case f.udpSem <- struct{}{}:
+	default:
+		// Drop packet under congestion to prevent HoL blocking and memory leaks
 		return nil
 	}
 
-	// Fallback: Stream Mode with Length Prefixes (Required if using KCP transport)
-	strm, newStrm, kStrm, errStrm := f.client.UDPByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
-	if errStrm != nil {
-		flog.Errorf("failed to establish UDP stream for %s -> %s: %v", caddr, f.targetAddr, errStrm)
-		return errStrm
-	}
-
-	if f.unordered {
-		if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
-			unorderable.SetUnordered(true)
-		}
-	}
-
 	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
 	payload := *bufp
 	if cap(payload) < 2+n {
 		payload = make([]byte, 2+n)
-		*bufp = payload // Ensure the newly grown slice is returned to the pool!
+		*bufp = payload
 	}
 	payload = payload[:2+n]
-	binary.BigEndian.PutUint16(payload, uint16(n))
 	copy(payload[2:], buf[:n])
 
-	if _, err := strm.Write(payload); err != nil {
-		flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
-		f.client.CloseUDP(f.ServerIdx, kStrm)
-		return err
-	}
-	if newStrm {
-		flog.Infof("accepted UDP stream connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
-		go f.handleUDPStrm(ctx, kStrm, strm, conn, caddr)
-	}
+	go func(payload []byte, bufp *[]byte, caddr *net.UDPAddr, n int) {
+		defer func() {
+			buffer.UPool.Put(bufp)
+			<-f.udpSem
+		}()
+
+		// Try Datagram Mode first
+		sess, newDgm, kDgm, errDgm := f.client.UDPDatagramByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
+		if errDgm == nil && sess != nil {
+			if err := sess.Send(payload[2 : 2+n]); err != nil {
+				flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
+				f.client.CloseUDP(f.ServerIdx, kDgm)
+				return
+			}
+			if newDgm {
+				flog.Infof("accepted UDP datagram connection %d for %s -> %s", sess.SID(), caddr, f.targetAddr)
+				go f.handleUDPDatagram(ctx, kDgm, sess, conn, caddr)
+			}
+			return
+		}
+
+		// Fallback: Stream Mode
+		strm, newStrm, kStrm, errStrm := f.client.UDPByIndex(f.ServerIdx, caddr.String(), f.targetAddr)
+		if errStrm != nil {
+			flog.Errorf("failed to establish UDP stream for %s -> %s: %v", caddr, f.targetAddr, errStrm)
+			return
+		}
+
+		if f.unordered {
+			if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
+				unorderable.SetUnordered(true)
+			}
+		}
+
+		binary.BigEndian.PutUint16(payload, uint16(n))
+
+		if _, err := strm.Write(payload); err != nil {
+			flog.Errorf("failed to forward %d bytes from %s -> %s: %v", n, caddr, f.targetAddr, err)
+			f.client.CloseUDP(f.ServerIdx, kStrm)
+			return
+		}
+		if newStrm {
+			flog.Infof("accepted UDP stream connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
+			go f.handleUDPStrm(ctx, kStrm, strm, conn, caddr)
+		}
+	}(payload, bufp, caddr, n)
 
 	return nil
 }
@@ -122,7 +136,7 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 		buffer.UPool.Put(bufp)
 		flog.Debugf("UDP stream %d closed for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(f.ServerIdx, k)
-		strm.Close()
+		go strm.Close() // Prevents smux FIN deadlock
 	}()
 	buf := *bufp
 
@@ -164,7 +178,7 @@ func (f *Forward) handleUDPDatagram(ctx context.Context, k uint64, sess tnet.Str
 		buffer.UPool.Put(bufp)
 		flog.Debugf("UDP datagram stream %d closed for %s -> %s", sess.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(f.ServerIdx, k)
-		sess.Close()
+		go sess.Close() // Prevents smux FIN deadlock
 	}()
 	buf := *bufp
 

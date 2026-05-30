@@ -16,6 +16,7 @@ type Forward struct {
 	ServerIdx  int
 	unordered  bool
 	sockBuf    int
+	udpSem     chan struct{}
 }
 
 func New(client *client.Client, listenAddr, targetAddr string, serverIdx int, unordered bool, sockBuf int) (*Forward, error) {
@@ -26,6 +27,7 @@ func New(client *client.Client, listenAddr, targetAddr string, serverIdx int, un
 		ServerIdx:  serverIdx,
 		unordered:  unordered,
 		sockBuf:    sockBuf,
+		udpSem:     make(chan struct{}, 4096),
 	}, nil
 }
 

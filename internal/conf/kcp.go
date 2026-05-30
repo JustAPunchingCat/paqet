@@ -111,5 +111,12 @@ func (k *KCP) validate() []error {
 		errors = append(errors, fmt.Errorf("KCP streambuf must be >= 1024 bytes"))
 	}
 
+	if k.Dshard > 0 && k.Pshard == 0 {
+		errors = append(errors, fmt.Errorf("KCP pshard (parity shards) must be > 0 when dshard is enabled"))
+	}
+	if k.Pshard > 0 && k.Dshard == 0 {
+		errors = append(errors, fmt.Errorf("KCP dshard (data shards) must be > 0 when pshard is enabled"))
+	}
+
 	return errors
 }

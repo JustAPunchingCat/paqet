@@ -100,7 +100,7 @@ func (c *Client) Start(ctx context.Context) error {
 				continue
 			}
 			for _, tc := range iter.Items {
-				tc.close()
+				go tc.close()
 			}
 		}
 		flog.Infof("client shutdown complete")
@@ -146,7 +146,7 @@ func (c *Client) udpIdleSweeper(ctx context.Context) {
 					if ts, ok := strm.(interface{ activity() int64 }); ok {
 						if last := ts.activity(); last > 0 && now-last > timeout {
 							flog.Debugf("Client UDP stream %d idle timeout, closing", strm.SID())
-							strm.Close() // Unblocks Read() in forward
+							go strm.Close() // Prevents sweeper from deadlocking
 							delete(pool.strms, key)
 						}
 					}
@@ -182,7 +182,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 
 		flog.Debugf("failed to open stream, reconnecting: %v", err)
 		if tc.conn != nil {
-			tc.conn.Close()
+			go tc.conn.Close()
 		}
 
 		// Reconnect
@@ -203,7 +203,9 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 		}
 
 		flog.Debugf("failed to open stream after reconnect: %v", err)
-		tc.conn.Close()
+		if tc.conn != nil {
+			go tc.conn.Close()
+		}
 		tc.conn = nil
 		tc.mu.Unlock()
 	}

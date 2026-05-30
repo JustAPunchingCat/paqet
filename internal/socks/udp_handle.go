@@ -40,7 +40,7 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 				defer func() {
 					flog.Debugf("SOCKS5 UDP datagram stream %d closed for %s -> %s", sess.SID(), addr, dAddr)
 					h.client.CloseUDP(h.ServerIdx, kDgm)
-					sess.Close()
+					go sess.Close() // Prevents smux FIN deadlock
 				}()
 
 				// Pre-calculate header length: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
@@ -117,7 +117,7 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 			defer func() {
 				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, dAddr)
 				h.client.CloseUDP(h.ServerIdx, kStrm)
-				strm.Close()
+				go strm.Close() // Prevents smux FIN deadlock
 			}()
 
 			// Pre-calculate header length: RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)

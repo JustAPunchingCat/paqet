@@ -160,10 +160,18 @@ func (c *Conf) validate() error {
 					allErrors = append(allErrors, fmt.Errorf("server[%d].socks5[%d] %v", i, j, err))
 				}
 				addr := fmt.Sprint(srv.SOCKS5[j].Listen)
-				if owner, ok := usedAddrs[addr]; ok {
-					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].socks5[%d]", addr, owner, i, j))
+				addrTCP := "tcp://" + addr
+				addrUDP := "udp://" + addr
+
+				if owner, ok := usedAddrs[addrTCP]; ok {
+					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].socks5[%d]", addrTCP, owner, i, j))
 				} else {
-					usedAddrs[addr] = fmt.Sprintf("server[%d].socks5[%d]", i, j)
+					usedAddrs[addrTCP] = fmt.Sprintf("server[%d].socks5[%d]", i, j)
+				}
+				if owner, ok := usedAddrs[addrUDP]; ok {
+					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].socks5[%d]", addrUDP, owner, i, j))
+				} else {
+					usedAddrs[addrUDP] = fmt.Sprintf("server[%d].socks5[%d]", i, j)
 				}
 			}
 			for j := range srv.Forward {
@@ -172,10 +180,15 @@ func (c *Conf) validate() error {
 					allErrors = append(allErrors, fmt.Errorf("server[%d].forward[%d] %v", i, j, err))
 				}
 				addr := fmt.Sprint(srv.Forward[j].Listen)
-				if owner, ok := usedAddrs[addr]; ok {
-					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].forward[%d]", addr, owner, i, j))
+				proto := srv.Forward[j].Protocol
+				if proto == "" {
+					proto = "tcp"
+				}
+				addrProto := proto + "://" + addr
+				if owner, ok := usedAddrs[addrProto]; ok {
+					allErrors = append(allErrors, fmt.Errorf("listen address collision: '%s' is used by %s and server[%d].forward[%d]", addrProto, owner, i, j))
 				} else {
-					usedAddrs[addr] = fmt.Sprintf("server[%d].forward[%d]", i, j)
+					usedAddrs[addrProto] = fmt.Sprintf("server[%d].forward[%d]", i, j)
 				}
 			}
 

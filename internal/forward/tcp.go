@@ -65,7 +65,7 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 	}
 	defer func() {
 		flog.Debugf("TCP stream closed for %s -> %s", conn.RemoteAddr(), f.targetAddr)
-		strm.Close()
+		go strm.Close() // Prevents smux FIN deadlock
 	}()
 	flog.Infof("accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), f.targetAddr, strm.RemoteAddr())
 
