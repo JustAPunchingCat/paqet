@@ -96,7 +96,7 @@ func TestBuildTLSConfigServer(t *testing.T) {
 }
 
 func TestBuildQUICConfig(t *testing.T) {
-	cfg := &conf.QUIC{MaxStreams: 128, IdleTimeout: 60 * time.Second}
+	cfg := &conf.QUIC{MaxStreams: 128, IdleTimeout: 60 * time.Second, KeepAlive: 20 * time.Second}
 	qConf := buildQUICConfig(cfg)
 
 	if qConf.MaxIncomingStreams != 128 {

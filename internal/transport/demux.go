@@ -55,7 +55,7 @@ func (d *ProtoDemux) readLoop() {
 		if err != nil {
 			return
 		}
-		if n < 1 {
+		if n < 2 {
 			continue
 		}
 

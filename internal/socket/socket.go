@@ -9,10 +9,24 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/obfs"
 	"paqet/internal/pkg/hash"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type processedPacket struct {
+	data []byte
+	addr net.Addr
+	port int
+	err  error
+}
+
+type rawJob struct {
+	data []byte
+	addr net.Addr
+	port int
+}
 
 type PacketConn struct {
 	cfg           *conf.Network
@@ -26,6 +40,12 @@ type PacketConn struct {
 
 	plugins     *PluginManager
 	clientPorts sync.Map
+
+	// Multi-core parallel worker pool fields
+	readQueue  chan processedPacket
+	workerChs  []chan rawJob
+	workersWg  sync.WaitGroup
+	numWorkers int
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -62,6 +82,11 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
+	numWorkers := runtime.NumCPU()
+	if numWorkers < 2 {
+		numWorkers = 2
+	}
+
 	conn := &PacketConn{
 		cfg:        &connCfg,
 		sendHandle: sendHandle,
@@ -69,7 +94,20 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		ctx:        ctx,
 		cancel:     cancel,
 		plugins:    NewPluginManager(),
+		readQueue:  make(chan processedPacket, 65536),
+		workerChs:  make([]chan rawJob, numWorkers),
+		numWorkers: numWorkers,
 	}
+
+	// Initialize worker channels and start worker goroutines
+	conn.workersWg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		conn.workerChs[i] = make(chan rawJob, 4096)
+		go conn.workerLoop(conn.workerChs[i])
+	}
+
+	// Start background packet reader
+	go conn.backgroundReader()
 
 	// Initialize plugins
 	useObfs := false
@@ -115,57 +153,88 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		deadline = timer.C
 	}
 
+	select {
+	case <-c.ctx.Done():
+		return 0, nil, c.ctx.Err()
+	case <-deadline:
+		return 0, nil, os.ErrDeadlineExceeded
+	case pkt, ok := <-c.readQueue:
+		if !ok {
+			return 0, nil, net.ErrClosed
+		}
+		if pkt.err != nil {
+			return 0, nil, pkt.err
+		}
+
+		// Store client port for Server NAT routing
+		key := hash.IPAddr(pkt.addr.(*net.UDPAddr).IP, uint16(pkt.addr.(*net.UDPAddr).Port))
+		if lastPort, ok := c.clientPorts.Load(key); !ok || lastPort.(int) != pkt.port {
+			c.clientPorts.Store(key, pkt.port)
+		}
+
+		n = copy(data, pkt.data)
+		return n, pkt.addr, nil
+	}
+}
+
+func (c *PacketConn) workerLoop(ch chan rawJob) {
+	defer c.workersWg.Done()
 	for {
 		select {
 		case <-c.ctx.Done():
-			return 0, nil, c.ctx.Err()
-		case <-deadline:
-			return 0, nil, os.ErrDeadlineExceeded
+			return
+		case job, ok := <-ch:
+			if !ok {
+				return
+			}
+			payload, addr, err := c.plugins.OnRead(job.data, job.addr)
+			if err != nil {
+				// Drop invalid packet (e.g. obfuscation mismatch)
+				continue
+			}
+			select {
+			case c.readQueue <- processedPacket{data: payload, addr: addr, port: job.port}:
+			case <-c.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (c *PacketConn) backgroundReader() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
 		default:
 		}
 
 		payload, addr, dstPort, err := c.recvHandle.Read()
 		if err != nil {
-			return 0, nil, err
+			select {
+			case c.readQueue <- processedPacket{err: err}:
+			case <-c.ctx.Done():
+			}
+			return
 		}
 		if payload == nil {
 			continue
 		}
 
-		newPayload, newAddr, err := c.plugins.OnRead(payload, addr)
-		if err != nil {
-			// Drop invalid packet (e.g. obfuscation mismatch) and continue
-
-			// Heuristic: Check if it looks like HTTP/SSH to hint at port overlap
-			isCleartext := false
-			if len(payload) >= 4 {
-				head := string(payload[:4])
-				if head == "HTTP" || head == "SSH-" || head == "GET " || head == "POST" {
-					isCleartext = true
-				}
-			}
-
-			if isCleartext {
-				flog.Debugf("dropped invalid packet from %s: looks like cleartext traffic (HTTP/SSH). Check for port range overlap with OS ephemeral ports.", addr)
-			} else {
-				flog.Debugf("dropped invalid packet from %s: %v (len=%d, hex=%x)", addr, err, len(payload), payload[:min(len(payload), 16)])
-			}
+		udpAddr, ok := addr.(*net.UDPAddr)
+		if !ok {
 			continue
 		}
-		payload = newPayload
-		addr = newAddr
 
-		// Store the destination port this packet was sent to, so we can reply from the same port.
-		// This is critical for Server mode to support NAT traversal when clients hop ports.
-		// Optimization: Only update if the port has changed to avoid contention on the sync.Map.
-		key := hash.IPAddr(addr.(*net.UDPAddr).IP, uint16(addr.(*net.UDPAddr).Port))
-		if lastPort, ok := c.clientPorts.Load(key); !ok || lastPort.(int) != dstPort {
-			c.clientPorts.Store(key, dstPort)
+		// Consistent Hashing / Flow Pinning based on client IP & Port
+		h := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
+		workerID := int(h % uint64(c.numWorkers))
+
+		select {
+		case c.workerChs[workerID] <- rawJob{data: payload, addr: addr, port: dstPort}:
+		case <-c.ctx.Done():
+			return
 		}
-
-		n = copy(data, payload)
-
-		return n, addr, nil
 	}
 }
 
@@ -225,6 +294,19 @@ func (c *PacketConn) Close() error {
 	if c.recvHandle != nil {
 		go c.recvHandle.Close()
 	}
+
+	// Close worker channels to terminate workers gracefully
+	for _, ch := range c.workerChs {
+		if ch != nil {
+			close(ch)
+		}
+	}
+
+	// Wait for workers to finish in a separate goroutine to avoid blocking Close()
+	go func() {
+		c.workersWg.Wait()
+		close(c.readQueue)
+	}()
 
 	return nil
 }

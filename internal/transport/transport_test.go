@@ -447,7 +447,7 @@ func TestProtoDemuxConnLookup(t *testing.T) {
 // --- Pool correctness ---
 
 func TestGetDemuxBufSmall(t *testing.T) {
-	pool, buf := getDemuxBuf(100)
+	pool, ptr, buf := getDemuxBuf(100)
 	if pool == nil {
 		t.Fatal("pool should not be nil")
 	}
@@ -457,18 +457,18 @@ func TestGetDemuxBufSmall(t *testing.T) {
 	if cap(buf) < 100 {
 		t.Errorf("buf cap = %d, want >= 100", cap(buf))
 	}
-	pool.Put(&buf)
+	pool.Put(ptr)
 }
 
 func TestGetDemuxBufLarge(t *testing.T) {
-	pool, buf := getDemuxBuf(2000)
+	pool, ptr, buf := getDemuxBuf(2000)
 	if pool == nil {
 		t.Fatal("pool should not be nil")
 	}
 	if len(buf) != 2000 {
 		t.Errorf("buf len = %d, want 2000", len(buf))
 	}
-	pool.Put(&buf)
+	pool.Put(ptr)
 }
 
 // --- Concurrency stress ---
