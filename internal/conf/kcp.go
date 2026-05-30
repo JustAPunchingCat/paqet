@@ -39,9 +39,6 @@ func (k *KCP) setDefaults() {
 	if k.Mode == "" {
 		k.Mode = "fast"
 	}
-	if k.MTU == 0 {
-		k.MTU = 1280
-	}
 
 	if k.Rcvwnd == 0 {
 		k.Rcvwnd = 2048
@@ -80,7 +77,7 @@ func (k *KCP) validate() []error {
 		errors = append(errors, fmt.Errorf("KCP mode must be one of: %v", validModes))
 	}
 
-	if k.MTU < 50 || k.MTU > 1500 {
+	if (k.MTU < 50 || k.MTU > 1500) && k.MTU != 0 {
 		errors = append(errors, fmt.Errorf("KCP MTU must be between 50-1500 bytes"))
 	}
 
