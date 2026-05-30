@@ -9,6 +9,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/tnet"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,7 +28,7 @@ type Conn struct {
 	lastRemoteID uint32 // Track last accepted ID to ignore late/replayed streams
 	unordered    bool   // Default mode for new streams
 	mtu          int    // Max fragment size
-	lastActivity time.Time
+	lastActivity int64
 }
 
 const (
@@ -57,7 +58,7 @@ func newConn(adapter net.Conn, isServer bool, unordered bool, mtu int) *Conn {
 		nextID:       1,
 		unordered:    unordered,
 		mtu:          mtu,
-		lastActivity: time.Now(),
+		lastActivity: time.Now().UnixNano(),
 	}
 	if isServer {
 		c.nextID = 2
@@ -135,9 +136,7 @@ func (c *Conn) readLoop() {
 			return
 		}
 
-		c.mu.Lock()
-		c.lastActivity = time.Now()
-		c.mu.Unlock()
+		atomic.StoreInt64(&c.lastActivity, time.Now().UnixNano())
 
 		if n < 13 {
 			flog.Debugf("UDP Conn: packet too short: %d", n)
@@ -154,13 +153,29 @@ func (c *Conn) readLoop() {
 			continue
 		}
 
-		// Must copy data because buf is reused in the next iteration
-		payload := make([]byte, n-13)
-		copy(payload, buf[13:n])
+		// Use pooled buffer for active streams to avoid continuous heap allocations.
+		var payload []byte
+		var bp *[]byte
+		if sid != 0 {
+			bp = packetPool.Get().(*[]byte)
+			pkt := *bp
+			if cap(pkt) < n-13 {
+				pkt = make([]byte, n-13)
+				*bp = pkt
+			}
+			payload = pkt[:n-13]
+			copy(payload, buf[13:n])
+		} else {
+			payload = make([]byte, n-13)
+			copy(payload, buf[13:n])
+		}
 
 		// Verify CRC32
 		if crc32.ChecksumIEEE(payload) != sum {
 			flog.Debugf("UDP packet dropped: CRC mismatch (len=%d)", len(payload))
+			if bp != nil {
+				packetPool.Put(bp)
+			}
 			continue // Drop corrupted packet
 		}
 
@@ -178,16 +193,20 @@ func (c *Conn) readLoop() {
 		c.mu.RUnlock()
 
 		if exists {
-			strm.writeMu.Lock()
-			strm.lastActivity = time.Now()
-			strm.writeMu.Unlock()
+			atomic.StoreInt64(&strm.lastActivity, time.Now().UnixNano())
 			select {
-			case strm.rx <- fragment{seq: seq, data: payload, more: flags&flagMoreFrags != 0, flags: flags}:
+			case strm.rx <- fragment{seq: seq, data: payload, more: flags&flagMoreFrags != 0, flags: flags, bp: bp}:
 			default:
 				flog.Debugf("UDP Conn: stream %d buffer full, dropping packet", sid)
+				if bp != nil {
+					packetPool.Put(bp)
+				}
 			}
 		} else if !c.isServer || (sid%2 != 1) {
 			// flog.Debugf("UDP Conn: ignoring unknown stream %d", sid)
+			if bp != nil {
+				packetPool.Put(bp)
+			}
 			continue
 		} else {
 			// Check if this is an old ID from a closed stream
@@ -195,6 +214,9 @@ func (c *Conn) readLoop() {
 			c.mu.RLock()
 			if c.lastRemoteID > 1024 && sid <= c.lastRemoteID-1024 {
 				c.mu.RUnlock()
+				if bp != nil {
+					packetPool.Put(bp)
+				}
 				continue
 			}
 			c.mu.RUnlock()
@@ -202,11 +224,17 @@ func (c *Conn) readLoop() {
 			c.mu.Lock()
 			if _, exists := c.streams[sid]; exists {
 				c.mu.Unlock()
+				if bp != nil {
+					packetPool.Put(bp)
+				}
 				continue
 			}
 			// Only create a new stream if it contains the start flag
 			if flags&flagStart == 0 {
 				c.mu.Unlock()
+				if bp != nil {
+					packetPool.Put(bp)
+				}
 				continue
 			}
 			strm := newMuxStream(c, sid)
@@ -220,8 +248,11 @@ func (c *Conn) readLoop() {
 			c.mu.Unlock()
 
 			select {
-			case strm.rx <- fragment{seq: seq, data: payload, more: flags&flagMoreFrags != 0, flags: flags}:
+			case strm.rx <- fragment{seq: seq, data: payload, more: flags&flagMoreFrags != 0, flags: flags, bp: bp}:
 			default:
+				if bp != nil {
+					packetPool.Put(bp)
+				}
 			}
 
 			select {
@@ -248,9 +279,7 @@ func (c *Conn) keepAliveLoop() {
 		case <-c.closed:
 			return
 		case <-ticker.C:
-			c.mu.RLock()
-			idle := time.Since(c.lastActivity)
-			c.mu.RUnlock()
+			idle := time.Since(time.Unix(0, atomic.LoadInt64(&c.lastActivity)))
 
 			if idle > connectionTimeout {
 				flog.Debugf("UDP Conn timed out after %v idle", idle)
@@ -265,9 +294,7 @@ func (c *Conn) keepAliveLoop() {
 			now := time.Now()
 			var idleStreams []*muxStream
 			for _, s := range c.streams {
-				s.writeMu.Lock()
-				idle := now.Sub(s.lastActivity)
-				s.writeMu.Unlock()
+				idle := now.Sub(time.Unix(0, atomic.LoadInt64(&s.lastActivity)))
 				if idle > connectionTimeout {
 					idleStreams = append(idleStreams, s)
 				}
@@ -335,33 +362,36 @@ type fragment struct {
 	data  []byte
 	more  bool
 	flags byte
+	bp    *[]byte // Backing buffer from sync.Pool to be returned after reading
 }
 
 // muxStream implements tnet.Strm for the custom packet muxer.
 type muxStream struct {
-	conn         *Conn
-	id           uint32
-	rx           chan fragment
-	buf          []byte
-	reassembly   []byte              // Buffer for reassembling fragments
-	nextReadSeq  uint32              // Next expected sequence number for reading
-	nextWriteSeq uint32              // Next sequence number for writing
-	reorderBuf   map[uint32]fragment // Buffer for out-of-order packets
-	dead         chan struct{}
-	unordered    bool // If true, disable reordering logic
-	highestRxSeq uint32
-	writeMu      sync.Mutex
-	lastActivity time.Time
+	conn            *Conn
+	id              uint32
+	rx              chan fragment
+	buf             []byte
+	pendingPoolBuf  *[]byte             // Backing buffer for s.buf if it was pooled
+	reassembly      []byte              // Buffer for reassembling fragments
+	reassemblyPools []*[]byte           // Pooled buffers that were appended to reassembly
+	nextReadSeq     uint32              // Next expected sequence number for reading
+	nextWriteSeq    uint32              // Next sequence number for writing
+	reorderBuf      map[uint32]fragment // Buffer for out-of-order packets
+	dead            chan struct{}
+	unordered       bool // If true, disable reordering logic
+	highestRxSeq    uint32
+	writeMu         sync.Mutex
+	lastActivity    int64
 }
 
 func newMuxStream(conn *Conn, id uint32) *muxStream {
 	return &muxStream{
 		conn:         conn,
 		id:           id,
-		rx:           make(chan fragment, 1024),
+		rx:           make(chan fragment, 4096),
 		reorderBuf:   make(map[uint32]fragment),
 		dead:         make(chan struct{}),
-		lastActivity: time.Now(),
+		lastActivity: time.Now().UnixNano(),
 	}
 }
 
@@ -375,6 +405,10 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 		s.buf = s.buf[n:]
 		if len(s.buf) == 0 {
 			s.buf = nil // Explicitly free reference
+			if s.pendingPoolBuf != nil {
+				packetPool.Put(s.pendingPoolBuf)
+				s.pendingPoolBuf = nil
+			}
 		}
 		return n, nil
 	}
@@ -409,12 +443,23 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 				}
 
 				if foundStart {
-					if data, ok := s.tryReassemble(startSeq); ok {
-						n = copy(b, data)
-						if n < len(data) {
-							s.buf = data[n:]
+					if msg, pools, isSingle, ok := s.tryReassembleUnordered(startSeq); ok {
+						n = copy(b, msg)
+						if n < len(msg) {
+							if isSingle && len(pools) == 1 {
+								s.buf = msg[n:]
+								s.pendingPoolBuf = pools[0]
+							} else {
+								s.buf = make([]byte, len(msg)-n)
+								copy(s.buf, msg[n:])
+								for _, bp := range pools {
+									packetPool.Put(bp)
+								}
+							}
 						} else {
-							s.buf = nil // Let GC free the backing array instantly
+							for _, bp := range pools {
+								packetPool.Put(bp)
+							}
 						}
 						return n, nil
 					}
@@ -425,12 +470,18 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 					for k := range s.reorderBuf {
 						// Delete fragments that are more than 2048 sequences behind the highest seen
 						if diff := int32(s.highestRxSeq - k); diff > 2048 {
+							if f, ok := s.reorderBuf[k]; ok && f.bp != nil {
+								packetPool.Put(f.bp)
+							}
 							delete(s.reorderBuf, k)
 						}
 					}
 					if len(s.reorderBuf) > 4096 {
 						// Fast clear using Go's optimized map clearing (no new map allocation)
-						for k := range s.reorderBuf {
+						for k, f := range s.reorderBuf {
+							if f.bp != nil {
+								packetPool.Put(f.bp)
+							}
 							delete(s.reorderBuf, k)
 						}
 					}
@@ -449,7 +500,25 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 		if frag, ok := s.reorderBuf[s.nextReadSeq]; ok {
 			delete(s.reorderBuf, s.nextReadSeq)
 			s.nextReadSeq++
+			
+			// If it's a single fragment and we haven't started reassembly yet:
+			if !frag.more && len(s.reassembly) == 0 {
+				n = copy(b, frag.data)
+				if n < len(frag.data) {
+					s.buf = frag.data[n:]
+					s.pendingPoolBuf = frag.bp
+				} else {
+					if frag.bp != nil {
+						packetPool.Put(frag.bp)
+					}
+				}
+				return n, nil
+			}
+
 			s.reassembly = append(s.reassembly, frag.data...)
+			if frag.bp != nil {
+				s.reassemblyPools = append(s.reassemblyPools, frag.bp)
+			}
 
 			if frag.more {
 				continue // Loop to check for next fragment in reorderBuf or wait for it
@@ -461,8 +530,13 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 			n = copy(b, data)
 			if n < len(data) {
-				s.buf = data[n:] // Keep exact reference to remainder
+				s.buf = make([]byte, len(data)-n)
+				copy(s.buf, data[n:])
 			}
+			for _, bp := range s.reassemblyPools {
+				packetPool.Put(bp)
+			}
+			s.reassemblyPools = nil
 			return n, nil
 		}
 
@@ -472,6 +546,9 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 			// int32 cast ensures safe math when sequence wraps from 4.2 Billion to 0
 			diff := int32(frag.seq - s.nextReadSeq)
 			if diff < 0 {
+				if frag.bp != nil {
+					packetPool.Put(frag.bp)
+				}
 				continue // Duplicate/old
 			}
 			if diff > 0 {
@@ -488,7 +565,25 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 			// Found expected fragment
 			s.nextReadSeq++
+			
+			// If it's a single fragment and we haven't started reassembly yet:
+			if !frag.more && len(s.reassembly) == 0 {
+				n = copy(b, frag.data)
+				if n < len(frag.data) {
+					s.buf = frag.data[n:]
+					s.pendingPoolBuf = frag.bp
+				} else {
+					if frag.bp != nil {
+						packetPool.Put(frag.bp)
+					}
+				}
+				return n, nil
+			}
+
 			s.reassembly = append(s.reassembly, frag.data...)
+			if frag.bp != nil {
+				s.reassemblyPools = append(s.reassemblyPools, frag.bp)
+			}
 
 			if frag.more {
 				continue // Loop back to check reorderBuf for next part
@@ -500,8 +595,13 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 			n = copy(b, data)
 			if n < len(data) {
-				s.buf = data[n:] // Keep exact reference to remainder
+				s.buf = make([]byte, len(data)-n)
+				copy(s.buf, data[n:])
 			}
+			for _, bp := range s.reassemblyPools {
+				packetPool.Put(bp)
+			}
+			s.reassemblyPools = nil
 			return n, nil
 
 		case <-s.dead:
@@ -512,24 +612,32 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 	}
 }
 
-// tryReassemble attempts to build a message starting at startSeq
-func (s *muxStream) tryReassemble(startSeq uint32) ([]byte, bool) {
+// tryReassembleUnordered attempts to build a message starting at startSeq
+func (s *muxStream) tryReassembleUnordered(startSeq uint32) (msg []byte, pools []*[]byte, isSingle bool, ok bool) {
 	// Fast path: single-fragment message (zero allocation)
 	if frag, ok := s.reorderBuf[startSeq]; ok && frag.flags&flagMoreFrags == 0 {
 		delete(s.reorderBuf, startSeq)
-		return frag.data, true
+		var pools []*[]byte
+		if frag.bp != nil {
+			pools = []*[]byte{frag.bp}
+		}
+		return frag.data, pools, true, true
 	}
 
-	var msg []byte
+	var msgBuf []byte
+	var poolsBuf []*[]byte
 	curr := startSeq
 
 	for {
 		frag, ok := s.reorderBuf[curr]
 		if !ok {
-			return nil, false // Missing fragment
+			return nil, nil, false, false // Missing fragment
 		}
 
-		msg = append(msg, frag.data...)
+		msgBuf = append(msgBuf, frag.data...)
+		if frag.bp != nil {
+			poolsBuf = append(poolsBuf, frag.bp)
+		}
 		if frag.flags&flagMoreFrags == 0 {
 			// End of message found
 			// Cleanup used fragments (safe against sequence wrap-around)
@@ -539,7 +647,7 @@ func (s *muxStream) tryReassemble(startSeq uint32) ([]byte, bool) {
 					break
 				}
 			}
-			return msg, true
+			return msgBuf, poolsBuf, false, true
 		}
 		curr++
 	}
@@ -553,7 +661,7 @@ func (s *muxStream) Write(b []byte) (n int, err error) {
 	}
 
 	s.writeMu.Lock()
-	s.lastActivity = time.Now()
+	atomic.StoreInt64(&s.lastActivity, time.Now().UnixNano())
 	defer s.writeMu.Unlock()
 
 	// Fragment large writes into MTU-sized packets
@@ -580,9 +688,7 @@ func (s *muxStream) Write(b []byte) (n int, err error) {
 }
 func (s *muxStream) Close() error { s.closeInternal(); return nil }
 func (s *muxStream) activity() int64 {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return s.lastActivity.UnixNano()
+	return atomic.LoadInt64(&s.lastActivity)
 }
 func (s *muxStream) closeInternal() {
 	select {
@@ -590,6 +696,39 @@ func (s *muxStream) closeInternal() {
 	default:
 		close(s.dead)
 		s.conn.closeStream(s.id)
+
+		// Drain rx channel to recycle any buffered packets without closing it
+		for {
+			select {
+			case frag := <-s.rx:
+				if frag.bp != nil {
+					packetPool.Put(frag.bp)
+				}
+			default:
+				goto rxDrained
+			}
+		}
+	rxDrained:
+
+		// Recycle all buffers in reorderBuf
+		for _, frag := range s.reorderBuf {
+			if frag.bp != nil {
+				packetPool.Put(frag.bp)
+			}
+		}
+		s.reorderBuf = nil
+
+		// Recycle reassembly pools
+		for _, bp := range s.reassemblyPools {
+			packetPool.Put(bp)
+		}
+		s.reassemblyPools = nil
+
+		// Recycle pendingPoolBuf
+		if s.pendingPoolBuf != nil {
+			packetPool.Put(s.pendingPoolBuf)
+			s.pendingPoolBuf = nil
+		}
 	}
 }
 func (s *muxStream) LocalAddr() net.Addr                { return s.conn.LocalAddr() }
