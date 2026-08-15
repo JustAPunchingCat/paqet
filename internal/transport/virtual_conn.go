@@ -104,7 +104,7 @@ func (v *VirtualPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	return n, nil
 }
 
-func (v *VirtualPacketConn) Close() error                       { return nil }
+func (v *VirtualPacketConn) Close() error                       { return v.inner.Close() }
 func (v *VirtualPacketConn) LocalAddr() net.Addr                { return v.inner.LocalAddr() }
 func (v *VirtualPacketConn) SetDeadline(t time.Time) error      { return v.inner.SetDeadline(t) }
 func (v *VirtualPacketConn) SetReadDeadline(t time.Time) error  { return v.inner.SetReadDeadline(t) }

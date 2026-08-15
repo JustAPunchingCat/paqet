@@ -46,6 +46,7 @@ type PacketConn struct {
 	workerChs  []chan rawJob
 	workersWg  sync.WaitGroup
 	numWorkers int
+	closeOnce  sync.Once
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -285,29 +286,30 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 }
 
 func (c *PacketConn) Close() error {
-	c.cancel()
-	c.plugins.Close()
+	c.closeOnce.Do(func() {
+		c.cancel()
+		c.plugins.Close()
 
-	if c.sendHandle != nil {
-		go c.sendHandle.Close()
-	}
-	if c.recvHandle != nil {
-		go c.recvHandle.Close()
-	}
-
-	// Close worker channels to terminate workers gracefully
-	for _, ch := range c.workerChs {
-		if ch != nil {
-			close(ch)
+		if c.sendHandle != nil {
+			go c.sendHandle.Close()
 		}
-	}
+		if c.recvHandle != nil {
+			go c.recvHandle.Close()
+		}
 
-	// Wait for workers to finish in a separate goroutine to avoid blocking Close()
-	go func() {
-		c.workersWg.Wait()
-		close(c.readQueue)
-	}()
+		// Close worker channels to terminate workers gracefully
+		for _, ch := range c.workerChs {
+			if ch != nil {
+				close(ch)
+			}
+		}
 
+		// Wait for workers to finish in a separate goroutine to avoid blocking Close()
+		go func() {
+			c.workersWg.Wait()
+			close(c.readQueue)
+		}()
+	})
 	return nil
 }
 

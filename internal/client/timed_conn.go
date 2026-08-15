@@ -51,6 +51,14 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
+	// Guard: close pConn on any error path so background goroutines and file
+	// descriptors are never orphaned when the server is offline or unreachable.
+	success := false
+	defer func() {
+		if !success {
+			pConn.Close()
+		}
+	}()
 
 	// If hopping is enabled, the raw socket normalizes incoming packets to hopping.Min.
 	// We must tell KCP to expect packets from this normalized port, ignoring the
@@ -145,6 +153,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	}
 	err = tc.sendTCPF(conn)
 	if err != nil {
+		conn.Close() // also releases pConn via the transport Close chain
 		return nil, err
 	}
 
@@ -152,6 +161,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		tc.startPMTUD(conn, baseMTU, overhead)
 	}
 
+	success = true
 	return conn, nil
 }
 
