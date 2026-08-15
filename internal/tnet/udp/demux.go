@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const clientChanSize = 65536 // Safe to raise: channels are now instantly destroyed on close
+const clientChanSize = 4096 // Sized for 10 Gbps throughput bursts while keeping per-client memory tight
 
 // clientConn holds a per-client channel of received packets.
 type clientConn struct {

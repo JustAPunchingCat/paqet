@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/buffer"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"paqet/internal/tnet/udp"
@@ -56,17 +55,14 @@ func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 	return s.handleUDP(ctx, strm, p.Addr.String())
 }
 
+const udpIdleTimeout = 30 * time.Second
+
 func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) error {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		flog.Errorf("failed to establish UDP connection to %s for stream %d: %v", addr, strm.SID(), err)
 		strm.Close()
 		return err
-	}
-	if udpConn, ok := conn.(*net.UDPConn); ok {
-		// Increase socket buffers to 4MB to prevent drops during bursts
-		udpConn.SetReadBuffer(4 * 1024 * 1024)
-		udpConn.SetWriteBuffer(4 * 1024 * 1024)
 	}
 	defer func() {
 		conn.Close()
@@ -90,7 +86,8 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 		// Ignore errors caused by normal closing or timeouts which are expected
 		if err != nil && err != io.EOF &&
 			!strings.Contains(err.Error(), "use of closed network connection") &&
-			!strings.Contains(err.Error(), "timeout") {
+			!strings.Contains(err.Error(), "timeout") &&
+			!strings.Contains(err.Error(), "i/o timeout") {
 			flog.Errorf("UDP stream %d to %s failed: %v", strm.SID(), addr, err)
 			return err
 		}
@@ -107,7 +104,7 @@ func (s *Server) udpToStream(conn net.Conn, strm tnet.Strm) error {
 	buf := *bufp
 
 	for {
-		// Read into buf starting at offset 2 to leave room for header
+		conn.SetReadDeadline(time.Now().Add(udpIdleTimeout))
 		n, err := conn.Read(buf[2:])
 		if err != nil {
 			return err
@@ -132,11 +129,6 @@ func (s *Server) handleDatagram(ctx context.Context, strm tnet.Strm, addr string
 		strm.Close()
 		return err
 	}
-	if udpConn, ok := conn.(*net.UDPConn); ok {
-		// Increase socket buffers to 4MB to prevent drops during bursts
-		udpConn.SetReadBuffer(4 * 1024 * 1024)
-		udpConn.SetWriteBuffer(4 * 1024 * 1024)
-	}
 	defer func() {
 		conn.Close()
 		strm.Close()
@@ -146,10 +138,44 @@ func (s *Server) handleDatagram(ctx context.Context, strm tnet.Strm, addr string
 
 	errChan := make(chan error, 2)
 	go func() {
-		errChan <- buffer.CopyU(strm, conn)
+		bufp := bufPool.Get().(*[]byte)
+		defer bufPool.Put(bufp)
+		buf := *bufp
+		for {
+			strm.SetReadDeadline(time.Now().Add(udpIdleTimeout))
+			n, err := strm.Read(buf)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, err = conn.Write(buf[:n])
+			conn.SetWriteDeadline(time.Time{})
+			if err != nil {
+				errChan <- err
+				return
+			}
+		}
 	}()
 	go func() {
-		errChan <- buffer.CopyU(conn, strm)
+		bufp := bufPool.Get().(*[]byte)
+		defer bufPool.Put(bufp)
+		buf := *bufp
+		for {
+			conn.SetReadDeadline(time.Now().Add(udpIdleTimeout))
+			n, err := conn.Read(buf)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, err = strm.Write(buf[:n])
+			strm.SetWriteDeadline(time.Time{})
+			if err != nil {
+				errChan <- err
+				return
+			}
+		}
 	}()
 
 	select {
@@ -157,7 +183,8 @@ func (s *Server) handleDatagram(ctx context.Context, strm tnet.Strm, addr string
 		// Ignore errors caused by normal closing or timeouts which are expected
 		if err != nil && err != io.EOF &&
 			!strings.Contains(err.Error(), "use of closed network connection") &&
-			!strings.Contains(err.Error(), "timeout") {
+			!strings.Contains(err.Error(), "timeout") &&
+			!strings.Contains(err.Error(), "i/o timeout") {
 			flog.Errorf("UDP datagram stream %d to %s failed: %v", strm.SID(), addr, err)
 			return err
 		}
@@ -174,19 +201,22 @@ func (s *Server) streamToUDP(strm tnet.Strm, conn net.Conn) error {
 	buf := *bufp
 
 	for {
-		// Read length prefix into the first 2 bytes of buf
+		strm.SetReadDeadline(time.Now().Add(udpIdleTimeout))
 		if _, err := io.ReadFull(strm, buf[:2]); err != nil {
 			return err
 		}
 		length := int(binary.BigEndian.Uint16(buf[:2]))
 
-		// Read payload into buf starting at 0 (overwriting header, which is fine)
 		if _, err := io.ReadFull(strm, buf[:length]); err != nil {
 			return err
 		}
 
-		if _, err := conn.Write(buf[:length]); err != nil {
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, err := conn.Write(buf[:length])
+		conn.SetWriteDeadline(time.Time{})
+		if err != nil {
 			return err
 		}
 	}
 }
+

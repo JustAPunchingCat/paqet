@@ -875,6 +875,10 @@ func (h *SendHandle) getFlowState(ip net.IP) *flowState {
 		return state
 	}
 
+	if len(h.spoofStates) > 4096 {
+		clear(h.spoofStates)
+	}
+
 	state := &flowState{
 		ipId:   randUint32(),
 		baseTS: randUint32(),
@@ -896,6 +900,9 @@ func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
 func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	a := *addr.(*net.UDPAddr)
 	h.tcpF.mu.Lock()
+	if len(h.tcpF.clientTCPF) > 4096 {
+		clear(h.tcpF.clientTCPF)
+	}
 	h.tcpF.clientTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
 	h.tcpF.mu.Unlock()
 }
