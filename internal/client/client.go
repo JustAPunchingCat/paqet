@@ -182,7 +182,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 
 		flog.Debugf("failed to open stream, reconnecting: %v", err)
 		if tc.conn != nil {
-			go tc.conn.Close()
+			tc.conn.Close()
 		}
 
 		// Reconnect
@@ -204,7 +204,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 
 		flog.Debugf("failed to open stream after reconnect: %v", err)
 		if tc.conn != nil {
-			go tc.conn.Close()
+			tc.conn.Close()
 		}
 		tc.conn = nil
 		tc.mu.Unlock()

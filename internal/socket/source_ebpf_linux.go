@@ -186,6 +186,9 @@ func (s *sharedEBPFSource) Close() {
 	s.mgr.unregisterPorts(s.ports)
 	// Note: We don't remove IPs because other clients might share them.
 
+	// Close packet channel so ReadPacketData unblocks and allows backgroundReader to exit cleanly
+	close(s.ch)
+
 	s.mgr.refCount--
 	if s.mgr.refCount == 0 {
 		s.mgr.close()
