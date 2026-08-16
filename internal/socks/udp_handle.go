@@ -12,8 +12,6 @@ import (
 )
 
 func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, atyp byte, dstAddrRaw, dstPortRaw []byte) error {
-	flog.Debugf("SOCKS5 UDP packet received from %s -> %s", addr, reqDst)
-
 	// Try Datagram Mode first (Best for UDP transports like QUIC/Hysteria)
 	sess, newDgm, kDgm, errDgm := h.client.UDPDatagramByIndex(h.ServerIdx, addr.String(), reqDst)
 	if errDgm == nil && sess != nil {
@@ -35,9 +33,8 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 			dstPort := append([]byte(nil), dstPortRaw...)
 
 			go func() {
-				bufp := buffer.UPool.Get().(*[]byte)
-				defer buffer.UPool.Put(bufp)
-				buf := *bufp
+				bufp, buf := buffer.GetU()
+				defer buffer.PutU(bufp)
 
 				defer func() {
 					flog.Debugf("SOCKS5 UDP datagram stream %d closed for %s -> %s", sess.SID(), addr, dAddr)
@@ -86,18 +83,15 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 		return errStrm
 	}
 
-	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
-	payload := *bufp
+	bufp, payload := buffer.GetU()
+	defer buffer.PutU(bufp)
 	if cap(payload) < 2+len(reqData) {
 		payload = make([]byte, 2+len(reqData))
-		*bufp = payload
 	}
-	payload = payload[:2+len(reqData)]
-	binary.BigEndian.PutUint16(payload, uint16(len(reqData)))
+	binary.BigEndian.PutUint16(payload[:2], uint16(len(reqData)))
 	copy(payload[2:], reqData)
 	strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err := strm.Write(payload)
+	_, err := strm.Write(payload[:2+len(reqData)])
 	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to forward %d bytes from %s -> %s: %v", len(reqData), addr, reqDst, err)
@@ -114,9 +108,8 @@ func (h *Handler) UDPHandle(addr *net.UDPAddr, reqDst string, reqData []byte, at
 		dstPort := append([]byte(nil), dstPortRaw...)
 
 		go func() {
-			bufp := buffer.UPool.Get().(*[]byte)
-			defer buffer.UPool.Put(bufp)
-			buf := *bufp
+			bufp, buf := buffer.GetU()
+			defer buffer.PutU(bufp)
 
 			defer func() {
 				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, dAddr)
@@ -175,7 +168,7 @@ func (h *Handler) handleUDPAssociate(conn *net.TCPConn) error {
 
 	bufp := rPool.Get().(*[]byte)
 	defer rPool.Put(bufp)
-	buf := *bufp
+	buf := (*bufp)[:0]
 	buf = append(buf, socks5.Ver)
 	buf = append(buf, socks5.RepSuccess)
 	buf = append(buf, 0x00) // reserved

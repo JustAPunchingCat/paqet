@@ -71,18 +71,17 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 		return nil
 	}
 
-	bufp := buffer.UPool.Get().(*[]byte)
-	payload := *bufp
-	if cap(payload) < 2+n {
-		payload = make([]byte, 2+n)
-		*bufp = payload
+	bufp, bufSlice := buffer.GetU()
+	if cap(bufSlice) < 2+n {
+		bufSlice = make([]byte, 2+n)
 	}
-	payload = payload[:2+n]
-	copy(payload[2:], buf[:n])
+	binary.BigEndian.PutUint16(bufSlice[:2], uint16(n))
+	copy(bufSlice[2:], buf[:n])
+	payload := bufSlice[:2+n]
 
 	go func(payload []byte, bufp *[]byte, caddr *net.UDPAddr, n int) {
 		defer func() {
-			buffer.UPool.Put(bufp)
+			buffer.PutU(bufp)
 			<-f.udpSem
 		}()
 
@@ -117,8 +116,6 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 			}
 		}
 
-		binary.BigEndian.PutUint16(payload, uint16(n))
-
 		strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_, err := strm.Write(payload)
 		strm.SetWriteDeadline(time.Time{})
@@ -137,14 +134,13 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn, buf []
 }
 
 func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, conn *net.UDPConn, caddr *net.UDPAddr) {
-	bufp := buffer.UPool.Get().(*[]byte)
+	bufp, buf := buffer.GetU()
 	defer func() {
-		buffer.UPool.Put(bufp)
+		buffer.PutU(bufp)
 		flog.Debugf("UDP stream %d closed for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(f.ServerIdx, k)
 		go strm.Close() // Prevents smux FIN deadlock
 	}()
-	buf := *bufp
 
 	lenBuf := make([]byte, 2)
 	for {
@@ -179,14 +175,13 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 }
 
 func (f *Forward) handleUDPDatagram(ctx context.Context, k uint64, sess tnet.Strm, conn *net.UDPConn, caddr *net.UDPAddr) {
-	bufp := buffer.UPool.Get().(*[]byte)
+	bufp, buf := buffer.GetU()
 	defer func() {
-		buffer.UPool.Put(bufp)
+		buffer.PutU(bufp)
 		flog.Debugf("UDP datagram stream %d closed for %s -> %s", sess.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(f.ServerIdx, k)
 		go sess.Close() // Prevents smux FIN deadlock
 	}()
-	buf := *bufp
 
 	for {
 		select {

@@ -10,6 +10,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"strconv"
+	"time"
 
 	"github.com/txthinking/socks5"
 )
@@ -74,6 +75,8 @@ func (s *SOCKS5) listen(ctx context.Context, cfg conf.SOCKS5) error {
 
 		go func() {
 			defer conn.Close()
+			// Set 15-second deadline for negotiation and request to prevent hung goroutines
+			conn.SetDeadline(time.Now().Add(15 * time.Second))
 			if err := s.negotiate(conn, cfg); err != nil {
 				return
 			}
@@ -81,6 +84,8 @@ func (s *SOCKS5) listen(ctx context.Context, cfg conf.SOCKS5) error {
 			if err != nil {
 				return
 			}
+			// Clear deadline for active data transfer
+			conn.SetDeadline(time.Time{})
 			if err := s.handle.TCPHandle(conn, req); err != nil {
 				// handled
 			}
@@ -165,12 +170,11 @@ func parseSocks5UDP(b []byte) (reqDst string, data []byte, atyp byte, dstAddr, d
 
 func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 	for {
-		bufp := buffer.UPool.Get().(*[]byte)
-		buf := *bufp
+		bufp, buf := buffer.GetU()
 
 		n, addr, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
-			buffer.UPool.Put(bufp)
+			buffer.PutU(bufp)
 			select {
 			case <-ctx.Done():
 				return
@@ -182,7 +186,7 @@ func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 
 		reqDst, data, atyp, dstAddr, dstPort, err := parseSocks5UDP(buf[:n])
 		if err != nil {
-			buffer.UPool.Put(bufp)
+			buffer.PutU(bufp)
 			continue
 		}
 
@@ -190,7 +194,7 @@ func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 		case s.handle.udpSem <- struct{}{}:
 			go func(bufp *[]byte, addr *net.UDPAddr, reqDst string, data []byte, atyp byte, dstAddr, dstPort []byte) {
 				defer func() {
-					buffer.UPool.Put(bufp)
+					buffer.PutU(bufp)
 					<-s.handle.udpSem
 				}()
 				if err := s.handle.UDPHandle(addr, reqDst, data, atyp, dstAddr, dstPort); err != nil {
@@ -200,7 +204,7 @@ func (s *SOCKS5) serveUDP(ctx context.Context, udpConn *net.UDPConn) {
 				}
 			}(bufp, addr, reqDst, data, atyp, dstAddr, dstPort)
 		default:
-			buffer.UPool.Put(bufp)
+			buffer.PutU(bufp)
 		}
 	}
 }

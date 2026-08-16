@@ -23,3 +23,32 @@ func Initialize(tPool, uPool int) {
 		},
 	}
 }
+
+// GetU gets a buffer pointer and slice from UPool guaranteed to be at full capacity.
+func GetU() (*[]byte, []byte) {
+	bp := UPool.Get().(*[]byte)
+	buf := (*bp)[:cap(*bp)]
+	return bp, buf
+}
+
+// PutU safely returns a buffer pointer to UPool.
+func PutU(bp *[]byte) {
+	if bp != nil {
+		UPool.Put(bp)
+	}
+}
+
+// GetT gets a buffer pointer and slice from TPool guaranteed to be at full capacity.
+func GetT() (*[]byte, []byte) {
+	bp := TPool.Get().(*[]byte)
+	buf := (*bp)[:cap(*bp)]
+	return bp, buf
+}
+
+// PutT safely returns a buffer pointer to TPool.
+func PutT(bp *[]byte) {
+	if bp != nil {
+		TPool.Put(bp)
+	}
+}
+
