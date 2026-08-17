@@ -212,9 +212,11 @@ func (c *PacketConn) backgroundReader() {
 
 		payload, addr, dstPort, err := c.recvHandle.Read()
 		if err != nil {
-			select {
-			case c.readQueue <- processedPacket{err: err}:
-			case <-c.ctx.Done():
+			if c.ctx.Err() == nil {
+				select {
+				case c.readQueue <- processedPacket{err: err}:
+				case <-c.ctx.Done():
+				}
 			}
 			return
 		}
@@ -296,19 +298,6 @@ func (c *PacketConn) Close() error {
 		if c.recvHandle != nil {
 			go c.recvHandle.Close()
 		}
-
-		// Close worker channels to terminate workers gracefully
-		for _, ch := range c.workerChs {
-			if ch != nil {
-				close(ch)
-			}
-		}
-
-		// Wait for workers to finish in a separate goroutine to avoid blocking Close()
-		go func() {
-			c.workersWg.Wait()
-			close(c.readQueue)
-		}()
 	})
 	return nil
 }
