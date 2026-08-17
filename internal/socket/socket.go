@@ -81,6 +81,7 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	if err != nil {
 		return nil, fmt.Errorf("failed to create receive handle on %s: %v", connCfg.Interface.Name, err)
 	}
+	recvHandle.SetFlowUpdater(sendHandle)
 
 	ctx, cancel := context.WithCancel(ctx)
 	numWorkers := runtime.NumCPU()

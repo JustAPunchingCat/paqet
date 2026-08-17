@@ -29,11 +29,19 @@ type TCPF struct {
 	mu         sync.Mutex
 }
 
+type FlowUpdater interface {
+	UpdateRemoteFlow(remoteIP net.IP, remoteSeq uint32, payloadLen uint32, tsVal uint32)
+}
+
 type flowState struct {
-	ipId      uint32
-	baseTS    uint32
-	seq       uint32
-	tsCounter uint32
+	ipId        uint32
+	baseTS      uint32
+	seq         uint32
+	tsCounter   uint32
+	remoteSeq   uint32
+	remoteLen   uint32
+	remoteTSval uint32
+	hasRemote   uint32
 }
 
 type targetSpoofRule struct {
@@ -525,25 +533,36 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	}
 
 	id := atomic.AddUint32(&state.ipId, 1)
-	counter := atomic.AddUint32(&state.tsCounter, 1)
 
 	elapsed := time.Since(h.startTime)
-	tsVal := state.baseTS + uint32(elapsed.Milliseconds()) + uint32(randRange(0, 9))
+	tsVal := state.baseTS + uint32(elapsed.Milliseconds())
 
-	seq := state.seq + (counter << 7)
+	payloadLen := uint32(len(payload))
+	advanceLen := payloadLen
+	if advanceLen == 0 && f.SYN {
+		advanceLen = 1
+	}
+	seq := atomic.AddUint32(&state.seq, advanceLen) - advanceLen
+
 	var ack uint32
-	if f.SYN {
-		ack = 0
-		if f.ACK {
+	var tsEcr uint32
+	if atomic.LoadUint32(&state.hasRemote) == 1 {
+		rSeq := atomic.LoadUint32(&state.remoteSeq)
+		rLen := atomic.LoadUint32(&state.remoteLen)
+		ack = rSeq + rLen
+		tsEcr = atomic.LoadUint32(&state.remoteTSval)
+	} else {
+		if f.SYN {
+			ack = 0
+			if f.ACK {
+				ack = seq + 1
+			}
+		} else {
 			ack = seq + 1
 		}
-	} else {
-		ack = seq - (counter & 0x3FF) + 1400
-	}
-
-	var tsEcr uint32
-	if !f.SYN {
-		tsEcr = tsVal - uint32(randRange(50, 250))
+		if !f.SYN {
+			tsEcr = tsVal - uint32(randRange(50, 250))
+		}
 	}
 
 	// Calculate header lengths
@@ -905,6 +924,24 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	}
 	h.tcpF.clientTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
 	h.tcpF.mu.Unlock()
+}
+
+func (h *SendHandle) UpdateRemoteFlow(remoteIP net.IP, remoteSeq uint32, payloadLen uint32, tsVal uint32) {
+	var state *flowState
+	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
+		state = h.getFlowState(remoteIP)
+	} else {
+		state = h.globalState
+	}
+	if state == nil {
+		return
+	}
+	atomic.StoreUint32(&state.remoteSeq, remoteSeq)
+	atomic.StoreUint32(&state.remoteLen, payloadLen)
+	if tsVal > 0 {
+		atomic.StoreUint32(&state.remoteTSval, tsVal)
+	}
+	atomic.StoreUint32(&state.hasRemote, 1)
 }
 
 func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {

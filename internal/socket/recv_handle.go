@@ -27,6 +27,11 @@ type RecvHandle struct {
 	mappings    []ipMapping
 	allowedIPs  []net.IP
 	allowedNets []*net.IPNet
+	flowUpdater FlowUpdater
+}
+
+func (h *RecvHandle) SetFlowUpdater(u FlowUpdater) {
+	h.flowUpdater = u
 }
 
 type packetDecoder struct {
@@ -214,12 +219,43 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		if len(data) < transStart+20 {
 			return nil, nil, 0, nil
 		}
+		remoteSeq := binary.BigEndian.Uint32(data[transStart+4 : transStart+8])
 		dataOffset := data[transStart+12] >> 4
 		tcpLen := int(dataOffset) * 4
 		if len(data) < transStart+tcpLen {
 			return nil, nil, 0, nil
 		}
 		payload = data[transStart+tcpLen:]
+
+		if h.flowUpdater != nil {
+			var tsVal uint32
+			if tcpLen > 20 {
+				optStart := transStart + 20
+				optEnd := transStart + tcpLen
+				for i := optStart; i < optEnd; {
+					kind := data[i]
+					if kind == 0 {
+						break
+					}
+					if kind == 1 {
+						i++
+						continue
+					}
+					if i+1 >= optEnd {
+						break
+					}
+					length := int(data[i+1])
+					if length < 2 || i+length > optEnd {
+						break
+					}
+					if kind == 8 && length == 10 && i+6 <= optEnd {
+						tsVal = binary.BigEndian.Uint32(data[i+2 : i+6])
+					}
+					i += length
+				}
+			}
+			h.flowUpdater.UpdateRemoteFlow(srcIP, remoteSeq, uint32(len(payload)), tsVal)
+		}
 	} else { // UDP
 		if len(data) < transStart+8 {
 			return nil, nil, 0, nil
