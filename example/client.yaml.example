@@ -77,14 +77,13 @@ servers:
       # Obfuscation Configuration (Optional)
       obfuscation:
         use_tls: true       # Wraps traffic in TLS Application Data (0x17)
-        fake_handshake: "sciencedirect.com" # Send a Fake TLS 1.3 ClientHello first to fool DPI
         padding:
           enabled: true    # Enable random padding
           min: 32           # Minimum padding bytes
           max: 64           # Maximum padding bytes
         headers:
-        randomize_tos: false      # Turn off to act like a standard OS
-        randomize_ttl: false      # Turn off to prevent 'packet crafting' signatures
+          randomize_tos: false      # Turn off to act like a standard OS
+          randomize_ttl: false      # Turn off to prevent 'packet crafting' signatures
           randomize_window: true
 
       socks5:
