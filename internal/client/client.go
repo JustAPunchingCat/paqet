@@ -225,3 +225,22 @@ func (c *Client) RotateServerConn(serverIdx int) {
 		go tc.reconnect()
 	}
 }
+
+func (c *Client) Close() {
+	var wg sync.WaitGroup
+	for _, iter := range c.iters {
+		if iter == nil {
+			continue
+		}
+		for _, tc := range iter.Items {
+			if tc != nil {
+				wg.Add(1)
+				go func(tc *timedConn) {
+					defer wg.Done()
+					tc.close()
+				}(tc)
+			}
+		}
+	}
+	wg.Wait()
+}

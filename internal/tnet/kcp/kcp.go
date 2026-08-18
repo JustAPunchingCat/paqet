@@ -45,7 +45,7 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 func smuxConf(cfg *conf.KCP) *smux.Config {
 	var sconf = smux.DefaultConfig()
 	sconf.KeepAliveInterval = 10 * time.Second
-	sconf.KeepAliveTimeout = 120 * time.Second
+	sconf.KeepAliveTimeout = 30 * time.Second
 	if cfg.Smuxbuf > 0 {
 		sconf.MaxReceiveBuffer = cfg.Smuxbuf
 	}

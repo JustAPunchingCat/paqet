@@ -54,5 +54,6 @@ func startClient(cfg *conf.Conf) {
 	<-sig
 	flog.Infof("Shutdown signal received, initiating graceful shutdown...")
 	cancel()
+	c.Close()
 	flog.Infof("Shutdown complete.")
 }
