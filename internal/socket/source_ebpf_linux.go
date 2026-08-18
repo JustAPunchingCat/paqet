@@ -144,9 +144,9 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		}
 	}
 
-	// Register Ports (Main port + Hopping ranges)
+	// Register Ports (Main port + Hopping ranges on server)
 	ports := []uint16{uint16(cfg.Port)}
-	if hopping != nil && hopping.Enabled {
+	if cfg.Role == "server" && hopping != nil && hopping.Enabled {
 		ranges, err := hopping.GetRanges()
 		if err == nil {
 			for _, r := range ranges {
