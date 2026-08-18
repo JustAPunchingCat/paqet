@@ -516,6 +516,13 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	if h.role == "client" && h.handshake && !f.SYN && atomic.CompareAndSwapUint32(&state.synSent, 0, 1) {
 		synF := conf.TCPF{SYN: true}
 		_ = h.writeRaw(nil, addr, srcPort, synF, srcIP, isIPv4, isSpoofed, state)
+		// Wait briefly for Server's SYN-ACK so the first data packet has a valid remote ACK sequence
+		for i := 0; i < 25; i++ {
+			if atomic.LoadUint32(&state.hasRemote) == 1 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 
 	return h.writeRaw(payload, addr, srcPort, f, srcIP, isIPv4, isSpoofed, state)

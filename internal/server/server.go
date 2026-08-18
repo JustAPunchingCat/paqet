@@ -135,7 +135,16 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 
 		s.wg.Go(func() {
 			defer conn.Close()
+			stopCh := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					conn.Close()
+				case <-stopCh:
+				}
+			}()
 			s.handleConn(ctx, conn)
+			close(stopCh)
 		})
 	}
 }
