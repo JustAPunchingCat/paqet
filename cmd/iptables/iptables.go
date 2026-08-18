@@ -238,8 +238,25 @@ func getPorts(cfg *conf.Conf) []string {
 			}
 		}
 	} else if cfg.Role == "client" {
-		if cfg.Network.IPv4.Addr != nil {
+		if cfg.Network.IPv4.Addr != nil && cfg.Network.IPv4.Addr.Port > 0 {
 			add(cfg.Network.IPv4.Addr.Port)
+		}
+		for _, s := range cfg.Servers {
+			if s.Server.Addr != nil {
+				add(s.Server.Addr.Port)
+			}
+			if s.Hopping.Enabled {
+				ranges, _ := s.Hopping.GetRanges()
+				for _, r := range ranges {
+					addRange(r.Min, r.Max)
+				}
+			}
+		}
+		if cfg.Hopping.Enabled {
+			ranges, _ := cfg.Hopping.GetRanges()
+			for _, r := range ranges {
+				addRange(r.Min, r.Max)
+			}
 		}
 	}
 

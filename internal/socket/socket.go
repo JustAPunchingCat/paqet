@@ -41,12 +41,12 @@ type PacketConn struct {
 	plugins     *PluginManager
 	clientPorts sync.Map
 
-	// Multi-core parallel worker pool fields
-	readQueue  chan processedPacket
-	workerChs  []chan rawJob
-	workersWg  sync.WaitGroup
-	numWorkers int
-	closeOnce  sync.Once
+	readQueue     chan processedPacket
+	workerChs     []chan rawJob
+	workersWg     sync.WaitGroup
+	numWorkers    int
+	dummyListener *net.TCPListener
+	closeOnce     sync.Once
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -60,6 +60,30 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		label = labels[0]
 	}
 	connCfg := *cfg
+	var dummyListener *net.TCPListener
+	if connCfg.Role == "client" {
+		if connCfg.Port == 0 {
+			// Find an available port by asking the kernel or picking one to prevent kernel RSTs
+			for attempts := 0; attempts < 50; attempts++ {
+				port := int(RandInRange(32768, 65535))
+				lAddr, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf("0.0.0.0:%d", port))
+				if err != nil {
+					continue
+				}
+				l, err := net.ListenTCP("tcp4", lAddr)
+				if err == nil {
+					connCfg.Port = port
+					dummyListener = l
+					break
+				}
+			}
+		} else {
+			lAddr, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf("0.0.0.0:%d", connCfg.Port))
+			if err == nil {
+				dummyListener, _ = net.ListenTCP("tcp4", lAddr)
+			}
+		}
+	}
 	if connCfg.Port == 0 {
 		// Use crypto-secure random port from ephemeral range (32768-65535)
 		connCfg.Port = int(RandInRange(32768, 65535))
@@ -67,6 +91,9 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 
 	sendHandle, err := NewSendHandle(&connCfg)
 	if err != nil {
+		if dummyListener != nil {
+			dummyListener.Close()
+		}
 		return nil, fmt.Errorf("failed to create send handle on %s: %v", connCfg.Interface.Name, err)
 	}
 	sendHandle.SetObfuscation(obfsCfg)
@@ -79,6 +106,9 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	}
 	recvHandle, err := NewRecvHandle(&connCfg, recvHopping, connCfg.Role)
 	if err != nil {
+		if dummyListener != nil {
+			dummyListener.Close()
+		}
 		return nil, fmt.Errorf("failed to create receive handle on %s: %v", connCfg.Interface.Name, err)
 	}
 	recvHandle.SetFlowUpdater(sendHandle)
@@ -90,15 +120,16 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	}
 
 	conn := &PacketConn{
-		cfg:        &connCfg,
-		sendHandle: sendHandle,
-		recvHandle: recvHandle,
-		ctx:        ctx,
-		cancel:     cancel,
-		plugins:    NewPluginManager(),
-		readQueue:  make(chan processedPacket, 65536),
-		workerChs:  make([]chan rawJob, numWorkers),
-		numWorkers: numWorkers,
+		cfg:           &connCfg,
+		sendHandle:    sendHandle,
+		recvHandle:    recvHandle,
+		dummyListener: dummyListener,
+		ctx:           ctx,
+		cancel:        cancel,
+		plugins:       NewPluginManager(),
+		readQueue:     make(chan processedPacket, 65536),
+		workerChs:     make([]chan rawJob, numWorkers),
+		numWorkers:    numWorkers,
 	}
 
 	// Initialize worker channels and start worker goroutines
@@ -294,6 +325,9 @@ func (c *PacketConn) Close() error {
 		c.cancel()
 		c.plugins.Close()
 
+		if c.dummyListener != nil {
+			c.dummyListener.Close()
+		}
 		if c.sendHandle != nil {
 			go c.sendHandle.Close()
 		}

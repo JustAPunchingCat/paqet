@@ -49,7 +49,11 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	buf = append(buf, 0x00)
 	if ip4 := addr.IP.To4(); ip4 != nil {
 		buf = append(buf, socks5.ATYPIPv4)
-		buf = append(buf, ip4...)
+		if ip4.IsUnspecified() {
+			buf = append(buf, 127, 0, 0, 1)
+		} else {
+			buf = append(buf, ip4...)
+		}
 	} else if ip6 := addr.IP.To16(); ip6 != nil {
 		buf = append(buf, socks5.ATYPIPv6)
 		buf = append(buf, ip6...)
