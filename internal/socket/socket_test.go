@@ -73,6 +73,7 @@ func TestStatefulTCPDisguiseProgression(t *testing.T) {
 		ackOptions:  ackOptions,
 		tcpF:        TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
 		handshake:   true,
+		role:        "client",
 		startTime:   time.Now(),
 		globalState: &flowState{ipId: 100, baseTS: 1000, seq: 100000},
 		spoofStates: make(map[string]*flowState),
