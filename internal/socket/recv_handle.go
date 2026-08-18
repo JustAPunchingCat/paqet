@@ -287,10 +287,6 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		payload = data[transStart+8 : pEnd]
 	}
 
-	if len(payload) == 0 {
-		return nil, nil, 0, nil
-	}
-
 	addr := &net.UDPAddr{
 		IP:   srcIP,
 		Port: srcPort,
@@ -304,6 +300,10 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 				break
 			}
 		}
+	}
+
+	if len(payload) == 0 {
+		return nil, addr, dstPort, nil
 	}
 
 	// Enforce Allowed IPs (only if explicitly configured)
