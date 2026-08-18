@@ -3,15 +3,12 @@ package buffer
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 )
 
 func CopyT(dst io.Writer, src io.Reader) error {
-	bufp := TPool.Get().(*[]byte)
-	defer TPool.Put(bufp)
-	buf := *bufp
-
-	_, err := io.CopyBuffer(dst, src, buf)
+	_, err := io.Copy(dst, src)
 	return err
 }
 
@@ -27,23 +24,35 @@ func RelayTCP(ctx context.Context, c1 io.ReadWriteCloser, c2 io.ReadWriteCloser)
 	go func() {
 		defer wg.Done()
 		defer c2.Close()
-		err1 = CopyT(c2, c1)
+		_, err1 = io.Copy(c2, c1)
 	}()
 
 	// Direction 2: c2 -> c1
 	go func() {
 		defer wg.Done()
 		defer c1.Close()
-		err2 = CopyT(c1, c2)
+		_, err2 = io.Copy(c1, c2)
 	}()
 
 	wg.Wait()
 
-	if err1 != nil && err1 != io.EOF {
+	if err1 != nil && !isNormalClose(err1) {
 		return err1
 	}
-	if err2 != nil && err2 != io.EOF {
+	if err2 != nil && !isNormalClose(err2) {
 		return err2
 	}
 	return nil
+}
+
+func isNormalClose(err error) bool {
+	if err == nil || err == io.EOF {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "closed pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "forcibly closed")
 }
