@@ -16,6 +16,8 @@ type HoppingPlugin struct {
 	minPort     int
 	isClient    bool
 	label       string
+	targetIP    net.IP
+	sendHandle  *SendHandle
 }
 
 func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
@@ -29,6 +31,16 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 		minPort = ranges[0].Min
 	}
 
+	var targetIP net.IP
+	if label != "" {
+		host, _, err := net.SplitHostPort(label)
+		if err == nil {
+			targetIP = net.ParseIP(host)
+		} else {
+			targetIP = net.ParseIP(label)
+		}
+	}
+
 	hp := &HoppingPlugin{
 		ranges:   ranges,
 		interval: time.Duration(cfg.Interval) * time.Second,
@@ -36,6 +48,7 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 		minPort:  minPort,
 		isClient: isClient,
 		label:    label,
+		targetIP: targetIP,
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -44,22 +57,18 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 	return hp, nil
 }
 
-func (p *HoppingPlugin) loop() {
-	ticker := time.NewTicker(p.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			p.updateCurrentPort()
-		case <-p.stop:
-			return
+func (p *HoppingPlugin) SetSendHandle(sh *SendHandle) {
+	p.sendHandle = sh
+	if p.targetIP != nil && sh != nil {
+		if port := p.currentPort.Load(); port > 0 {
+			sh.PrewarmFlow(p.targetIP, uint16(port))
 		}
 	}
 }
 
-func (p *HoppingPlugin) updateCurrentPort() {
+func (p *HoppingPlugin) pickNextPort() uint32 {
 	if len(p.ranges) == 0 {
-		return
+		return 0
 	}
 
 	idx := int(RandInRange(0, uint32(len(p.ranges)-1)))
@@ -71,7 +80,47 @@ func (p *HoppingPlugin) updateCurrentPort() {
 		offset = int(RandInRange(0, uint32(rangeSize-1)))
 	}
 
-	newPort := uint32(r.Min + offset)
+	return uint32(r.Min + offset)
+}
+
+func (p *HoppingPlugin) loop() {
+	leadTime := 500 * time.Millisecond
+	if p.interval <= 1*time.Second {
+		leadTime = p.interval / 2
+	}
+
+	for {
+		select {
+		case <-time.After(p.interval - leadTime):
+			nextPort := p.pickNextPort()
+			if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
+				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
+			}
+
+			select {
+			case <-time.After(leadTime):
+				if nextPort > 0 {
+					p.currentPort.Store(nextPort)
+					if p.label != "" {
+						flog.Debugf("Hopping: switched to port %d for %s", nextPort, p.label)
+					} else {
+						flog.Debugf("Hopping: switched to port %d", nextPort)
+					}
+				}
+			case <-p.stop:
+				return
+			}
+		case <-p.stop:
+			return
+		}
+	}
+}
+
+func (p *HoppingPlugin) updateCurrentPort() {
+	newPort := p.pickNextPort()
+	if newPort == 0 {
+		return
+	}
 	p.currentPort.Store(newPort)
 	if p.label != "" {
 		flog.Debugf("Hopping: switched to port %d for %s", newPort, p.label)

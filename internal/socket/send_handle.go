@@ -1006,6 +1006,26 @@ func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, ser
 	return h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
 }
 
+func (h *SendHandle) PrewarmFlow(dstIP net.IP, dstPort uint16) {
+	if !h.handshake || dstIP == nil {
+		return
+	}
+	isIPv4 := dstIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+
+	state := h.getFlowState(srcIP, dstIP, dstPort)
+	if atomic.CompareAndSwapUint32(&state.synSent, 0, 1) {
+		addr := &net.UDPAddr{IP: dstIP, Port: int(dstPort)}
+		synF := conf.TCPF{SYN: true}
+		_ = h.writeRaw(nil, addr, int(h.srcPort), synF, srcIP, isIPv4, false, state)
+	}
+}
+
 func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {
 	h.obfuscation = obfs
 }

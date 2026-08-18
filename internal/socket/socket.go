@@ -140,6 +140,7 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		if err != nil {
 			return nil, fmt.Errorf("invalid hopping configuration: %w", err)
 		}
+		hp.SetSendHandle(sendHandle)
 		conn.plugins.Add(hp)
 	}
 
