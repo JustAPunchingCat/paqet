@@ -47,28 +47,14 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	}()
 	flog.Debugf("TCP connection established to %s for stream %d", addr, strm.SID())
 
-	errChan := make(chan error, 2)
-	go func() {
-		err := buffer.CopyT(conn, strm)
-		errChan <- err
-	}()
-	go func() {
-		err := buffer.CopyT(strm, conn)
-		errChan <- err
-	}()
-
-	select {
-	case err := <-errChan:
-		if err != nil && err != io.EOF {
-			msg := err.Error()
-			if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
-				flog.Debugf("TCP stream %d to %s closed (remote disconnect): %v", strm.SID(), addr, err)
-				return nil
-			}
-			flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
-			return err
+	if err := buffer.RelayTCP(ctx, conn, strm); err != nil && err != io.EOF {
+		msg := err.Error()
+		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+			flog.Debugf("TCP stream %d to %s closed (remote disconnect): %v", strm.SID(), addr, err)
+			return nil
 		}
-	case <-ctx.Done():
+		flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
+		return err
 	}
 	return nil
 }

@@ -419,40 +419,63 @@ func (m *ebpfManager) dispatch() {
 }
 
 func parsePort(data []byte) uint16 {
-	if len(data) < 14 {
+	if len(data) < 20 {
 		return 0
-	}
-	ethType := binary.BigEndian.Uint16(data[12:14])
-	offset := 14
-
-	// Handle VLANs (802.1Q: 0x8100, 802.1ad: 0x88A8)
-	for ethType == 0x8100 || ethType == 0x88A8 {
-		if len(data) < offset+4 {
-			return 0
-		}
-		ethType = binary.BigEndian.Uint16(data[offset+2 : offset+4])
-		offset += 4
 	}
 
 	var ipOffset int
+	var isIPv4 bool
 
-	if ethType == 0x0800 { // IPv4
-		ipOffset = offset
+	if len(data) >= 14 {
+		ethType := binary.BigEndian.Uint16(data[12:14])
+		offset := 14
+
+		// Handle VLANs (802.1Q: 0x8100, 802.1ad: 0x88A8)
+		for ethType == 0x8100 || ethType == 0x88A8 {
+			if len(data) < offset+4 {
+				return 0
+			}
+			ethType = binary.BigEndian.Uint16(data[offset+2 : offset+4])
+			offset += 4
+		}
+
+		if ethType == 0x0800 {
+			ipOffset = offset
+			isIPv4 = true
+		} else if ethType == 0x86DD {
+			ipOffset = offset
+			isIPv4 = false
+		}
+	}
+
+	if ipOffset == 0 {
+		// Fallback for direct IP (no Ethernet header, e.g. PPP, TUN, direct XDP)
+		ver := data[0] >> 4
+		if ver == 4 {
+			ipOffset = 0
+			isIPv4 = true
+		} else if ver == 6 {
+			ipOffset = 0
+			isIPv4 = false
+		} else {
+			return 0
+		}
+	}
+
+	if isIPv4 {
 		if len(data) < ipOffset+20 {
 			return 0
 		}
 		ihl := data[ipOffset] & 0x0F
 		ipOffset += int(ihl) * 4
-	} else if ethType == 0x86DD { // IPv6
-		ipOffset = offset + 40
 	} else {
-		return 0
+		ipOffset += 40
 	}
 
 	if len(data) < ipOffset+4 {
 		return 0
 	}
 
-	// TCP Dest Port is at offset 2
+	// TCP/UDP Dest Port is at offset 2 of transport header
 	return binary.BigEndian.Uint16(data[ipOffset+2 : ipOffset+4])
 }

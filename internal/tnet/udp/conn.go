@@ -150,6 +150,9 @@ func (c *Conn) readLoop() {
 
 		// Handle KeepAlive
 		if flags&flagKeepAlive != 0 {
+			if c.isServer {
+				_ = c.writePacket(0, 0, nil, flagKeepAlive)
+			}
 			continue
 		}
 

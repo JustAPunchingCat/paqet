@@ -66,28 +66,13 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	flog.Infof("SOCKS5 accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), r.Address(), strm.RemoteAddr())
 	flog.Debugf("SOCKS5 stream %d created for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
 
-	errCh := make(chan error, 2)
-	go func() {
-		err := buffer.CopyT(conn, strm)
-		errCh <- err
-	}()
-	go func() {
-		err := buffer.CopyT(strm, conn)
-		errCh <- err
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil && err != io.EOF {
-			msg := err.Error()
-			if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
-				flog.Debugf("SOCKS5 stream %d closed (client disconnect) for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
-			} else {
-				flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
-			}
+	if err := buffer.RelayTCP(h.ctx, conn, strm); err != nil && err != io.EOF {
+		msg := err.Error()
+		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+			flog.Debugf("SOCKS5 stream %d closed (client disconnect) for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
+		} else {
+			flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
 		}
-	case <-h.ctx.Done():
-		flog.Debugf("SOCKS5 connection %s -> %s closed due to shutdown", conn.RemoteAddr(), r.Address())
 	}
 
 	flog.Debugf("SOCKS5 connection %s -> %s closed", conn.RemoteAddr(), r.Address())
