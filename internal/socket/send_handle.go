@@ -1018,7 +1018,33 @@ func (h *SendHandle) PrewarmFlow(dstIP net.IP, dstPort uint16) {
 		addr := &net.UDPAddr{IP: dstIP, Port: int(dstPort)}
 		synF := conf.TCPF{SYN: true}
 		_ = h.writeRaw(nil, addr, int(h.srcPort), synF, srcIP, isIPv4, false, state)
+
+		// Background retry if SYN is dropped by network jitter
+		go func() {
+			for i := 0; i < 4; i++ {
+				time.Sleep(150 * time.Millisecond)
+				if atomic.LoadUint32(&state.hasRemote) == 1 {
+					return
+				}
+				_ = h.writeRaw(nil, addr, int(h.srcPort), synF, srcIP, isIPv4, false, state)
+			}
+		}()
 	}
+}
+
+func (h *SendHandle) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
+	if !h.handshake || dstIP == nil {
+		return true
+	}
+	isIPv4 := dstIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+	state := h.getFlowState(srcIP, dstIP, dstPort)
+	return atomic.LoadUint32(&state.hasRemote) == 1
 }
 
 func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {

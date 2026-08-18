@@ -403,6 +403,13 @@ func (c *PacketConn) SetClientTCPF(addr net.Addr, f []conf.TCPF) {
 	c.sendHandle.setClientTCPF(addr, f)
 }
 
+func (c *PacketConn) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
+	if c.sendHandle != nil {
+		return c.sendHandle.IsFlowWarmed(dstIP, dstPort)
+	}
+	return true
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
