@@ -31,6 +31,15 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	conn.SetKeepAlive(true)
 	conn.SetKeepAlivePeriod(30 * time.Second)
 
+	strm, err := h.client.TCPByIndex(h.ServerIdx, r.Address())
+	if err != nil {
+		flog.Errorf("SOCKS5 failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), r.Address(), err)
+		return err
+	}
+	defer func() {
+		go strm.Close() // Prevents smux FIN deadlock
+	}()
+
 	addr := conn.LocalAddr().(*net.TCPAddr)
 	bufp := rPool.Get().(*[]byte)
 	defer rPool.Put(bufp)
@@ -54,15 +63,6 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	if _, err := conn.Write(buf); err != nil {
 		return err
 	}
-
-	strm, err := h.client.TCPByIndex(h.ServerIdx, r.Address())
-	if err != nil {
-		flog.Errorf("SOCKS5 failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), r.Address(), err)
-		return err
-	}
-	defer func() {
-		go strm.Close() // Prevents smux FIN deadlock
-	}()
 	flog.Infof("SOCKS5 accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), r.Address(), strm.RemoteAddr())
 	flog.Debugf("SOCKS5 stream %d created for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
 
