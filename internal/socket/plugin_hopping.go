@@ -11,8 +11,9 @@ import (
 type HoppingPlugin struct {
 	ranges      []conf.PortRange
 	interval    time.Duration
-	currentPort atomic.Uint32
+	warmup      time.Duration
 	stop        chan struct{}
+	currentPort atomic.Uint32
 	minPort     int
 	isClient    bool
 	label       string
@@ -41,9 +42,15 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 		}
 	}
 
+	warmup := time.Duration(cfg.Warmup) * time.Second
+	if warmup <= 0 {
+		warmup = 3 * time.Second
+	}
+
 	hp := &HoppingPlugin{
 		ranges:   ranges,
 		interval: time.Duration(cfg.Interval) * time.Second,
+		warmup:   warmup,
 		stop:     make(chan struct{}),
 		minPort:  minPort,
 		isClient: isClient,
@@ -84,8 +91,8 @@ func (p *HoppingPlugin) pickNextPort() uint32 {
 }
 
 func (p *HoppingPlugin) loop() {
-	leadTime := 2 * time.Second
-	if p.interval <= 4*time.Second {
+	leadTime := p.warmup
+	if p.interval <= 2*p.warmup {
 		leadTime = p.interval / 2
 	}
 

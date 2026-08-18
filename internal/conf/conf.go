@@ -227,6 +227,7 @@ type PortRange struct {
 type Hopping struct {
 	Enabled  bool     `yaml:"enabled"`
 	Interval int      `yaml:"interval"`
+	Warmup   int      `yaml:"warmup"` // Warm up lead time in seconds (default: 3s)
 	Min      int      `yaml:"min"`   // Legacy: single range min
 	Max      int      `yaml:"max"`   // Legacy: single range max
 	Ports    []string `yaml:"ports"` // New: list of ports or ranges ("80", "1000-2000")
