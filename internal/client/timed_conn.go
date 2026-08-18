@@ -31,14 +31,7 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 	}
 
 	var err error
-	for attempts := 0; attempts < 5; attempts++ {
-		tc.conn, err = tc.createConn()
-		if err == nil {
-			break
-		}
-		flog.Debugf("Connection attempt %d failed (%v), retrying with next port...", attempts+1, err)
-		time.Sleep(50 * time.Millisecond)
-	}
+	tc.conn, err = tc.createConn()
 	if err != nil {
 		return nil, err
 	}
@@ -153,32 +146,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, err
 	}
 
-	// Verify bidirectional connectivity with a fast PPING probe
-	if err := tc.verifyConn(conn); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("connection verification failed: %w", err)
-	}
-
 	success = true
 	return conn, nil
-}
-
-func (tc *timedConn) verifyConn(conn tnet.Conn) error {
-	strm, err := conn.OpenStrm()
-	if err != nil {
-		return err
-	}
-	defer strm.Close()
-
-	_ = strm.SetDeadline(time.Now().Add(1 * time.Second))
-	p := protocol.Proto{Type: protocol.PPING}
-	if err := p.Write(strm); err != nil {
-		return err
-	}
-	if err := p.Read(strm); err != nil || p.Type != protocol.PPONG {
-		return fmt.Errorf("ping verification failed (received type: %d, err: %v)", p.Type, err)
-	}
-	return nil
 }
 
 func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
