@@ -2,7 +2,15 @@ package transport
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
+	"paqet/internal/conf"
+	"paqet/internal/pkg/buffer"
+	"paqet/internal/tnet"
+	"paqet/internal/tnet/kcp"
 	"sync"
 	"testing"
 	"time"
@@ -601,4 +609,278 @@ func TestDemuxedPacketConnWriteLargePayload(t *testing.T) {
 	if !bytes.Equal(pkts[0].data[1:], payload) {
 		t.Error("payload corrupted")
 	}
+}
+
+func TestE2E_FullDuplex_KCP_Tunnel_Streaming(t *testing.T) {
+	// 1. Setup real UDP loopback sockets
+	srvUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listenPacket srv: %v", err)
+	}
+	defer srvUDP.Close()
+	srvAddr := srvUDP.LocalAddr().(*net.UDPAddr)
+
+	cliUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listenPacket cli: %v", err)
+	}
+	defer cliUDP.Close()
+
+	// 2. Start KCP Listener on Server
+	kcpCfg := &conf.KCP{
+		Mode:      "fast2",
+		Smuxbuf:   4 * 1024 * 1024,
+		Streambuf: 2 * 1024 * 1024,
+	}
+	listener, err := kcp.Listen(kcpCfg, srvUDP)
+	if err != nil {
+		t.Fatalf("kcp.Listen: %v", err)
+	}
+	defer listener.Close()
+
+	// Server accept and echo loop
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c tnet.Conn) {
+				defer c.Close()
+				for {
+					strm, err := c.AcceptStrm()
+					if err != nil {
+						return
+					}
+					go func(s tnet.Strm) {
+						defer s.Close()
+						_, _ = io.Copy(s, s) // Echo all incoming data back
+					}(strm)
+				}
+			}(conn)
+		}
+	}()
+
+	// 3. Client Dials Server
+	cliConn, err := kcp.Dial(srvAddr, kcpCfg, cliUDP)
+	if err != nil {
+		t.Fatalf("kcp.Dial: %v", err)
+	}
+	defer cliConn.Close()
+
+	// 4. Open Stream and transfer 2MB of random payload
+	strm, err := cliConn.OpenStrm()
+	if err != nil {
+		t.Fatalf("OpenStrm: %v", err)
+	}
+	defer strm.Close()
+
+	testSize := 2 * 1024 * 1024 // 2MB
+	sendData := make([]byte, testSize)
+	for i := range sendData {
+		sendData[i] = byte((i*7 + 13) % 256)
+	}
+
+	recvData := make([]byte, testSize)
+	var readErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, readErr = io.ReadFull(strm, recvData)
+	}()
+
+	_, writeErr := strm.Write(sendData)
+	if writeErr != nil {
+		t.Fatalf("strm.Write: %v", writeErr)
+	}
+
+	wg.Wait()
+	if readErr != nil {
+		t.Fatalf("io.ReadFull: %v", readErr)
+	}
+
+	if !bytes.Equal(sendData, recvData) {
+		t.Fatalf("E2E data mismatch! Transferred 2MB was corrupted.")
+	}
+	t.Logf("Successfully transferred and verified %d bytes (2MB) over KCP tunnel with 100%% integrity!", testSize)
+}
+
+func TestE2E_SOCKS5_HTTP_Proxy_Through_Tunnel(t *testing.T) {
+	// 1. Start a local HTTP Target Server
+	httpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("target http listen: %v", err)
+	}
+	defer httpListener.Close()
+
+	httpServer := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				body, _ := io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(body)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("HELLO FROM REAL TARGET VIA PROXY"))
+		}),
+	}
+	go httpServer.Serve(httpListener)
+	defer httpServer.Close()
+
+	targetAddr := httpListener.Addr().String()
+
+	// 2. Setup Paqet KCP Server
+	srvUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("srvUDP listen: %v", err)
+	}
+	defer srvUDP.Close()
+	srvAddr := srvUDP.LocalAddr().(*net.UDPAddr)
+
+	kcpCfg := &conf.KCP{
+		Mode:      "fast2",
+		Smuxbuf:   4 * 1024 * 1024,
+		Streambuf: 2 * 1024 * 1024,
+	}
+	listener, err := kcp.Listen(kcpCfg, srvUDP)
+	if err != nil {
+		t.Fatalf("kcp.Listen: %v", err)
+	}
+	defer listener.Close()
+
+	// Server accepts stream, dials targetAddr, and runs RelayTCP
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c tnet.Conn) {
+				defer c.Close()
+				for {
+					strm, err := c.AcceptStrm()
+					if err != nil {
+						return
+					}
+					go func(s tnet.Strm) {
+						defer s.Close()
+						// Dial real target server
+						targetConn, err := net.Dial("tcp", targetAddr)
+						if err != nil {
+							return
+						}
+						defer targetConn.Close()
+						_ = buffer.RelayTCP(ctx, targetConn, s)
+					}(strm)
+				}
+			}(conn)
+		}
+	}()
+
+	// 3. Setup Paqet KCP Client
+	cliUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cliUDP listen: %v", err)
+	}
+	defer cliUDP.Close()
+
+	cliConn, err := kcp.Dial(srvAddr, kcpCfg, cliUDP)
+	if err != nil {
+		t.Fatalf("kcp.Dial: %v", err)
+	}
+	defer cliConn.Close()
+
+	// 4. Setup Local SOCKS5 Proxy Listener
+	socksListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("socksListener: %v", err)
+	}
+	defer socksListener.Close()
+	socksAddr := socksListener.Addr().String()
+
+	go func() {
+		for {
+			c, err := socksListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(clientConn net.Conn) {
+				defer clientConn.Close()
+				// Simplified SOCKS5 negotiation for testing
+				buf := make([]byte, 256)
+				_, _ = clientConn.Read(buf)                 // Auth request
+				_, _ = clientConn.Write([]byte{0x05, 0x00}) // Auth response
+				_, _ = clientConn.Read(buf)                 // Connect request
+
+				// Open tunnel stream
+				strm, err := cliConn.OpenStrm()
+				if err != nil {
+					return
+				}
+				defer strm.Close()
+
+				// Send SOCKS5 RepSuccess
+				_, _ = clientConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0})
+
+				// Relay full-duplex traffic
+				_ = buffer.RelayTCP(ctx, clientConn, strm)
+			}(c)
+		}
+	}()
+
+	// 5. Test HTTP GET via SOCKS5 Proxy
+	proxyURL, _ := url.Parse("socks5://" + socksAddr)
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := httpClient.Get("http://" + targetAddr)
+	if err != nil {
+		t.Fatalf("HTTP GET via SOCKS5 failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll body: %v", err)
+	}
+	if string(body) != "HELLO FROM REAL TARGET VIA PROXY" {
+		t.Fatalf("unexpected body: %q", string(body))
+	}
+	t.Logf("GET Request succeeded via SOCKS5 Tunnel! Response: %q", string(body))
+
+	// 6. Test 5MB POST Upload & Echo via SOCKS5 Proxy (Stress test speedtest simulation)
+	uploadSize := 5 * 1024 * 1024 // 5 Megabytes
+	uploadData := make([]byte, uploadSize)
+	for i := range uploadData {
+		uploadData[i] = byte((i*11 + 3) % 256)
+	}
+
+	postResp, err := httpClient.Post("http://"+targetAddr, "application/octet-stream", bytes.NewReader(uploadData))
+	if err != nil {
+		t.Fatalf("HTTP POST via SOCKS5 failed: %v", err)
+	}
+	defer postResp.Body.Close()
+
+	echoData, err := io.ReadAll(postResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll POST body: %v", err)
+	}
+
+	if len(echoData) != uploadSize {
+		t.Fatalf("Echo size mismatch: got %d, want %d", len(echoData), uploadSize)
+	}
+	if !bytes.Equal(uploadData, echoData) {
+		t.Fatalf("POST upload data corrupted during streaming!")
+	}
+	t.Logf("5MB Upload + Download Speedtest Simulation PASSED 100%% via SOCKS5 tunnel!")
 }
