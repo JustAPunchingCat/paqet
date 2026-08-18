@@ -884,3 +884,261 @@ func TestE2E_SOCKS5_HTTP_Proxy_Through_Tunnel(t *testing.T) {
 	}
 	t.Logf("5MB Upload + Download Speedtest Simulation PASSED 100%% via SOCKS5 tunnel!")
 }
+
+// multiPortServerConn aggregates multiple UDP listening sockets into one PacketConn
+type multiPortServerConn struct {
+	listeners []*net.UDPConn
+	incoming  chan mockPkt
+	closed    chan struct{}
+	once      sync.Once
+}
+
+func newMultiPortServerConn(ports []int) (*multiPortServerConn, error) {
+	m := &multiPortServerConn{
+		incoming: make(chan mockPkt, 1024),
+		closed:   make(chan struct{}),
+	}
+	for _, p := range ports {
+		l, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: p})
+		if err != nil {
+			m.Close()
+			return nil, err
+		}
+		m.listeners = append(m.listeners, l)
+		go func(conn *net.UDPConn) {
+			buf := make([]byte, 65536)
+			for {
+				n, rAddr, err := conn.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				pktData := make([]byte, n)
+				copy(pktData, buf[:n])
+				select {
+				case m.incoming <- mockPkt{data: pktData, addr: rAddr}:
+				case <-m.closed:
+					return
+				}
+			}
+		}(l)
+	}
+	return m, nil
+}
+
+func (m *multiPortServerConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	select {
+	case pkt, ok := <-m.incoming:
+		if !ok {
+			return 0, nil, net.ErrClosed
+		}
+		n := copy(p, pkt.data)
+		return n, pkt.addr, nil
+	case <-m.closed:
+		return 0, nil, net.ErrClosed
+	}
+}
+
+func (m *multiPortServerConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if len(m.listeners) > 0 {
+		return m.listeners[0].WriteTo(p, addr)
+	}
+	return 0, net.ErrClosed
+}
+
+func (m *multiPortServerConn) Close() error {
+	m.once.Do(func() {
+		close(m.closed)
+		for _, l := range m.listeners {
+			_ = l.Close()
+		}
+	})
+	return nil
+}
+
+func (m *multiPortServerConn) LocalAddr() net.Addr                { return m.listeners[0].LocalAddr() }
+func (m *multiPortServerConn) SetDeadline(t time.Time) error      { return nil }
+func (m *multiPortServerConn) SetReadDeadline(t time.Time) error  { return nil }
+func (m *multiPortServerConn) SetWriteDeadline(t time.Time) error { return nil }
+
+// hoppingClientConn applies port hopping on outgoing packets and normalizes incoming packets
+type hoppingClientConn struct {
+	base     net.PacketConn
+	ports    []int
+	current  int
+	minPort  int
+	mu       sync.Mutex
+}
+
+func (h *hoppingClientConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, addr, err := h.base.ReadFrom(p)
+	if err != nil {
+		return n, addr, err
+	}
+	// Normalize port to minPort
+	if udpAddr, ok := addr.(*net.UDPAddr); ok {
+		normalized := *udpAddr
+		normalized.Port = h.minPort
+		return n, &normalized, nil
+	}
+	return n, addr, nil
+}
+
+func (h *hoppingClientConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	h.mu.Lock()
+	hopPort := h.ports[h.current]
+	h.mu.Unlock()
+
+	// Rewrite destination port
+	if udpAddr, ok := addr.(*net.UDPAddr); ok {
+		hopped := *udpAddr
+		hopped.Port = hopPort
+		return h.base.WriteTo(p, &hopped)
+	}
+	return h.base.WriteTo(p, addr)
+}
+
+func (h *hoppingClientConn) hopNext() {
+	h.mu.Lock()
+	h.current = (h.current + 1) % len(h.ports)
+	h.mu.Unlock()
+}
+
+func (h *hoppingClientConn) Close() error                       { return h.base.Close() }
+func (h *hoppingClientConn) LocalAddr() net.Addr                { return h.base.LocalAddr() }
+func (h *hoppingClientConn) SetDeadline(t time.Time) error      { return h.base.SetDeadline(t) }
+func (h *hoppingClientConn) SetReadDeadline(t time.Time) error  { return h.base.SetReadDeadline(t) }
+func (h *hoppingClientConn) SetWriteDeadline(t time.Time) error { return h.base.SetWriteDeadline(t) }
+
+func TestE2E_PortHopping_During_Active_Streaming(t *testing.T) {
+	// 1. Setup multi-port server listening on 4 different ports
+	ports := []int{24101, 24102, 24103, 24104}
+	srvMulti, err := newMultiPortServerConn(ports)
+	if err != nil {
+		t.Fatalf("newMultiPortServerConn: %v", err)
+	}
+	defer srvMulti.Close()
+
+	// 2. Start KCP Listener on Multi-Port Server
+	kcpCfg := &conf.KCP{
+		Mode:      "fast2",
+		Smuxbuf:   4 * 1024 * 1024,
+		Streambuf: 2 * 1024 * 1024,
+	}
+	srvListener, err := kcp.Listen(kcpCfg, srvMulti)
+	if err != nil {
+		t.Fatalf("kcp.Listen: %v", err)
+	}
+	defer srvListener.Close()
+
+	// Server echoes all stream data back
+	go func() {
+		for {
+			conn, err := srvListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c tnet.Conn) {
+				defer c.Close()
+				for {
+					strm, err := c.AcceptStrm()
+					if err != nil {
+						return
+					}
+					go func(s tnet.Strm) {
+						defer s.Close()
+						_, _ = io.Copy(s, s)
+					}(strm)
+				}
+			}(conn)
+		}
+	}()
+
+	// 3. Setup Client with Port Hopping PacketConn
+	cliUDP, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("cliUDP: %v", err)
+	}
+	defer cliUDP.Close()
+
+	hopConn := &hoppingClientConn{
+		base:    cliUDP,
+		ports:   ports,
+		current: 0,
+		minPort: ports[0],
+	}
+
+	// Dial using canonical base port
+	canonicalAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: ports[0]}
+	cliConn, err := kcp.Dial(canonicalAddr, kcpCfg, hopConn)
+	if err != nil {
+		t.Fatalf("kcp.Dial: %v", err)
+	}
+	defer cliConn.Close()
+
+	// 4. Open Stream
+	strm, err := cliConn.OpenStrm()
+	if err != nil {
+		t.Fatalf("OpenStrm: %v", err)
+	}
+	defer strm.Close()
+
+	// 5. Stream 3MB of data while actively hopping ports every 50 milliseconds
+	totalBytes := 3 * 1024 * 1024 // 3MB
+	chunkSize := 32 * 1024        // 32KB chunks
+	numChunks := totalBytes / chunkSize
+
+	sendData := make([]byte, totalBytes)
+	for i := range sendData {
+		sendData[i] = byte((i*17 + 7) % 256)
+	}
+	recvData := make([]byte, totalBytes)
+
+	var readErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, readErr = io.ReadFull(strm, recvData)
+	}()
+
+	// Start aggressive port hopper in background
+	hopDone := make(chan struct{})
+	hopCount := 0
+	go func() {
+		ticker := time.NewTicker(30 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				hopConn.hopNext()
+				hopCount++
+			case <-hopDone:
+				return
+			}
+		}
+	}()
+
+	// Write 3MB in 32KB chunks with small delays to allow hops to occur during active transfer
+	for i := 0; i < numChunks; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		_, writeErr := strm.Write(sendData[start:end])
+		if writeErr != nil {
+			t.Fatalf("strm.Write at chunk %d: %v", i, writeErr)
+		}
+		time.Sleep(3 * time.Millisecond)
+	}
+
+	wg.Wait()
+	close(hopDone)
+
+	if readErr != nil {
+		t.Fatalf("io.ReadFull: %v", readErr)
+	}
+
+	if !bytes.Equal(sendData, recvData) {
+		t.Fatalf("Data corrupted during active port hopping!")
+	}
+
+	t.Logf("Active Port Hopping E2E Test PASSED! Transferred %d bytes (3MB) across %d dynamic port hops with 100%% data integrity!", totalBytes, hopCount)
+}
