@@ -78,9 +78,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 
 	var conn tnet.Conn
 
-	var isAutoMTU bool
-	var baseMTU int
-
 	// Calculate obfuscation overhead
 	overhead := 0
 	if obfsCfg.UseTLS {
@@ -96,14 +93,9 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		tCfg := tc.srvCfg.Transport
 		kcpCfg := *tCfg.KCP
 
-		isAutoMTU = kcpCfg.MTU == 0
-		if isAutoMTU {
-			// Start with a safe 1380 MTU for Auto PMTUD before probing upward
-			kcpCfg.MTU = 1380
-			baseMTU = 1380
-			flog.Infof("Auto PMTUD enabled: Starting KCP with safe MTU %d", kcpCfg.MTU)
+		if kcpCfg.MTU == 0 {
+			kcpCfg.MTU = 1350
 		}
-
 		if overhead > 0 {
 			kcpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
@@ -115,14 +107,9 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	case "udp": // Also needs to pass `tc.rootCfg.Role` to `socket.NewWithHopping` when creating `newPConn` for probing.
 		tCfg := tc.srvCfg.Transport // Create a copy of Transport config
 		udpCfg := *tCfg.UDP
-
-		isAutoMTU = udpCfg.MTU == 0
-		if isAutoMTU {
-			udpCfg.MTU = 1380
-			baseMTU = 1380
-			flog.Infof("Auto PMTUD enabled: Starting UDP with safe MTU %d", udpCfg.MTU)
+		if udpCfg.MTU == 0 {
+			udpCfg.MTU = 1350
 		}
-
 		if overhead > 0 {
 			udpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client UDP MTU to %d (overhead: %d)", udpCfg.MTU, overhead)
@@ -145,7 +132,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		}
 		conn, err = transport.DialProto(best, remoteAddr, &tc.srvCfg.Transport, pConn)
 	default:
-		return nil, fmt.Errorf("unsupported protocol: %s", tc.srvCfg.Transport.Protocol)
+		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
 	if err != nil {
@@ -155,10 +142,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		conn.Close() // also releases pConn via the transport Close chain
 		return nil, err
-	}
-
-	if isAutoMTU {
-		tc.startPMTUD(conn, baseMTU, overhead)
 	}
 
 	success = true

@@ -40,6 +40,10 @@ func (k *KCP) setDefaults() {
 		k.Mode = "fast"
 	}
 
+	if k.MTU == 0 {
+		k.MTU = 1350
+	}
+
 	if k.Rcvwnd == 0 {
 		k.Rcvwnd = 2048
 	}
