@@ -42,14 +42,25 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 	conn.SetDSCP(46)
 }
 
-func smuxConf(cfg *conf.KCP) *smux.Config {
+func smuxConf(cfg *conf.KCP, isServer bool) *smux.Config {
 	var sconf = smux.DefaultConfig()
-	sconf.KeepAliveInterval = 10 * time.Second
 	sconf.KeepAliveTimeout = 30 * time.Second
-	if cfg.Smuxbuf > 0 {
+
+	if isServer {
+		// Server is strictly passive: never initiates keepalive pings.
+		// It only responds to client pings and never sends unsolicited probes to dead clients.
+		sconf.KeepAliveDisabled = true
+		sconf.KeepAliveInterval = 0
+	} else {
+		// Client sends keepalives to maintain NAT mappings.
+		sconf.KeepAliveDisabled = false
+		sconf.KeepAliveInterval = 10 * time.Second
+	}
+
+	if cfg != nil && cfg.Smuxbuf > 0 {
 		sconf.MaxReceiveBuffer = cfg.Smuxbuf
 	}
-	if cfg.Streambuf > 0 {
+	if cfg != nil && cfg.Streambuf > 0 {
 		sconf.MaxStreamBuffer = cfg.Streambuf
 	}
 	return sconf

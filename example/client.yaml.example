@@ -71,6 +71,7 @@ servers:
       hopping:
         enabled: false      # Enable port hopping
         interval: 15        # Interval in seconds to change ports
+        warmup: 5           # Pre-warms the link 5 seconds in advance (default: 3)
         ports:              # List of single ports or ranges
           - "80"
           - "10000-20000"   # Recommended: 10000-20000 (Avoids OS ephemeral ports 32768+)

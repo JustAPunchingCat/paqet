@@ -30,7 +30,7 @@ func (l *Listener) Accept() (tnet.Conn, error) {
 		return nil, err
 	}
 	aplConf(conn, l.cfg)
-	sess, err := smux.Server(conn, smuxConf(l.cfg))
+	sess, err := smux.Server(conn, smuxConf(l.cfg, true))
 	if err != nil {
 		return nil, err
 	}
