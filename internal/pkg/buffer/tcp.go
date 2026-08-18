@@ -12,37 +12,41 @@ func CopyT(dst io.Writer, src io.Reader) error {
 	return err
 }
 
-// RelayTCP copies data bidirectionally between c1 and c2.
-// When either side finishes streaming or closes, it signals the other side so both directions complete cleanly without deadlock.
 func RelayTCP(ctx context.Context, c1 io.ReadWriteCloser, c2 io.ReadWriteCloser) error {
+	_, _, err := RelayTCPStat(ctx, c1, c2)
+	return err
+}
+
+// RelayTCPStat copies data bidirectionally between c1 and c2 and returns byte counts in both directions.
+func RelayTCPStat(ctx context.Context, c1 io.ReadWriteCloser, c2 io.ReadWriteCloser) (n1 int64, n2 int64, err error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	var err1, err2 error
 
-	// Direction 1: c1 -> c2
+	// Direction 1: c1 -> c2 (client to remote)
 	go func() {
 		defer wg.Done()
 		defer c2.Close()
-		_, err1 = io.Copy(c2, c1)
+		n1, err1 = io.Copy(c2, c1)
 	}()
 
-	// Direction 2: c2 -> c1
+	// Direction 2: c2 -> c1 (remote to client)
 	go func() {
 		defer wg.Done()
 		defer c1.Close()
-		_, err2 = io.Copy(c1, c2)
+		n2, err2 = io.Copy(c1, c2)
 	}()
 
 	wg.Wait()
 
 	if err1 != nil && !isNormalClose(err1) {
-		return err1
+		return n1, n2, err1
 	}
 	if err2 != nil && !isNormalClose(err2) {
-		return err2
+		return n1, n2, err2
 	}
-	return nil
+	return n1, n2, nil
 }
 
 func isNormalClose(err error) bool {

@@ -211,3 +211,17 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 	}
 	return nil, fmt.Errorf("no healthy connections available for server %d", serverIdx+1)
 }
+
+func (c *Client) RotateServerConn(serverIdx int) {
+	if serverIdx < 0 || serverIdx >= len(c.iters) {
+		return
+	}
+	iter := c.iters[serverIdx]
+	if iter == nil || len(iter.Items) == 0 {
+		return
+	}
+	tc := iter.Peek()
+	if tc != nil {
+		go tc.reconnect()
+	}
+}

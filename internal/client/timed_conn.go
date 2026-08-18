@@ -171,6 +171,22 @@ func (tc *timedConn) close() {
 	}
 }
 
+func (tc *timedConn) reconnect() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.conn != nil {
+		tc.conn.Close()
+	}
+	var err error
+	tc.conn, err = tc.createConn()
+	if err != nil {
+		flog.Debugf("failed to reconnect timedConn: %v", err)
+		tc.conn = nil
+	} else {
+		flog.Infof("auto-rotated connection to new port")
+	}
+}
+
 func (tc *timedConn) startPMTUD(conn tnet.Conn, baseMTU, overhead int) {
 	go func() {
 		// Give the connection a moment to stabilize
