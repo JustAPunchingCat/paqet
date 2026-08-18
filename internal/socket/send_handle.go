@@ -511,13 +511,6 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	state := h.getFlowState(srcIP, dstIP, dstPort)
 	f := h.getClientTCPF(dstIP, dstPort)
 
-	// If handshake is enabled and this is the client's very first packet for this destination flow,
-	// send an initial empty SYN (length = 0) to open the conntrack session in intermediate firewalls.
-	if h.role == "client" && h.handshake && !f.SYN && atomic.CompareAndSwapUint32(&state.synSent, 0, 1) {
-		synF := conf.TCPF{SYN: true}
-		_ = h.writeRaw(nil, addr, srcPort, synF, srcIP, isIPv4, isSpoofed, state)
-	}
-
 	return h.writeRaw(payload, addr, srcPort, f, srcIP, isIPv4, isSpoofed, state)
 }
 

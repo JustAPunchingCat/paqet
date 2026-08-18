@@ -88,7 +88,10 @@ func TestStatefulTCPDisguiseProgression(t *testing.T) {
 
 	targetAddr := &net.UDPAddr{IP: dstIP, Port: 10000}
 
-	// 1. Send Packet 1: 500 bytes (will emit 1 empty SYN packet + 1 data packet)
+	// 0. Prewarm the flow (emits 1 empty SYN packet)
+	sh.PrewarmFlow(targetAddr.IP, uint16(targetAddr.Port))
+
+	// 1. Send Packet 1: 500 bytes (data packet)
 	p1 := make([]byte, 500)
 	if err := sh.Write(p1, targetAddr, 12345); err != nil {
 		t.Fatalf("Write 1 failed: %v", err)
