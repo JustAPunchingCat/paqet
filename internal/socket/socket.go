@@ -41,6 +41,9 @@ type PacketConn struct {
 	plugins     *PluginManager
 	clientPorts sync.Map
 
+	lastRecv atomic.Int64
+	lastHop  atomic.Int64
+
 	readQueue     chan processedPacket
 	workerChs     []chan rawJob
 	workersWg     sync.WaitGroup
@@ -263,6 +266,7 @@ func (c *PacketConn) backgroundReader() {
 		if payload == nil {
 			continue
 		}
+		c.lastRecv.Store(time.Now().UnixNano())
 
 		udpAddr, ok := addr.(*net.UDPAddr)
 		if !ok {
@@ -303,6 +307,17 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		return 0, net.InvalidAddrError("invalid address")
 	}
 
+	// Auto-rotate stalled / blackholed port if client has not received return packets for >3s
+	if c.cfg.Role == "client" {
+		now := time.Now().UnixNano()
+		lastRecv := c.lastRecv.Load()
+		lastHop := c.lastHop.Load()
+		if lastRecv > 0 && time.Duration(now-lastRecv) > 3*time.Second && time.Duration(now-lastHop) > 3*time.Second {
+			c.lastHop.Store(now)
+			c.ForceHop()
+		}
+	}
+
 	srcPort := c.cfg.Port
 
 	// Apply plugins (Hop Port, Obfuscate)
@@ -325,6 +340,16 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 
 	return len(data), nil
+}
+
+func (c *PacketConn) ForceHop() {
+	if c.plugins != nil {
+		for _, pl := range c.plugins.plugins {
+			if hp, ok := pl.(*HoppingPlugin); ok {
+				hp.ForceHop()
+			}
+		}
+	}
 }
 
 func (c *PacketConn) Close() error {

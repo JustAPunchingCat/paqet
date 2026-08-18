@@ -136,6 +136,25 @@ func (p *HoppingPlugin) updateCurrentPort() {
 	}
 }
 
+func (p *HoppingPlugin) ForceHop() {
+	if !p.isClient {
+		return
+	}
+	newPort := p.pickNextPort()
+	if newPort == 0 {
+		return
+	}
+	if p.sendHandle != nil && p.targetIP != nil {
+		p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
+	}
+	p.currentPort.Store(newPort)
+	if p.label != "" {
+		flog.Debugf("Hopping: auto-rotated stalled port to %d for %s", newPort, p.label)
+	} else {
+		flog.Debugf("Hopping: auto-rotated stalled port to %d", newPort)
+	}
+}
+
 func (p *HoppingPlugin) OnRead(data []byte, addr net.Addr) ([]byte, net.Addr, error) {
 	if !p.isClient {
 		return data, addr, nil
