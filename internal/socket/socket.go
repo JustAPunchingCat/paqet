@@ -307,17 +307,6 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		return 0, net.InvalidAddrError("invalid address")
 	}
 
-	// Auto-rotate stalled / blackholed port if client has not received return packets for >3s
-	if c.cfg.Role == "client" {
-		now := time.Now().UnixNano()
-		lastRecv := c.lastRecv.Load()
-		lastHop := c.lastHop.Load()
-		if lastRecv > 0 && time.Duration(now-lastRecv) > 3*time.Second && time.Duration(now-lastHop) > 3*time.Second {
-			c.lastHop.Store(now)
-			c.ForceHop()
-		}
-	}
-
 	srcPort := c.cfg.Port
 
 	// Apply plugins (Hop Port, Obfuscate)
