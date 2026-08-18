@@ -15,59 +15,35 @@ func CopyT(dst io.Writer, src io.Reader) error {
 	return err
 }
 
-// RelayTCP copies data bidirectionally between local and remote streams with full-duplex coordination.
-// It allows download to stream completely even when upload finishes early, and cleanly tears down on errors.
-func RelayTCP(ctx context.Context, local io.ReadWriteCloser, remote io.ReadWriteCloser) error {
+// RelayTCP copies data bidirectionally between c1 and c2.
+// When either side finishes streaming or closes, it signals the other side so both directions complete cleanly without deadlock.
+func RelayTCP(ctx context.Context, c1 io.ReadWriteCloser, c2 io.ReadWriteCloser) error {
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 
-	var uploadErr, downloadErr error
+	var err1, err2 error
 
-	// Upload: local -> remote (Client sends request/data to server)
-	go func() {
-		uploadErr = CopyT(remote, local)
-		if cw, ok := remote.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		if uploadErr != nil && uploadErr != io.EOF {
-			// If upload fails with a real network error, abort both sides
-			_ = local.Close()
-			_ = remote.Close()
-		}
-	}()
-
-	// Download: remote -> local (Server sends response/data to client)
+	// Direction 1: c1 -> c2
 	go func() {
 		defer wg.Done()
-		downloadErr = CopyT(local, remote)
-		if cw, ok := local.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			_ = local.Close()
-		}
-		_ = remote.Close()
+		defer c2.Close()
+		err1 = CopyT(c2, c1)
 	}()
 
-	done := make(chan struct{})
+	// Direction 2: c2 -> c1
 	go func() {
-		wg.Wait()
-		close(done)
+		defer wg.Done()
+		defer c1.Close()
+		err2 = CopyT(c1, c2)
 	}()
 
-	select {
-	case <-done:
-		_ = local.Close()
-		_ = remote.Close()
-		if downloadErr != nil && downloadErr != io.EOF {
-			return downloadErr
-		}
-		if uploadErr != nil && uploadErr != io.EOF {
-			return uploadErr
-		}
-		return nil
-	case <-ctx.Done():
-		_ = local.Close()
-		_ = remote.Close()
-		return ctx.Err()
+	wg.Wait()
+
+	if err1 != nil && err1 != io.EOF {
+		return err1
 	}
+	if err2 != nil && err2 != io.EOF {
+		return err2
+	}
+	return nil
 }
