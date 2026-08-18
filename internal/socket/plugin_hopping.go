@@ -84,8 +84,8 @@ func (p *HoppingPlugin) pickNextPort() uint32 {
 }
 
 func (p *HoppingPlugin) loop() {
-	leadTime := 500 * time.Millisecond
-	if p.interval <= 1*time.Second {
+	leadTime := 2 * time.Second
+	if p.interval <= 4*time.Second {
 		leadTime = p.interval / 2
 	}
 
