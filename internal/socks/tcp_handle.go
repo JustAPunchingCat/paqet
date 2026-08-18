@@ -72,7 +72,6 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 
 	nClient, nRemote, err := buffer.RelayTCPStat(h.ctx, conn, strm)
 	if nRemote == 0 && nClient > 0 {
-		flog.Debugf("SOCKS5 stream %d received 0 bytes from remote, rotating connection to a new port...", strm.SID())
 		h.client.RotateServerConn(h.ServerIdx)
 	}
 

@@ -424,6 +424,19 @@ func (c *PacketConn) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
 	return true
 }
 
+func (c *PacketConn) GetCurrentPort() int {
+	if c.plugins != nil {
+		for _, pl := range c.plugins.plugins {
+			if hp, ok := pl.(*HoppingPlugin); ok {
+				if port := hp.currentPort.Load(); port > 0 {
+					return int(port)
+				}
+			}
+		}
+	}
+	return c.cfg.Port
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

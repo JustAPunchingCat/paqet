@@ -15,12 +15,14 @@ import (
 )
 
 type timedConn struct {
-	rootCfg *conf.Conf
-	srvCfg  *conf.ServerConfig
-	conn    tnet.Conn
-	expire  time.Time
-	ctx     context.Context
-	mu      sync.Mutex
+	rootCfg  *conf.Conf
+	srvCfg   *conf.ServerConfig
+	conn     tnet.Conn
+	pConn    *socket.PacketConn
+	lastPort int
+	expire   time.Time
+	ctx      context.Context
+	mu       sync.Mutex
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -56,6 +58,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
+	tc.pConn = pConn
+	tc.lastPort = pConn.GetCurrentPort()
 	// Guard: close pConn on any error path so background goroutines and file
 	// descriptors are never orphaned when the server is offline or unreachable.
 	success := false
@@ -174,16 +178,18 @@ func (tc *timedConn) close() {
 func (tc *timedConn) reconnect() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
+	oldPort := tc.lastPort
 	if tc.conn != nil {
 		tc.conn.Close()
 	}
 	var err error
 	tc.conn, err = tc.createConn()
 	if err != nil {
-		flog.Debugf("failed to reconnect timedConn: %v", err)
+		flog.Debugf("failed to reconnect timedConn on port %d: %v", oldPort, err)
 		tc.conn = nil
 	} else {
-		flog.Infof("auto-rotated connection to new port")
+		newPort := tc.lastPort
+		flog.Infof("Auto-rotated blocked port :%d -> new port :%d", oldPort, newPort)
 	}
 }
 
