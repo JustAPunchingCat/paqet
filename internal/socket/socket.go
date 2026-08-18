@@ -253,6 +253,13 @@ func (c *PacketConn) backgroundReader() {
 			}
 			return
 		}
+		if addr != nil && dstPort > 0 {
+			if udpAddr, ok := addr.(*net.UDPAddr); ok {
+				key := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
+				c.clientPorts.Store(key, dstPort)
+			}
+		}
+
 		if payload == nil {
 			continue
 		}
