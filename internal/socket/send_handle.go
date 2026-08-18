@@ -9,6 +9,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/pkg/iterator"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,8 @@ type TCPF struct {
 
 type FlowUpdater interface {
 	UpdateRemoteFlow(remoteIP net.IP, remoteSeq uint32, payloadLen uint32, tsVal uint32)
+	SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error
+	SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error
 }
 
 type flowState struct {
@@ -38,6 +41,7 @@ type flowState struct {
 	baseTS      uint32
 	seq         uint32
 	tsCounter   uint32
+	synSent     uint32
 	remoteSeq   uint32
 	remoteLen   uint32
 	remoteTSval uint32
@@ -74,9 +78,10 @@ type SendHandle struct {
 	ttl       uint8
 	startTime time.Time
 
-	tcpF       TCPF
-	ethPool    sync.Pool
-	ipv4Pool   sync.Pool
+	tcpF        TCPF
+	handshake   bool
+	ethPool     sync.Pool
+	ipv4Pool    sync.Pool
 	ipv6Pool   sync.Pool
 	tcpPool    sync.Pool
 	bufPool    sync.Pool
@@ -144,6 +149,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		synOptions:  synOptions,
 		ackOptions:  ackOptions,
 		tcpF:        TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		handshake:   cfg.TCP.IsHandshakeEnabled(),
 		time:        uint32(time.Now().UnixNano() / int64(time.Millisecond)),
 		tos:         tos,
 		ttl:         ttl,
@@ -500,14 +506,22 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 		}
 	}
 
-	var state *flowState
-	if isSpoofed {
-		state = h.getFlowState(srcIP)
-	} else {
-		state = h.globalState
+	state := h.getFlowState(srcIP, dstIP, dstPort)
+	f := h.getClientTCPF(dstIP, dstPort)
+
+	// If handshake is enabled and this is the very first packet for this destination flow,
+	// send an initial empty SYN (length = 0) to open the conntrack session in intermediate firewalls.
+	if h.handshake && !f.SYN && atomic.CompareAndSwapUint32(&state.synSent, 0, 1) {
+		synF := conf.TCPF{SYN: true}
+		_ = h.writeRaw(nil, addr, srcPort, synF, srcIP, isIPv4, isSpoofed, state)
 	}
 
-	f := h.getClientTCPF(dstIP, dstPort)
+	return h.writeRaw(payload, addr, srcPort, f, srcIP, isIPv4, isSpoofed, state)
+}
+
+func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f conf.TCPF, srcIP net.IP, isIPv4 bool, isSpoofed bool, state *flowState) error {
+	dstIP := addr.IP
+	dstPort := uint16(addr.Port)
 
 	// Fetch dynamic header variables
 	tos := h.tos
@@ -700,7 +714,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 		buf[tcpStart+26] = 8
 		buf[tcpStart+27] = 10
 		binary.BigEndian.PutUint32(buf[tcpStart+28:tcpStart+32], tsVal)
-		binary.BigEndian.PutUint32(buf[tcpStart+32:tcpStart+36], 0)
+		binary.BigEndian.PutUint32(buf[tcpStart+32:tcpStart+36], tsEcr)
 
 		// Option 4: Nop. Type 1
 		buf[tcpStart+36] = 1
@@ -885,12 +899,12 @@ func (h *SendHandle) getSpoofedIP(isIPv4 bool, dstIP net.IP) net.IP {
 	return pickRandomIP(isIPv4, h.spoofIPs, h.spoofNets)
 }
 
-func (h *SendHandle) getFlowState(ip net.IP) *flowState {
-	ipStr := string(ip)
+func (h *SendHandle) getFlowState(srcIP net.IP, dstIP net.IP, dstPort uint16) *flowState {
+	key := string(srcIP) + "->" + string(dstIP) + ":" + strconv.Itoa(int(dstPort))
 	h.statesMu.Lock()
 	defer h.statesMu.Unlock()
 
-	if state, ok := h.spoofStates[ipStr]; ok {
+	if state, ok := h.spoofStates[key]; ok {
 		return state
 	}
 
@@ -903,7 +917,7 @@ func (h *SendHandle) getFlowState(ip net.IP) *flowState {
 		baseTS: randUint32(),
 		seq:    randUint32(),
 	}
-	h.spoofStates[ipStr] = state
+	h.spoofStates[key] = state
 	return state
 }
 
@@ -927,21 +941,69 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 }
 
 func (h *SendHandle) UpdateRemoteFlow(remoteIP net.IP, remoteSeq uint32, payloadLen uint32, tsVal uint32) {
-	var state *flowState
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 {
-		state = h.getFlowState(remoteIP)
+	h.statesMu.Lock()
+	for _, state := range h.spoofStates {
+		atomic.StoreUint32(&state.remoteSeq, remoteSeq)
+		atomic.StoreUint32(&state.remoteLen, payloadLen)
+		if tsVal > 0 {
+			atomic.StoreUint32(&state.remoteTSval, tsVal)
+		}
+		atomic.StoreUint32(&state.hasRemote, 1)
+	}
+	h.statesMu.Unlock()
+
+	if h.globalState != nil {
+		atomic.StoreUint32(&h.globalState.remoteSeq, remoteSeq)
+		atomic.StoreUint32(&h.globalState.remoteLen, payloadLen)
+		if tsVal > 0 {
+			atomic.StoreUint32(&h.globalState.remoteTSval, tsVal)
+		}
+		atomic.StoreUint32(&h.globalState.hasRemote, 1)
+	}
+}
+
+func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error {
+	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
+	isIPv4 := remoteIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
 	} else {
-		state = h.globalState
+		srcIP = h.srcIPv6
 	}
-	if state == nil {
-		return
-	}
-	atomic.StoreUint32(&state.remoteSeq, remoteSeq)
-	atomic.StoreUint32(&state.remoteLen, payloadLen)
-	if tsVal > 0 {
-		atomic.StoreUint32(&state.remoteTSval, tsVal)
+
+	state := h.getFlowState(srcIP, remoteIP, uint16(remotePort))
+	atomic.StoreUint32(&state.remoteSeq, clientSeq+1)
+	atomic.StoreUint32(&state.remoteLen, 0)
+	if clientTSval > 0 {
+		atomic.StoreUint32(&state.remoteTSval, clientTSval)
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
+
+	synAckF := conf.TCPF{SYN: true, ACK: true}
+	return h.writeRaw(nil, addr, localPort, synAckF, srcIP, isIPv4, false, state)
+}
+
+func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error {
+	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
+	isIPv4 := remoteIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+
+	state := h.getFlowState(srcIP, remoteIP, uint16(remotePort))
+	atomic.StoreUint32(&state.remoteSeq, serverSeq+1)
+	atomic.StoreUint32(&state.remoteLen, 0)
+	if serverTSval > 0 {
+		atomic.StoreUint32(&state.remoteTSval, serverTSval)
+	}
+	atomic.StoreUint32(&state.hasRemote, 1)
+
+	ackF := conf.TCPF{ACK: true}
+	return h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
 }
 
 func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {

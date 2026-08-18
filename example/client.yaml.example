@@ -41,6 +41,7 @@ network:
         spoofed_server_ips: ["10.2.0.0/16"]
 
   tcp:
+    handshake: true                         # Enable automatic stateless 3-way handshake simulation (Default: true)
     local_flag: ["PA"]                      # Local TCP flags (Push+Ack default)
     remote_flag: ["PA"]                     # Remote TCP flags (Push+Ack default)
     

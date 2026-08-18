@@ -72,6 +72,7 @@ network:
 
   # TCP flags for packet crafting (optional - will use defaults)
   tcp:
+    handshake: true                          # Enable automatic stateless 3-way handshake simulation (Default: true)
     local_flag: ["PA"]                       # Local TCP flags (Push+Ack default)
 
   # PCAP/AF_PACKET settings (optional - will use defaults)

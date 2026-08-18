@@ -28,6 +28,7 @@ type RecvHandle struct {
 	allowedIPs  []net.IP
 	allowedNets []*net.IPNet
 	flowUpdater FlowUpdater
+	handshake   bool
 }
 
 func (h *RecvHandle) SetFlowUpdater(u FlowUpdater) {
@@ -121,6 +122,7 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 		mappings:    mappings,
 		allowedIPs:  allowedIPs,
 		allowedNets: allowedNets,
+		handshake:   cfg.TCP.IsHandshakeEnabled(),
 		decoderPool: sync.Pool{
 			New: func() any {
 				d := &packetDecoder{
@@ -227,6 +229,10 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		}
 		payload = data[transStart+tcpLen:]
 
+		tcpFlags := data[transStart+13]
+		isSYN := tcpFlags&0x02 != 0
+		isACK := tcpFlags&0x10 != 0
+
 		if h.flowUpdater != nil {
 			var tsVal uint32
 			if tcpLen > 20 {
@@ -255,6 +261,16 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 				}
 			}
 			h.flowUpdater.UpdateRemoteFlow(srcIP, remoteSeq, uint32(len(payload)), tsVal)
+
+			if h.handshake {
+				if isSYN && !isACK && len(payload) == 0 {
+					// Server received Client SYN -> Send SYN-ACK
+					_ = h.flowUpdater.SendSYNACK(srcIP, srcPort, dstPort, remoteSeq, tsVal)
+				} else if isSYN && isACK && len(payload) == 0 {
+					// Client received Server SYN-ACK -> Send ACK
+					_ = h.flowUpdater.SendACK(srcIP, srcPort, dstPort, remoteSeq, tsVal)
+				}
+			}
 		}
 	} else { // UDP
 		if len(data) < transStart+8 {
