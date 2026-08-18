@@ -24,9 +24,21 @@ type timedConn struct {
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
+	tc := timedConn{
+		ctx:     ctx,
+		rootCfg: rootCfg,
+		srvCfg:  srvCfg,
+	}
+
 	var err error
-	tc := timedConn{rootCfg: rootCfg, srvCfg: srvCfg, ctx: ctx}
-	tc.conn, err = tc.createConn()
+	for attempts := 0; attempts < 5; attempts++ {
+		tc.conn, err = tc.createConn()
+		if err == nil {
+			break
+		}
+		flog.Debugf("Connection attempt %d failed (%v), retrying with next port...", attempts+1, err)
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -135,17 +147,38 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
-	if err != nil {
-		return nil, err
-	}
 	err = tc.sendTCPF(conn)
 	if err != nil {
 		conn.Close() // also releases pConn via the transport Close chain
 		return nil, err
 	}
 
+	// Verify bidirectional connectivity with a fast PPING probe
+	if err := tc.verifyConn(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("connection verification failed: %w", err)
+	}
+
 	success = true
 	return conn, nil
+}
+
+func (tc *timedConn) verifyConn(conn tnet.Conn) error {
+	strm, err := conn.OpenStrm()
+	if err != nil {
+		return err
+	}
+	defer strm.Close()
+
+	_ = strm.SetDeadline(time.Now().Add(1 * time.Second))
+	p := protocol.Proto{Type: protocol.PPING}
+	if err := p.Write(strm); err != nil {
+		return err
+	}
+	if err := p.Read(strm); err != nil || p.Type != protocol.PPONG {
+		return fmt.Errorf("ping verification failed (received type: %d, err: %v)", p.Type, err)
+	}
+	return nil
 }
 
 func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
