@@ -12,15 +12,6 @@ import (
 )
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
-	// Ensure connection is closed when context is cancelled to unblock AcceptStrm
-	// Use a child context to ensure the monitoring goroutine exits when handleConn returns
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		<-ctx.Done()
-		conn.Close()
-	}()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -33,7 +24,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			if ctx.Err() != nil {
 				return
 			}
-			if strings.Contains(err.Error(), "closed network connection") {
+			if strings.Contains(err.Error(), "closed network connection") || strings.Contains(err.Error(), "closed pipe") {
 				flog.Debugf("connection from %s closed", conn.RemoteAddr())
 				return
 			}
