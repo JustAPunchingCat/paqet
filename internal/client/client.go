@@ -157,7 +157,7 @@ func (c *Client) udpIdleSweeper(ctx context.Context) {
 	}
 }
 
-func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
+func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 	iter := c.iters[serverIdx]
 	// Try all connections in round-robin
 	for i := 0; i < len(iter.Items); i++ {
@@ -177,7 +177,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 		strm, err := tc.conn.OpenStrm()
 		if err == nil {
 			tc.mu.Unlock()
-			return strm, nil
+			return strm, tc, nil
 		}
 
 		flog.Debugf("failed to open stream, reconnecting: %v", err)
@@ -199,7 +199,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 		if err == nil {
 			flog.Infof("reconnected to server %d", serverIdx+1)
 			tc.mu.Unlock()
-			return strm, nil
+			return strm, tc, nil
 		}
 
 		flog.Debugf("failed to open stream after reconnect: %v", err)
@@ -209,7 +209,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 		tc.conn = nil
 		tc.mu.Unlock()
 	}
-	return nil, fmt.Errorf("no healthy connections available for server %d", serverIdx+1)
+	return nil, nil, fmt.Errorf("no healthy connections available for server %d", serverIdx+1)
 }
 
 func (c *Client) IsAutoRotate(serverIdx int) bool {
