@@ -437,17 +437,6 @@ func (c *PacketConn) GetCurrentPort() int {
 	return c.cfg.Port
 }
 
-func (c *PacketConn) SetCurrentPort(port int) {
-	if c.plugins != nil {
-		for _, pl := range c.plugins.plugins {
-			if hp, ok := pl.(*HoppingPlugin); ok {
-				hp.SetCurrentPort(port)
-				return
-			}
-		}
-	}
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a
