@@ -164,7 +164,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 				break
 			}
 			if attempt < 3 {
-				flog.Infof("Hopping: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
+				flog.Debugf("Hopping: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
 				pConn.ForceHop()
 			}
 		}
