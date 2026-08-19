@@ -159,12 +159,12 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 				time.Sleep(30 * time.Millisecond)
 			}
 			if warmed {
-				flog.Infof("Auto-rotate: connection verified open on port :%d (handshake OK)", port)
+				flog.Infof("Hopping: port :%d verified open (handshake OK)", port)
 				tc.lastPort = int(port)
 				break
 			}
 			if attempt < 3 {
-				flog.Infof("Auto-rotate: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
+				flog.Infof("Hopping: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
 				pConn.ForceHop()
 			}
 		}
@@ -214,7 +214,7 @@ func (tc *timedConn) reconnect() {
 		tc.pConn.ForceHop()
 		newPort := tc.pConn.GetCurrentPort()
 		tc.lastPort = newPort
-		flog.Infof("Auto-rotated destination port :%d -> new port :%d", oldPort, newPort)
+		flog.Infof("Hopping: auto-rotated port :%d -> :%d", oldPort, newPort)
 		return
 	}
 
@@ -228,7 +228,7 @@ func (tc *timedConn) reconnect() {
 		tc.conn = nil
 	} else {
 		newPort := tc.lastPort
-		flog.Infof("Auto-rotated blocked port :%d -> new port :%d", oldPort, newPort)
+		flog.Infof("Hopping: auto-rotated port :%d -> :%d", oldPort, newPort)
 	}
 }
 

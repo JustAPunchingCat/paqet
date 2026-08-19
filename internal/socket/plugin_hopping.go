@@ -148,11 +148,6 @@ func (p *HoppingPlugin) ForceHop() {
 		p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
 	}
 	p.currentPort.Store(newPort)
-	if p.label != "" {
-		flog.Debugf("Hopping: auto-rotated stalled port to %d for %s", newPort, p.label)
-	} else {
-		flog.Debugf("Hopping: auto-rotated stalled port to %d", newPort)
-	}
 }
 
 func (p *HoppingPlugin) OnRead(data []byte, addr net.Addr) ([]byte, net.Addr, error) {
