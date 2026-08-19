@@ -71,6 +71,9 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 
 	if err := buffer.RelayTCP(ctx, conn, strm); err != nil && err != io.EOF {
 		flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+		if f.client != nil {
+			f.client.MarkServerStale(f.ServerIdx)
+		}
 		return err
 	}
 

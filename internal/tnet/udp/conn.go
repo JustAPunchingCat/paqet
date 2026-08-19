@@ -290,9 +290,6 @@ func (c *Conn) keepAliveLoop() {
 				return
 			}
 
-			// Send KeepAlive packet (SID=0, Seq=0, Flags=KeepAlive, Empty Data)
-			c.writePacket(0, 0, nil, flagKeepAlive)
-
 			c.mu.Lock()
 			now := time.Now()
 			var idleStreams []*muxStream
