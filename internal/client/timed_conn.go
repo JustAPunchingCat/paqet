@@ -159,12 +159,12 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 				time.Sleep(30 * time.Millisecond)
 			}
 			if warmed {
-				flog.Infof("Hopping: port :%d verified open (handshake OK)", port)
+				flog.Infof("Hopping [%s]: port :%d verified open (handshake OK)", targetIP, port)
 				tc.lastPort = int(port)
 				break
 			}
 			if attempt < 3 {
-				flog.Debugf("Hopping: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
+				flog.Debugf("Hopping [%s]: port :%d blocked by ISP (no SYN-ACK), testing next port...", targetIP, port)
 				pConn.ForceHop()
 			}
 		}
@@ -209,12 +209,17 @@ func (tc *timedConn) reconnect() {
 	}
 	tc.lastRotate = time.Now()
 
+	srvLabel := ""
+	if tc.srvCfg != nil && tc.srvCfg.Server.Addr != nil {
+		srvLabel = tc.srvCfg.Server.Addr.IP.String()
+	}
+
 	oldPort := tc.lastPort
 	if tc.srvCfg.Hopping.Enabled && tc.pConn != nil {
 		tc.pConn.ForceHop()
 		newPort := tc.pConn.GetCurrentPort()
 		tc.lastPort = newPort
-		flog.Infof("Hopping: auto-rotated port :%d -> :%d", oldPort, newPort)
+		flog.Infof("Hopping [%s]: auto-rotated port :%d -> :%d", srvLabel, oldPort, newPort)
 		return
 	}
 
@@ -224,11 +229,11 @@ func (tc *timedConn) reconnect() {
 	var err error
 	tc.conn, err = tc.createConn()
 	if err != nil {
-		flog.Debugf("failed to reconnect timedConn on port %d: %v", oldPort, err)
+		flog.Debugf("failed to reconnect timedConn [%s] on port %d: %v", srvLabel, oldPort, err)
 		tc.conn = nil
 	} else {
 		newPort := tc.lastPort
-		flog.Infof("Hopping: auto-rotated port :%d -> :%d", oldPort, newPort)
+		flog.Infof("Hopping [%s]: auto-rotated port :%d -> :%d", srvLabel, oldPort, newPort)
 	}
 }
 
