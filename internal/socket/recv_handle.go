@@ -267,7 +267,11 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 			if h.role == "client" {
 				return nil, nil, 0, net.ErrClosed
 			}
-			return nil, nil, 0, nil
+			addr := &net.UDPAddr{
+				IP:   srcIP,
+				Port: srcPort,
+			}
+			return nil, addr, dstPort, ErrRST
 		}
 
 		if h.flowUpdater != nil {

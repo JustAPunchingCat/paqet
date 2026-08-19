@@ -2,6 +2,7 @@ package socket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+var ErrRST = errors.New("connection reset by peer")
 
 type processedPacket struct {
 	data []byte
@@ -49,6 +52,8 @@ type PacketConn struct {
 	workersWg  sync.WaitGroup
 	numWorkers int
 	closeOnce  sync.Once
+	
+	OnRST func(addr net.Addr)
 }
 
 // &OpError{Op: "listen", Net: network, Source: nil, Addr: nil, Err: err}
@@ -216,6 +221,12 @@ func (c *PacketConn) backgroundReader() {
 
 		payload, addr, dstPort, err := c.recvHandle.Read()
 		if err != nil {
+			if err == ErrRST {
+				if c.OnRST != nil && addr != nil {
+					c.OnRST(addr)
+				}
+				continue
+			}
 			if c.ctx.Err() == nil {
 				select {
 				case c.readQueue <- processedPacket{err: err}:

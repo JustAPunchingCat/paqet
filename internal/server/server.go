@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +21,7 @@ type Server struct {
 	cfg   *conf.Conf
 	pConn *socket.PacketConn
 	wg    sync.WaitGroup
+	conns sync.Map
 }
 
 func New(cfg *conf.Conf) (*Server, error) {
@@ -45,6 +47,7 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("could not create raw packet conn: %w", err)
 	}
+	pConn.OnRST = s.handleRST
 	s.pConn = pConn
 
 	var listener tnet.Listener
@@ -133,8 +136,12 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), localInfo)
 
+		s.conns.Store(conn.RemoteAddr().String(), conn)
 		s.wg.Go(func() {
-			defer conn.Close()
+			defer func() {
+				s.conns.Delete(conn.RemoteAddr().String())
+				conn.Close()
+			}()
 			stopCh := make(chan struct{})
 			go func() {
 				select {
@@ -146,5 +153,18 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			s.handleConn(ctx, conn)
 			close(stopCh)
 		})
+	}
+}
+
+func (s *Server) handleRST(addr net.Addr) {
+	if addr == nil {
+		return
+	}
+	if v, ok := s.conns.Load(addr.String()); ok {
+		if conn, ok := v.(tnet.Conn); ok {
+			flog.Debugf("Received RST from client %s, forcibly closing KCP session", addr)
+			conn.Close()
+			s.conns.Delete(addr.String())
+		}
 	}
 }
