@@ -54,7 +54,7 @@ func (c *Client) Start(ctx context.Context) error {
 					flog.Errorf("failed to create connection to server %d (conn %d): %v", sIdx+1, connIdx+1, err)
 					return
 				}
-				flog.Debugf("client connection %d created successfully", connIdx+1)
+				flog.Debugf("client connection %d to %s created successfully", connIdx+1, srv.Server.Addr)
 				c.mu.Lock()
 				c.iters[sIdx].Items = append(c.iters[sIdx].Items, tc)
 				c.mu.Unlock()
