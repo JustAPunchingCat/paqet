@@ -148,7 +148,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	var ipStart int
 	var isIPv4 bool
 	var ipLen int
-	var srcIP net.IP
+	var srcIP, dstIP net.IP
 	var protocol byte
 
 	// Check if there is an Ethernet header by parsing EtherType
@@ -189,6 +189,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		}
 		protocol = data[ipStart+9]
 		srcIP = net.IP(data[ipStart+12 : ipStart+16])
+		dstIP = net.IP(data[ipStart+16 : ipStart+20])
 	} else {
 		// IPv6
 		if len(data) < ipStart+40 {
@@ -201,6 +202,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		ipLen = 40
 		protocol = data[ipStart+6]
 		srcIP = net.IP(data[ipStart+8 : ipStart+24])
+		dstIP = net.IP(data[ipStart+24 : ipStart+40])
 	}
 
 	// Only process TCP (6) or UDP (17)
@@ -260,7 +262,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 					i += length
 				}
 			}
-			h.flowUpdater.UpdateRemoteFlow(srcIP, remoteSeq, uint32(len(payload)), tsVal)
+			h.flowUpdater.UpdateRemoteFlow(srcIP, srcPort, dstIP, dstPort, remoteSeq, uint32(len(payload)), tsVal)
 
 			if h.handshake {
 				if isSYN && !isACK && len(payload) == 0 {

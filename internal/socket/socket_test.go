@@ -136,8 +136,8 @@ func TestStatefulTCPDisguiseProgression(t *testing.T) {
 		t.Errorf("expected seq3=%d (seq2+1350), got %d", seq2+1350, seq3)
 	}
 
-	// 4. Simulate remote peer incoming packet: Seq = 50000, PayloadLen = 1200, TSval = 888888
-	sh.UpdateRemoteFlow(dstIP, 50000, 1200, 888888)
+	// 4. Simulate remote peer incoming packet: from dstIP:10000 to srcIP:12345, Seq = 50000, PayloadLen = 1200, TSval = 888888
+	sh.UpdateRemoteFlow(dstIP, 10000, srcIP, 12345, 50000, 1200, 888888)
 
 	// 5. Send Packet 4: 200 bytes
 	p4 := make([]byte, 200)

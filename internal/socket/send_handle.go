@@ -31,7 +31,7 @@ type TCPF struct {
 }
 
 type FlowUpdater interface {
-	UpdateRemoteFlow(remoteIP net.IP, remoteSeq uint32, payloadLen uint32, tsVal uint32)
+	UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, payloadLen uint32, tsVal uint32)
 	SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error
 	SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error
 }
@@ -508,7 +508,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 		}
 	}
 
-	state := h.getFlowState(srcIP, dstIP, dstPort)
+	state := h.getFlowState(srcIP, srcPort, dstIP, dstPort)
 	f := h.getClientTCPF(dstIP, dstPort)
 
 	return h.writeRaw(payload, addr, srcPort, f, srcIP, isIPv4, isSpoofed, state)
@@ -894,8 +894,8 @@ func (h *SendHandle) getSpoofedIP(isIPv4 bool, dstIP net.IP) net.IP {
 	return pickRandomIP(isIPv4, h.spoofIPs, h.spoofNets)
 }
 
-func (h *SendHandle) getFlowState(srcIP net.IP, dstIP net.IP, dstPort uint16) *flowState {
-	key := string(srcIP) + "->" + string(dstIP) + ":" + strconv.Itoa(int(dstPort))
+func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPort uint16) *flowState {
+	key := string(srcIP) + ":" + strconv.Itoa(srcPort) + "->" + string(dstIP) + ":" + strconv.Itoa(int(dstPort))
 	h.statesMu.Lock()
 	defer h.statesMu.Unlock()
 
@@ -935,26 +935,16 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	h.tcpF.mu.Unlock()
 }
 
-func (h *SendHandle) UpdateRemoteFlow(remoteIP net.IP, remoteSeq uint32, payloadLen uint32, tsVal uint32) {
-	h.statesMu.Lock()
-	for _, state := range h.spoofStates {
-		atomic.StoreUint32(&state.remoteSeq, remoteSeq)
-		atomic.StoreUint32(&state.remoteLen, payloadLen)
-		if tsVal > 0 {
-			atomic.StoreUint32(&state.remoteTSval, tsVal)
-		}
-		atomic.StoreUint32(&state.hasRemote, 1)
+func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, payloadLen uint32, tsVal uint32) {
+	// The incoming packet arrived from (srcIP:srcPort) to our local (dstIP:dstPort).
+	// Our corresponding outgoing flow is keyed by (dstIP:dstPort -> srcIP:srcPort).
+	state := h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
+	atomic.StoreUint32(&state.remoteSeq, remoteSeq)
+	atomic.StoreUint32(&state.remoteLen, payloadLen)
+	if tsVal > 0 {
+		atomic.StoreUint32(&state.remoteTSval, tsVal)
 	}
-	h.statesMu.Unlock()
-
-	if h.globalState != nil {
-		atomic.StoreUint32(&h.globalState.remoteSeq, remoteSeq)
-		atomic.StoreUint32(&h.globalState.remoteLen, payloadLen)
-		if tsVal > 0 {
-			atomic.StoreUint32(&h.globalState.remoteTSval, tsVal)
-		}
-		atomic.StoreUint32(&h.globalState.hasRemote, 1)
-	}
+	atomic.StoreUint32(&state.hasRemote, 1)
 }
 
 func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error {
@@ -967,7 +957,7 @@ func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, 
 		srcIP = h.srcIPv6
 	}
 
-	state := h.getFlowState(srcIP, remoteIP, uint16(remotePort))
+	state := h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
 	atomic.StoreUint32(&state.remoteSeq, clientSeq+1)
 	atomic.StoreUint32(&state.remoteLen, 0)
 	if clientTSval > 0 {
@@ -989,7 +979,7 @@ func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, ser
 		srcIP = h.srcIPv6
 	}
 
-	state := h.getFlowState(srcIP, remoteIP, uint16(remotePort))
+	state := h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
 	atomic.StoreUint32(&state.remoteSeq, serverSeq+1)
 	atomic.StoreUint32(&state.remoteLen, 0)
 	if serverTSval > 0 {
@@ -1013,7 +1003,7 @@ func (h *SendHandle) PrewarmFlow(dstIP net.IP, dstPort uint16) {
 		srcIP = h.srcIPv6
 	}
 
-	state := h.getFlowState(srcIP, dstIP, dstPort)
+	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
 	if atomic.CompareAndSwapUint32(&state.synSent, 0, 1) {
 		addr := &net.UDPAddr{IP: dstIP, Port: int(dstPort)}
 		synF := conf.TCPF{SYN: true}
@@ -1043,7 +1033,7 @@ func (h *SendHandle) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
 	} else {
 		srcIP = h.srcIPv6
 	}
-	state := h.getFlowState(srcIP, dstIP, dstPort)
+	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
 	return atomic.LoadUint32(&state.hasRemote) == 1
 }
 
