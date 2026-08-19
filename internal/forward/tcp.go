@@ -7,7 +7,6 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"strings"
-	"time"
 )
 
 func (f *Forward) listenTCP(ctx context.Context) error {
@@ -49,8 +48,6 @@ func (f *Forward) listenTCP(ctx context.Context) error {
 func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
 	strm, err := f.client.TCPByIndex(f.ServerIdx, f.targetAddr)

@@ -6,7 +6,6 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"strings"
-	"time"
 
 	"github.com/txthinking/socks5"
 )
@@ -28,8 +27,6 @@ func (h *Handler) TCPHandle(conn *net.TCPConn, r *socks5.Request) error {
 
 func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	conn.SetNoDelay(true)
-	conn.SetKeepAlive(true)
-	conn.SetKeepAlivePeriod(30 * time.Second)
 
 	strm, err := h.client.TCPByIndex(h.ServerIdx, r.Address())
 	if err != nil {

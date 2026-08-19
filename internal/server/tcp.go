@@ -25,9 +25,14 @@ func (s *Server) handleTCPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 }
 
 func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) error {
+	// Send 1-byte readiness confirmation IMMEDIATELY upon stream acceptance
+	// so client stream handshake is verified without waiting for target DNS/dial.
+	if _, err := strm.Write([]byte{0x00}); err != nil {
+		return err
+	}
+
 	dialer := &net.Dialer{
 		Timeout:   15 * time.Second,
-		KeepAlive: 30 * time.Second,
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -37,8 +42,6 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 	defer func() {
 		conn.Close()
@@ -46,11 +49,6 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 		flog.Debugf("closed TCP connection %s for stream %d", addr, strm.SID())
 	}()
 	flog.Debugf("TCP connection established to %s for stream %d", addr, strm.SID())
-
-	// Send 1-byte readiness confirmation so client stream handshake is verified
-	if _, err := strm.Write([]byte{0x00}); err != nil {
-		return err
-	}
 
 	if err := buffer.RelayTCP(ctx, conn, strm); err != nil && err != io.EOF {
 		msg := err.Error()

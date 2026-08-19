@@ -152,14 +152,30 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	var protocol byte
 
 	// Check if there is an Ethernet header by parsing EtherType
-	etherType := binary.BigEndian.Uint16(data[12:14])
-	if etherType == 0x0800 {
-		ipStart = 14
-		isIPv4 = true
-	} else if etherType == 0x86dd {
-		ipStart = 14
-		isIPv4 = false
-	} else {
+	ipStart = 0
+	if len(data) >= 14 {
+		etherType := binary.BigEndian.Uint16(data[12:14])
+		offset := 14
+		
+		// Handle VLANs (802.1Q: 0x8100, 802.1ad: 0x88A8)
+		for etherType == 0x8100 || etherType == 0x88a8 {
+			if len(data) < offset+4 {
+				return nil, nil, 0, nil
+			}
+			etherType = binary.BigEndian.Uint16(data[offset+2 : offset+4])
+			offset += 4
+		}
+		
+		if etherType == 0x0800 {
+			ipStart = offset
+			isIPv4 = true
+		} else if etherType == 0x86dd {
+			ipStart = offset
+			isIPv4 = false
+		}
+	}
+
+	if ipStart == 0 {
 		// Fallback for direct IP (no Ethernet header, e.g. TUN)
 		version := data[0] >> 4
 		if version == 4 {

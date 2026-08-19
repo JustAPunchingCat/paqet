@@ -28,7 +28,7 @@ func (q *QUIC) setDefaults() {
 		q.IdleTimeout = 30 * time.Second
 	}
 	if q.KeepAlive == 0 {
-		q.KeepAlive = 5 * time.Second // Aggressive keepalive for raw socket stability
+		q.KeepAlive = 0 // Keepalives strictly disabled
 	}
 	if q.InitialStreamWindow == 0 {
 		q.InitialStreamWindow = 1024 * 1024 // 1MB
