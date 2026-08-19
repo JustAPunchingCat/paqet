@@ -148,10 +148,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	isAutoRotate := tc.srvCfg.Hopping.AutoRotate || tc.rootCfg.Hopping.AutoRotate
 	if tc.srvCfg.Hopping.Enabled && isAutoRotate && tc.rootCfg.Network.TCP.Handshake != nil && *tc.rootCfg.Network.TCP.Handshake && tc.srvCfg.Server.Addr != nil {
 		targetIP := tc.srvCfg.Server.Addr.IP
-		for attempt := 0; attempt < 8; attempt++ {
+		for attempt := 0; attempt < 4; attempt++ {
 			port := uint16(pConn.GetCurrentPort())
 			warmed := false
-			for i := 0; i < 8; i++ {
+			for i := 0; i < 4; i++ {
 				if pConn.IsFlowWarmed(targetIP, port) {
 					warmed = true
 					break
@@ -163,8 +163,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 				tc.lastPort = int(port)
 				break
 			}
-			flog.Infof("Auto-rotate: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
-			pConn.ForceHop()
+			if attempt < 3 {
+				flog.Infof("Auto-rotate: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
+				pConn.ForceHop()
+			}
 		}
 	}
 
@@ -208,6 +210,14 @@ func (tc *timedConn) reconnect() {
 	tc.lastRotate = time.Now()
 
 	oldPort := tc.lastPort
+	if tc.srvCfg.Hopping.Enabled && tc.pConn != nil {
+		tc.pConn.ForceHop()
+		newPort := tc.pConn.GetCurrentPort()
+		tc.lastPort = newPort
+		flog.Infof("Auto-rotated destination port :%d -> new port :%d", oldPort, newPort)
+		return
+	}
+
 	if tc.conn != nil {
 		tc.conn.Close()
 	}
