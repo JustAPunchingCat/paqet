@@ -105,16 +105,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
 
-	// Wait for the raw socket flow to be warmed by the background SYN/SYN-ACK handshake.
-	// This prevents transports from blasting data packets into Netfilter before the state is ESTABLISHED,
-	// which would cause Netfilter to drop the packets as INVALID.
+	// Fire the raw socket TCP SYN to warm the connection state for DPI/Netfilter.
+	// We explicitly do NOT block here as per user request to maintain 0-RTT tunnel speeds,
+	// understanding that the first few data packets might be dropped by Netfilter until SYN-ACK arrives.
 	pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
-	for i := 0; i < 150; i++ { // Wait up to 1.5s
-		if pConn.IsFlowWarmed(remoteAddr.IP, uint16(remoteAddr.Port)) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":

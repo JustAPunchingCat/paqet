@@ -47,13 +47,18 @@ int xdp_main(struct xdp_md *ctx)
     if ((void *)(tcp + 1) > data_end) return XDP_PASS;
 
     __u16 dest = bpf_ntohs(tcp->dest);
+    __u16 source = bpf_ntohs(tcp->source);
 
     // --- SAFETY SWITCH ---
     // Never intercept SSH (22). If your VPS uses a custom SSH port, add it here.
-    if (dest == 22) return XDP_PASS;
+    if (dest == 22 || source == 22) return XDP_PASS;
 
-    if (!bpf_map_lookup_elem(&allowed_ports, &dest))
+    // A paqet server receives traffic on `dest` port.
+    // A paqet client receives replies from `source` port.
+    // We check both against our allowed ports.
+    if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
         return XDP_PASS;
+    }
 
     // Filter by Destination IP
     if (l3_proto == ETH_P_IP) {

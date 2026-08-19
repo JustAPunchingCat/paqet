@@ -29,6 +29,7 @@ type RecvHandle struct {
 	allowedNets []*net.IPNet
 	flowUpdater FlowUpdater
 	handshake   bool
+	role        string
 }
 
 func (h *RecvHandle) SetFlowUpdater(u FlowUpdater) {
@@ -132,6 +133,7 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 				return d
 			},
 		},
+		role: role,
 	}, nil
 }
 
@@ -255,6 +257,18 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		tcpFlags := data[transStart+13]
 		isSYN := tcpFlags&0x02 != 0
 		isACK := tcpFlags&0x10 != 0
+		isRST := tcpFlags&0x04 != 0
+
+		// On clients, RST signifies the server's OS rejected our packet (e.g. server restarted and lost flow state).
+		// Returning ErrClosed forcefully terminates the KCP session and triggers an immediate reconnect,
+		// preventing the client from hanging for 30s while KCP DeadLink times out.
+		// On servers, we ignore RSTs since PacketConn is shared across all clients.
+		if isRST {
+			if h.role == "client" {
+				return nil, nil, 0, net.ErrClosed
+			}
+			return nil, nil, 0, nil
+		}
 
 		if h.flowUpdater != nil {
 			var tsVal uint32
