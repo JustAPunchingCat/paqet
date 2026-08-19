@@ -70,10 +70,7 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	flog.Infof("SOCKS5 accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), r.Address(), strm.RemoteAddr())
 	flog.Debugf("SOCKS5 stream %d created for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
 
-	nClient, nRemote, err := buffer.RelayTCPStat(h.ctx, conn, strm)
-	if nRemote == 0 && nClient > 0 {
-		h.client.RotateServerConn(h.ServerIdx)
-	}
+	err = buffer.RelayTCP(h.ctx, conn, strm)
 
 	if err != nil && err != io.EOF {
 		msg := err.Error()
