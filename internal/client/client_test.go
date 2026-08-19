@@ -81,8 +81,7 @@ func (s *mockStrm) SetDeadline(t time.Time) error      { return nil }
 func (s *mockStrm) SetReadDeadline(t time.Time) error  { return nil }
 func (s *mockStrm) SetWriteDeadline(t time.Time) error { return nil }
 
-func TestOpenAndSendProto_SelfHealing_DeadPing(t *testing.T) {
-	pingFailed := false
+func TestOpenAndSendProto_SelfHealing_DeadSession(t *testing.T) {
 	aliveStrmCreated := false
 
 	aliveStrm := &mockStrm{
@@ -91,12 +90,10 @@ func TestOpenAndSendProto_SelfHealing_DeadPing(t *testing.T) {
 	}
 
 	tc := &timedConn{
-		ctx:       context.Background(),
-		lastCheck: time.Now().Add(-10 * time.Second), // simulate idle connection
+		ctx: context.Background(),
 		conn: &mockConn{
-			pingFunc: func(wait bool) error {
-				pingFailed = true
-				return fmt.Errorf("session dead after server reboot")
+			openStrmFunc: func() (tnet.Strm, error) {
+				return nil, fmt.Errorf("session dead after server reboot")
 			},
 			closeFunc: func() error { return nil },
 		},
@@ -108,33 +105,28 @@ func TestOpenAndSendProto_SelfHealing_DeadPing(t *testing.T) {
 	}
 	p := &protocol.Proto{Type: protocol.PTCP, Addr: tAddr}
 
-	// Verify that openAndSendProto detects the dead session via Ping,
+	// Verify that openAndSendProto detects OpenStrm failure on dead session,
 	// recreates the connection, and succeeds.
 	tc.mu.Lock()
-	if time.Since(tc.lastCheck) > 3*time.Second {
-		if err := tc.conn.Ping(true); err != nil {
-			tc.conn.Close()
-			tc.conn = &mockConn{
-				openStrmFunc: func() (tnet.Strm, error) {
-					aliveStrmCreated = true
-					return aliveStrm, nil
-				},
-				pingFunc: func(wait bool) error { return nil },
-			}
-		}
-	}
 	strm, err := tc.conn.OpenStrm()
 	if err != nil {
-		t.Fatalf("failed to open stream on reconnected conn: %v", err)
+		tc.conn.Close()
+		tc.conn = &mockConn{
+			openStrmFunc: func() (tnet.Strm, error) {
+				aliveStrmCreated = true
+				return aliveStrm, nil
+			},
+		}
+		strm, err = tc.conn.OpenStrm()
+		if err != nil {
+			t.Fatalf("failed to open stream on reconnected conn: %v", err)
+		}
 	}
 	if err := p.Write(strm); err != nil {
 		t.Fatalf("failed to write proto on new stream: %v", err)
 	}
 	tc.mu.Unlock()
 
-	if !pingFailed {
-		t.Errorf("expected dead session ping to fail")
-	}
 	if !aliveStrmCreated {
 		t.Errorf("expected alive stream to be created on new connection")
 	}

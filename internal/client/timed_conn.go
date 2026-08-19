@@ -21,7 +21,6 @@ type timedConn struct {
 	pConn      *socket.PacketConn
 	lastPort   int
 	lastRotate time.Time
-	lastCheck  time.Time
 	expire     time.Time
 	ctx        context.Context
 	mu         sync.Mutex
@@ -222,26 +221,9 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		if err != nil {
 			return nil, err
 		}
-		tc.lastCheck = time.Now()
 	}
 
-	// 2. If connection was idle for more than 3 seconds, verify liveness via Ping
-	if time.Since(tc.lastCheck) > 3*time.Second {
-		if err := tc.conn.Ping(true); err != nil {
-			flog.Debugf("connection liveness check failed (%v), reconnecting...", err)
-			tc.conn.Close()
-			tc.conn = nil
-
-			var dialErr error
-			tc.conn, dialErr = tc.createConn()
-			if dialErr != nil {
-				return nil, dialErr
-			}
-		}
-		tc.lastCheck = time.Now()
-	}
-
-	// 3. Open stream on the verified connection
+	// 2. Open stream
 	strm, err := tc.conn.OpenStrm()
 	if err != nil {
 		if tc.conn != nil {
@@ -259,7 +241,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		}
 	}
 
-	// 4. Send protocol header
+	// 3. Send protocol header
 	strm.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	err = p.Write(strm)
 	strm.SetWriteDeadline(time.Time{})
@@ -270,7 +252,6 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		return nil, err
 	}
 
-	tc.lastCheck = time.Now()
 	return strm, nil
 }
 
