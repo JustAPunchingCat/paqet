@@ -70,7 +70,7 @@ servers:
 
       hopping:
         enabled: false      # Enable port hopping
-        auto_rotate: false  # Auto-rotate connection on dead/0-byte streams (default: false)
+        auto_rotate: true   # Auto-detect and rotate blocked/dead ports (pre-flight probe & runtime recovery)
         interval: 180       # Interval in seconds to change ports (default: 180-300)
         warmup: 3           # Pre-warms the link in advance (default: 3)
         ports:              # List of single ports or ranges

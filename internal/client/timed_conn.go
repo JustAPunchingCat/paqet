@@ -145,7 +145,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
-	if tc.srvCfg.Hopping.Enabled && tc.rootCfg.Network.TCP.Handshake != nil && *tc.rootCfg.Network.TCP.Handshake && tc.srvCfg.Server.Addr != nil {
+	isAutoRotate := tc.srvCfg.Hopping.AutoRotate || tc.rootCfg.Hopping.AutoRotate
+	if tc.srvCfg.Hopping.Enabled && isAutoRotate && tc.rootCfg.Network.TCP.Handshake != nil && *tc.rootCfg.Network.TCP.Handshake && tc.srvCfg.Server.Addr != nil {
 		targetIP := tc.srvCfg.Server.Addr.IP
 		for attempt := 0; attempt < 8; attempt++ {
 			port := uint16(pConn.GetCurrentPort())
@@ -158,11 +159,11 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 				time.Sleep(30 * time.Millisecond)
 			}
 			if warmed {
-				flog.Infof("Connection verified open on port :%d (handshake OK)", port)
+				flog.Infof("Auto-rotate: connection verified open on port :%d (handshake OK)", port)
 				tc.lastPort = int(port)
 				break
 			}
-			flog.Debugf("Port :%d blocked by ISP (no SYN-ACK), hopping to next port...", port)
+			flog.Infof("Auto-rotate: port :%d blocked by ISP (no SYN-ACK), testing next port...", port)
 			pConn.ForceHop()
 		}
 	}
