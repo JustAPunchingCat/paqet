@@ -73,6 +73,15 @@ func (p *HoppingPlugin) SetSendHandle(sh *SendHandle) {
 	}
 }
 
+func (p *HoppingPlugin) SetCurrentPort(port int) {
+	if port > 0 {
+		p.currentPort.Store(uint32(port))
+		if p.sendHandle != nil && p.targetIP != nil {
+			p.sendHandle.PrewarmFlow(p.targetIP, uint16(port))
+		}
+	}
+}
+
 func (p *HoppingPlugin) pickNextPort() uint32 {
 	if len(p.ranges) == 0 {
 		return 0

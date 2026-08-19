@@ -59,8 +59,12 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
+	if tc.lastPort > 0 {
+		pConn.SetCurrentPort(tc.lastPort)
+	} else {
+		tc.lastPort = pConn.GetCurrentPort()
+	}
 	tc.pConn = pConn
-	tc.lastPort = pConn.GetCurrentPort()
 	// Guard: close pConn on any error path so background goroutines and file
 	// descriptors are never orphaned when the server is offline or unreachable.
 	success := false
