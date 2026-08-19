@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
@@ -222,45 +223,56 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// 1. If connection is nil, create it
-	if tc.conn == nil {
-		var err error
-		tc.conn, err = tc.createConn()
-		if err != nil {
-			return nil, err
+	for attempt := 0; attempt < 2; attempt++ {
+		// 1. If connection is nil, create it
+		if tc.conn == nil {
+			var err error
+			tc.conn, err = tc.createConn()
+			if err != nil {
+				return nil, err
+			}
 		}
-	}
 
-	// 2. Open stream
-	strm, err := tc.conn.OpenStrm()
-	if err != nil {
-		if tc.conn != nil {
+		// 2. Open stream
+		strm, err := tc.conn.OpenStrm()
+		if err != nil {
 			tc.conn.Close()
 			tc.conn = nil
+			continue
 		}
-		var dialErr error
-		tc.conn, dialErr = tc.createConn()
-		if dialErr != nil {
-			return nil, dialErr
-		}
-		strm, err = tc.conn.OpenStrm()
+
+		// 3. Send protocol header
+		strm.SetWriteDeadline(time.Now().Add(1500 * time.Millisecond))
+		err = p.Write(strm)
+		strm.SetWriteDeadline(time.Time{})
 		if err != nil {
-			return nil, err
+			strm.Close()
+			tc.conn.Close()
+			tc.conn = nil
+			continue
 		}
+
+		// 4. For TCP streams, read the 1-byte readiness confirmation from server
+		// to verify the connection is 100% alive and the remote target was reached.
+		if p.Type == protocol.PTCP {
+			strm.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
+			var ack [1]byte
+			_, err = io.ReadFull(strm, ack[:])
+			strm.SetReadDeadline(time.Time{})
+			if err != nil {
+				// Server was restarted while idle: session is dead
+				flog.Debugf("stale connection detected during stream handshake: %v, re-dialing...", err)
+				strm.Close()
+				tc.conn.Close()
+				tc.conn = nil
+				continue
+			}
+		}
+
+		return strm, nil
 	}
 
-	// 3. Send protocol header
-	strm.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	err = p.Write(strm)
-	strm.SetWriteDeadline(time.Time{})
-	if err != nil {
-		strm.Close()
-		tc.conn.Close()
-		tc.conn = nil
-		return nil, err
-	}
-
-	return strm, nil
+	return nil, fmt.Errorf("failed to open stream after reconnection attempts")
 }
 
 func (tc *timedConn) startPMTUD(conn tnet.Conn, baseMTU, overhead int) {

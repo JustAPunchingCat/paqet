@@ -47,6 +47,11 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	}()
 	flog.Debugf("TCP connection established to %s for stream %d", addr, strm.SID())
 
+	// Send 1-byte readiness confirmation so client stream handshake is verified
+	if _, err := strm.Write([]byte{0x00}); err != nil {
+		return err
+	}
+
 	if err := buffer.RelayTCP(ctx, conn, strm); err != nil && err != io.EOF {
 		msg := err.Error()
 		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {

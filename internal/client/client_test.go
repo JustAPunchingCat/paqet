@@ -85,6 +85,7 @@ func TestOpenAndSendProto_SelfHealing_DeadSession(t *testing.T) {
 	aliveStrmCreated := false
 
 	aliveStrm := &mockStrm{
+		readFunc:  func(b []byte) (int, error) { b[0] = 0x00; return 1, nil },
 		writeFunc: func(b []byte) (int, error) { return len(b), nil },
 		sid:       2,
 	}
@@ -124,6 +125,10 @@ func TestOpenAndSendProto_SelfHealing_DeadSession(t *testing.T) {
 	}
 	if err := p.Write(strm); err != nil {
 		t.Fatalf("failed to write proto on new stream: %v", err)
+	}
+	var ack [1]byte
+	if _, err := strm.Read(ack[:]); err != nil {
+		t.Fatalf("failed to read ack: %v", err)
 	}
 	tc.mu.Unlock()
 
