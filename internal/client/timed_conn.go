@@ -15,14 +15,15 @@ import (
 )
 
 type timedConn struct {
-	rootCfg  *conf.Conf
-	srvCfg   *conf.ServerConfig
-	conn     tnet.Conn
-	pConn    *socket.PacketConn
-	lastPort int
-	expire   time.Time
-	ctx      context.Context
-	mu       sync.Mutex
+	rootCfg    *conf.Conf
+	srvCfg     *conf.ServerConfig
+	conn       tnet.Conn
+	pConn      *socket.PacketConn
+	lastPort   int
+	lastRotate time.Time
+	expire     time.Time
+	ctx        context.Context
+	mu         sync.Mutex
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -178,6 +179,11 @@ func (tc *timedConn) close() {
 func (tc *timedConn) reconnect() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
+	if !tc.lastRotate.IsZero() && time.Since(tc.lastRotate) < 5*time.Second {
+		return
+	}
+	tc.lastRotate = time.Now()
+
 	oldPort := tc.lastPort
 	if tc.conn != nil {
 		tc.conn.Close()
