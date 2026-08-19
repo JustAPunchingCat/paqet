@@ -19,6 +19,9 @@ type Conn struct {
 }
 
 func (c *Conn) OpenStrm() (tnet.Strm, error) {
+	if c.Session == nil || c.Session.IsClosed() {
+		return nil, fmt.Errorf("session is closed")
+	}
 	strm, err := c.Session.OpenStream()
 	if err != nil {
 		return nil, err
