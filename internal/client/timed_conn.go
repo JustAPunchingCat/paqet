@@ -248,30 +248,25 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		}
 
 		// 3. Send protocol header
-		strm.SetWriteDeadline(time.Now().Add(1500 * time.Millisecond))
+		strm.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		err = p.Write(strm)
 		strm.SetWriteDeadline(time.Time{})
 		if err != nil {
 			strm.Close()
-			tc.conn.Close()
-			tc.conn = nil
-			continue
+			return nil, err
 		}
 
 		// 4. For TCP streams, read the 1-byte readiness confirmation from server
 		// to verify the connection is 100% alive and the remote target was reached.
 		if p.Type == protocol.PTCP {
-			strm.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
+			strm.SetReadDeadline(time.Now().Add(15 * time.Second))
 			var ack [1]byte
 			_, err = io.ReadFull(strm, ack[:])
 			strm.SetReadDeadline(time.Time{})
 			if err != nil {
-				// Server was restarted while idle: session is dead
-				flog.Debugf("stale connection detected during stream handshake: %v, re-dialing...", err)
+				flog.Debugf("stream handshake failed (timeout/error): %v", err)
 				strm.Close()
-				tc.conn.Close()
-				tc.conn = nil
-				continue
+				return nil, err
 			}
 		}
 
