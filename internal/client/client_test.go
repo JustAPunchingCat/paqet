@@ -2,9 +2,10 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
-	"paqet/internal/conf"
+	"paqet/internal/pkg/iterator"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"testing"
@@ -14,6 +15,7 @@ import (
 // mockConn implements tnet.Conn for testing
 type mockConn struct {
 	openStrmFunc func() (tnet.Strm, error)
+	pingFunc     func(wait bool) error
 	closeFunc    func() error
 }
 
@@ -25,7 +27,12 @@ func (m *mockConn) OpenStrm() (tnet.Strm, error) {
 }
 
 func (m *mockConn) AcceptStrm() (tnet.Strm, error) { return nil, io.EOF }
-func (m *mockConn) Ping(wait bool) error          { return nil }
+func (m *mockConn) Ping(wait bool) error {
+	if m.pingFunc != nil {
+		return m.pingFunc(wait)
+	}
+	return nil
+}
 func (m *mockConn) Close() error {
 	if m.closeFunc != nil {
 		return m.closeFunc()
@@ -74,45 +81,24 @@ func (s *mockStrm) SetDeadline(t time.Time) error      { return nil }
 func (s *mockStrm) SetReadDeadline(t time.Time) error  { return nil }
 func (s *mockStrm) SetWriteDeadline(t time.Time) error { return nil }
 
-func TestOpenAndSendProto_SelfHealing(t *testing.T) {
-	firstConnDead := true
-	reconnected := false
-
-	tc := &timedConn{
-		ctx: context.Background(),
-		rootCfg: &conf.Conf{
-			Network: conf.Network{},
-		},
-		srvCfg: &conf.ServerConfig{},
-	}
-
-	deadStrm := &mockStrm{
-		writeFunc: func(b []byte) (int, error) {
-			// Simulate write timeout on dead connection
-			return 0, io.ErrUnexpectedEOF
-		},
-		closeFunc: func() error { return nil },
-		sid:       1,
-	}
+func TestOpenAndSendProto_SelfHealing_DeadPing(t *testing.T) {
+	pingFailed := false
+	aliveStrmCreated := false
 
 	aliveStrm := &mockStrm{
-		writeFunc: func(b []byte) (int, error) {
-			return len(b), nil
-		},
-		closeFunc: func() error { return nil },
+		writeFunc: func(b []byte) (int, error) { return len(b), nil },
 		sid:       2,
 	}
 
-	tc.conn = &mockConn{
-		openStrmFunc: func() (tnet.Strm, error) {
-			if firstConnDead {
-				return deadStrm, nil
-			}
-			return aliveStrm, nil
-		},
-		closeFunc: func() error {
-			firstConnDead = false
-			return nil
+	tc := &timedConn{
+		ctx:       context.Background(),
+		lastCheck: time.Now().Add(-10 * time.Second), // simulate idle connection
+		conn: &mockConn{
+			pingFunc: func(wait bool) error {
+				pingFailed = true
+				return fmt.Errorf("session dead after server reboot")
+			},
+			closeFunc: func() error { return nil },
 		},
 	}
 
@@ -122,34 +108,67 @@ func TestOpenAndSendProto_SelfHealing(t *testing.T) {
 	}
 	p := &protocol.Proto{Type: protocol.PTCP, Addr: tAddr}
 
-	// Verify openAndSendProto logic
+	// Verify that openAndSendProto detects the dead session via Ping,
+	// recreates the connection, and succeeds.
 	tc.mu.Lock()
-	strm, err := tc.conn.OpenStrm()
-	if err == nil {
-		strm.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-		err = p.Write(strm)
-		if err != nil {
-			// Write failed -> self heal!
-			strm.Close()
+	if time.Since(tc.lastCheck) > 3*time.Second {
+		if err := tc.conn.Ping(true); err != nil {
 			tc.conn.Close()
-			reconnected = true
 			tc.conn = &mockConn{
 				openStrmFunc: func() (tnet.Strm, error) {
+					aliveStrmCreated = true
 					return aliveStrm, nil
 				},
-			}
-			newStrm, err2 := tc.conn.OpenStrm()
-			if err2 != nil {
-				t.Fatalf("failed to open stream on new conn: %v", err2)
-			}
-			if err3 := p.Write(newStrm); err3 != nil {
-				t.Fatalf("failed to write proto on new conn: %v", err3)
+				pingFunc: func(wait bool) error { return nil },
 			}
 		}
 	}
+	strm, err := tc.conn.OpenStrm()
+	if err != nil {
+		t.Fatalf("failed to open stream on reconnected conn: %v", err)
+	}
+	if err := p.Write(strm); err != nil {
+		t.Fatalf("failed to write proto on new stream: %v", err)
+	}
 	tc.mu.Unlock()
 
-	if !reconnected {
-		t.Errorf("expected connection to self-heal and reconnect")
+	if !pingFailed {
+		t.Errorf("expected dead session ping to fail")
+	}
+	if !aliveStrmCreated {
+		t.Errorf("expected alive stream to be created on new connection")
+	}
+}
+
+func TestClient_MarkServerStale(t *testing.T) {
+	conn1Closed := false
+	conn2Closed := false
+
+	tc1 := &timedConn{
+		conn: &mockConn{
+			closeFunc: func() error { conn1Closed = true; return nil },
+		},
+	}
+	tc2 := &timedConn{
+		conn: &mockConn{
+			closeFunc: func() error { conn2Closed = true; return nil },
+		},
+	}
+
+	c := &Client{
+		iters: []*iterator.Iterator[*timedConn]{
+			{
+				Items: []*timedConn{tc1, tc2},
+			},
+		},
+	}
+
+	c.MarkServerStale(0)
+
+	if !conn1Closed || tc1.conn != nil {
+		t.Errorf("expected tc1 to be marked dead and closed")
+	}
+	if !conn2Closed || tc2.conn != nil {
+		t.Errorf("expected tc2 to be marked dead and closed")
 	}
 }

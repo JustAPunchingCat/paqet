@@ -38,12 +38,16 @@ func (c *Conn) AcceptStrm() (tnet.Strm, error) {
 }
 
 func (c *Conn) Ping(wait bool) error {
+	if c.Session == nil || c.Session.IsClosed() {
+		return fmt.Errorf("session is closed")
+	}
 	strm, err := c.Session.OpenStream()
 	if err != nil {
 		return fmt.Errorf("ping failed: %v", err)
 	}
 	defer strm.Close()
 	if wait {
+		strm.SetDeadline(time.Now().Add(800 * time.Millisecond))
 		p := protocol.Proto{Type: protocol.PPING}
 		err = p.Write(strm)
 		if err != nil {

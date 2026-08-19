@@ -21,6 +21,7 @@ type timedConn struct {
 	pConn      *socket.PacketConn
 	lastPort   int
 	lastRotate time.Time
+	lastCheck  time.Time
 	expire     time.Time
 	ctx        context.Context
 	mu         sync.Mutex
@@ -221,41 +222,45 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		if err != nil {
 			return nil, err
 		}
+		tc.lastCheck = time.Now()
 	}
 
-	// 2. Try opening stream on current connection and writing protocol header
-	strm, err := tc.conn.OpenStrm()
-	if err == nil {
-		strm.SetWriteDeadline(time.Now().Add(1500 * time.Millisecond))
-		err = p.Write(strm)
-		strm.SetWriteDeadline(time.Time{})
-		if err == nil {
-			return strm, nil
+	// 2. If connection was idle for more than 3 seconds, verify liveness via Ping
+	if time.Since(tc.lastCheck) > 3*time.Second {
+		if err := tc.conn.Ping(true); err != nil {
+			flog.Debugf("connection liveness check failed (%v), reconnecting...", err)
+			tc.conn.Close()
+			tc.conn = nil
+
+			var dialErr error
+			tc.conn, dialErr = tc.createConn()
+			if dialErr != nil {
+				return nil, dialErr
+			}
 		}
-		// Write timed out or failed (stale session from server reboot)
-		strm.Close()
+		tc.lastCheck = time.Now()
 	}
 
-	// 3. Current connection is dead, close it and immediately dial fresh connection
-	if tc.conn != nil {
-		tc.conn.Close()
-		tc.conn = nil
-	}
-
-	var dialErr error
-	tc.conn, dialErr = tc.createConn()
-	if dialErr != nil {
-		return nil, dialErr
-	}
-
-	strm, err = tc.conn.OpenStrm()
+	// 3. Open stream on the verified connection
+	strm, err := tc.conn.OpenStrm()
 	if err != nil {
-		tc.conn.Close()
-		tc.conn = nil
-		return nil, err
+		if tc.conn != nil {
+			tc.conn.Close()
+			tc.conn = nil
+		}
+		var dialErr error
+		tc.conn, dialErr = tc.createConn()
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		strm, err = tc.conn.OpenStrm()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	strm.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	// 4. Send protocol header
+	strm.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	err = p.Write(strm)
 	strm.SetWriteDeadline(time.Time{})
 	if err != nil {
@@ -265,7 +270,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		return nil, err
 	}
 
-	flog.Infof("reconnected timedConn slot after server restart")
+	tc.lastCheck = time.Now()
 	return strm, nil
 }
 
