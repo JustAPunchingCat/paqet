@@ -70,11 +70,12 @@ servers:
 
       hopping:
         enabled: false      # Enable port hopping
-        interval: 15        # Interval in seconds to change ports
-        warmup: 5           # Pre-warms the link 5 seconds in advance (default: 3)
+        auto_rotate: false  # Auto-rotate connection on dead/0-byte streams (default: false)
+        interval: 180       # Interval in seconds to change ports (default: 180-300)
+        warmup: 3           # Pre-warms the link in advance (default: 3)
         ports:              # List of single ports or ranges
           - "80"
-          - "10000-20000"   # Recommended: 10000-20000 (Avoids OS ephemeral ports 32768+)
+          - "20000-45000"   # Recommended: 20000-45000
       
       # Obfuscation Configuration (Optional)
       obfuscation:

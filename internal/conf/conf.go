@@ -225,12 +225,13 @@ type PortRange struct {
 }
 
 type Hopping struct {
-	Enabled  bool     `yaml:"enabled"`
-	Interval int      `yaml:"interval"`
-	Warmup   int      `yaml:"warmup"` // Warm up lead time in seconds (default: 3s)
-	Min      int      `yaml:"min"`   // Legacy: single range min
-	Max      int      `yaml:"max"`   // Legacy: single range max
-	Ports    []string `yaml:"ports"` // New: list of ports or ranges ("80", "1000-2000")
+	Enabled    bool     `yaml:"enabled"`
+	AutoRotate bool     `yaml:"auto_rotate"` // Auto-rotate connection on zero-byte responses (default: false)
+	Interval   int      `yaml:"interval"`    // Hopping interval in seconds
+	Warmup     int      `yaml:"warmup"`      // Warm up lead time in seconds (default: 3s)
+	Min        int      `yaml:"min"`         // Legacy: single range min
+	Max        int      `yaml:"max"`         // Legacy: single range max
+	Ports      []string `yaml:"ports"`       // New: list of ports or ranges ("80", "1000-2000")
 }
 
 func (h *Hopping) GetRanges() ([]PortRange, error) {

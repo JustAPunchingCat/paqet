@@ -212,6 +212,16 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, error) {
 	return nil, fmt.Errorf("no healthy connections available for server %d", serverIdx+1)
 }
 
+func (c *Client) IsAutoRotate(serverIdx int) bool {
+	if c.cfg == nil {
+		return false
+	}
+	if serverIdx >= 0 && serverIdx < len(c.cfg.Servers) {
+		return c.cfg.Servers[serverIdx].Hopping.AutoRotate || c.cfg.Hopping.AutoRotate
+	}
+	return c.cfg.Hopping.AutoRotate
+}
+
 func (c *Client) RotateServerConn(serverIdx int) {
 	if serverIdx < 0 || serverIdx >= len(c.iters) {
 		return
