@@ -36,6 +36,7 @@ func (c *Client) TCPByIndex(serverIdx int, addr string) (tnet.Strm, error) {
 		}
 		flog.Debugf("failed to establish TCP stream on connection (attempt %d/%d): %v", attempt+1, maxAttempts, err)
 		lastErr = err
+		c.MarkServerStale(serverIdx)
 	}
 
 	return nil, fmt.Errorf("failed to create stream for TCP %s: %v", addr, lastErr)

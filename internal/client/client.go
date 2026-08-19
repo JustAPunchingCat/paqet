@@ -212,6 +212,14 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 	return nil, nil, fmt.Errorf("no healthy connections available for server %d", serverIdx+1)
 }
 
+func (c *Client) MarkServerStale(serverIdx int) {
+	if serverIdx >= 0 && serverIdx < len(c.iters) && c.iters[serverIdx] != nil {
+		for _, tc := range c.iters[serverIdx].Items {
+			tc.markDead()
+		}
+	}
+}
+
 func (c *Client) IsAutoRotate(serverIdx int) bool {
 	if c.cfg == nil {
 		return false

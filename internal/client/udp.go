@@ -53,6 +53,7 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 		if err != nil {
 			flog.Debugf("failed to establish UDP stream on connection (attempt %d/%d): %v", attempt+1, maxAttempts, err)
 			lastErr = err
+			c.MarkServerStale(serverIdx)
 			continue
 		}
 
@@ -99,6 +100,7 @@ func (c *Client) UDPNew(serverIdx int, tAddr string, unordered bool) (tnet.Strm,
 		if err != nil {
 			flog.Debugf("failed to establish UDP stream on connection (attempt %d/%d): %v", attempt+1, maxAttempts, err)
 			lastErr = err
+			c.MarkServerStale(serverIdx)
 			continue
 		}
 
