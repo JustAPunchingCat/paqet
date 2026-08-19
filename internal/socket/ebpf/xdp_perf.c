@@ -27,6 +27,13 @@ struct {
     __type(value, __u8);
 } allowed_ips_v6 SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u8);
+} config_map SEC(".maps");
+
 SEC("xdp")
 int xdp_main(struct xdp_md *ctx)
 {
@@ -51,11 +58,20 @@ int xdp_main(struct xdp_md *ctx)
     // Never intercept SSH (22). If your VPS uses a custom SSH port, add it here.
     if (dest == 22 || source == 22) return XDP_PASS;
 
-    // A paqet server receives traffic on `dest` port.
-    // A paqet client receives replies from `source` port.
-    // We check both against our allowed ports.
-    if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
-        return XDP_PASS;
+    __u32 zero = 0;
+    __u8 *role = bpf_map_lookup_elem(&config_map, &zero);
+    __u8 is_client = role ? *role : 0;
+
+    if (is_client) {
+        // Client mode: Match if server's port is the source OR dest
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
+            return XDP_PASS;
+        }
+    } else {
+        // Server mode: Strictly match destination port to avoid blocking local outgoing traffic
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
+            return XDP_PASS;
+        }
     }
 
     // Filter by Destination IP

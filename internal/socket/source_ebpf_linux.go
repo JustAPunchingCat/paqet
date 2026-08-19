@@ -220,7 +220,16 @@ func newManager(cfg *conf.Network) (*ebpfManager, error) {
 }
 
 // Helper to initialize common manager fields
-func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketReader, ports, ip4, ip6 *ebpf.Map) *ebpfManager {
+func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketReader, ports, ip4, ip6, configMap *ebpf.Map) *ebpfManager {
+	if configMap != nil {
+		zero := uint32(0)
+		val := uint8(0)
+		if cfg.Role == "client" {
+			val = 1
+		}
+		_ = configMap.Put(&zero, &val)
+	}
+
 	mgr := &ebpfManager{
 		ifaceIndex: cfg.Interface.Index,
 		refCount:   0, // Will be incremented by caller
@@ -264,7 +273,7 @@ func loadRingbuf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &ringbufReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6), nil
+	return initManager(cfg, &objs, l, &ringbufReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.ConfigMap), nil
 }
 
 func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
@@ -294,7 +303,7 @@ func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &ringbufCompatReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6), nil
+	return initManager(cfg, &objs, l, &ringbufCompatReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.ConfigMap), nil
 }
 
 func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
@@ -325,7 +334,7 @@ func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &perfReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6), nil
+	return initManager(cfg, &objs, l, &perfReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.ConfigMap), nil
 }
 
 func (m *ebpfManager) registerPorts(ports []uint16, ch chan []byte) error {
