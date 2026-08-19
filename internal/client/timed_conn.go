@@ -145,31 +145,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
-	isAutoRotate := tc.srvCfg.Hopping.AutoRotate || tc.rootCfg.Hopping.AutoRotate
-	if tc.srvCfg.Hopping.Enabled && isAutoRotate && tc.rootCfg.Network.TCP.Handshake != nil && *tc.rootCfg.Network.TCP.Handshake && tc.srvCfg.Server.Addr != nil {
-		targetIP := tc.srvCfg.Server.Addr.IP
-		for attempt := 0; attempt < 4; attempt++ {
-			port := uint16(pConn.GetCurrentPort())
-			warmed := false
-			for i := 0; i < 4; i++ {
-				if pConn.IsFlowWarmed(targetIP, port) {
-					warmed = true
-					break
-				}
-				time.Sleep(30 * time.Millisecond)
-			}
-			if warmed {
-				flog.Infof("Hopping [%s]: port :%d verified open (handshake OK)", targetIP, port)
-				tc.lastPort = int(port)
-				break
-			}
-			if attempt < 3 {
-				flog.Debugf("Hopping [%s]: port :%d blocked by ISP (no SYN-ACK), testing next port...", targetIP, port)
-				pConn.ForceHop()
-			}
-		}
-	}
-
 	err = tc.sendTCPF(conn)
 	if err != nil {
 		conn.Close() // also releases pConn via the transport Close chain
@@ -215,14 +190,6 @@ func (tc *timedConn) reconnect() {
 	}
 
 	oldPort := tc.lastPort
-	if tc.srvCfg.Hopping.Enabled && tc.pConn != nil {
-		tc.pConn.ForceHop()
-		newPort := tc.pConn.GetCurrentPort()
-		tc.lastPort = newPort
-		flog.Infof("Hopping [%s]: auto-rotated port :%d -> :%d", srvLabel, oldPort, newPort)
-		return
-	}
-
 	if tc.conn != nil {
 		tc.conn.Close()
 	}
@@ -231,9 +198,6 @@ func (tc *timedConn) reconnect() {
 	if err != nil {
 		flog.Debugf("failed to reconnect timedConn [%s] on port %d: %v", srvLabel, oldPort, err)
 		tc.conn = nil
-	} else {
-		newPort := tc.lastPort
-		flog.Infof("Hopping [%s]: auto-rotated port :%d -> :%d", srvLabel, oldPort, newPort)
 	}
 }
 

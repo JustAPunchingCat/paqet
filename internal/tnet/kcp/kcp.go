@@ -2,7 +2,6 @@ package kcp
 
 import (
 	"paqet/internal/conf"
-	"time"
 
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
@@ -44,18 +43,12 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 
 func smuxConf(cfg *conf.KCP, isServer bool) *smux.Config {
 	var sconf = smux.DefaultConfig()
-	sconf.KeepAliveTimeout = 15 * time.Second
-
-	if isServer {
-		// Server is strictly passive: never initiates keepalive pings.
-		// It only responds to client pings and never sends unsolicited probes to dead clients.
-		sconf.KeepAliveDisabled = true
-		sconf.KeepAliveInterval = 0
-	} else {
-		// Client sends keepalives to maintain NAT mappings.
-		sconf.KeepAliveDisabled = false
-		sconf.KeepAliveInterval = 10 * time.Second
-	}
+	// Disable smux synthetic keepalives completely on both client and server.
+	// KCP is an ACK-based reliable protocol that handles user data on demand.
+	// Disabling keepalives eliminates idle packet traffic and prevents false "closed pipe" disconnects.
+	sconf.KeepAliveDisabled = true
+	sconf.KeepAliveInterval = 0
+	sconf.KeepAliveTimeout = 0
 
 	if cfg != nil && cfg.Smuxbuf > 0 {
 		sconf.MaxReceiveBuffer = cfg.Smuxbuf

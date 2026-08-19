@@ -17,9 +17,8 @@ type HoppingPlugin struct {
 	minPort     int
 	isClient    bool
 	label       string
-	targetIP    net.IP
-	sendHandle  *SendHandle
-	autoRotate  bool
+	targetIP   net.IP
+	sendHandle *SendHandle
 }
 
 func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
@@ -49,15 +48,14 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 	}
 
 	hp := &HoppingPlugin{
-		ranges:     ranges,
-		interval:   time.Duration(cfg.Interval) * time.Second,
-		warmup:     warmup,
-		stop:       make(chan struct{}),
-		minPort:    minPort,
-		isClient:   isClient,
-		label:      label,
-		targetIP:   targetIP,
-		autoRotate: cfg.AutoRotate,
+		ranges:   ranges,
+		interval: time.Duration(cfg.Interval) * time.Second,
+		warmup:   warmup,
+		stop:     make(chan struct{}),
+		minPort:  minPort,
+		isClient: isClient,
+		label:    label,
+		targetIP: targetIP,
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -101,27 +99,9 @@ func (p *HoppingPlugin) loop() {
 	for {
 		select {
 		case <-time.After(p.interval - leadTime):
-			var nextPort uint32
-			for attempt := 0; attempt < 4; attempt++ {
-				nextPort = p.pickNextPort()
-				if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
-					p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
-				}
-				if !p.autoRotate || p.sendHandle == nil || p.targetIP == nil {
-					break
-				}
-				// Verify candidate port responsiveness
-				warmed := false
-				for i := 0; i < 4; i++ {
-					time.Sleep(30 * time.Millisecond)
-					if p.sendHandle.IsFlowWarmed(p.targetIP, uint16(nextPort)) {
-						warmed = true
-						break
-					}
-				}
-				if warmed {
-					break
-				}
+			nextPort := p.pickNextPort()
+			if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
+				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
 			}
 
 			select {
