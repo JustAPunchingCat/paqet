@@ -895,7 +895,7 @@ func (h *SendHandle) getSpoofedIP(isIPv4 bool, dstIP net.IP) net.IP {
 }
 
 func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPort uint16) *flowState {
-	key := string(srcIP) + ":" + strconv.Itoa(srcPort) + "->" + string(dstIP) + ":" + strconv.Itoa(int(dstPort))
+	key := srcIP.String() + ":" + strconv.Itoa(srcPort) + "->" + dstIP.String() + ":" + strconv.Itoa(int(dstPort))
 	h.statesMu.Lock()
 	defer h.statesMu.Unlock()
 

@@ -151,9 +151,11 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	var srcIP, dstIP net.IP
 	var protocol byte
 
+	var hasEthernet bool
 	// Check if there is an Ethernet header by parsing EtherType
 	ipStart = 0
 	if len(data) >= 14 {
+		hasEthernet = true
 		etherType := binary.BigEndian.Uint16(data[12:14])
 		offset := 14
 		
@@ -172,10 +174,13 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		} else if etherType == 0x86dd {
 			ipStart = offset
 			isIPv4 = false
+		} else {
+			// It has an ethernet header but is not IPv4/IPv6 (e.g., ARP)
+			return nil, nil, 0, nil
 		}
 	}
 
-	if ipStart == 0 {
+	if !hasEthernet {
 		// Fallback for direct IP (no Ethernet header, e.g. TUN)
 		version := data[0] >> 4
 		if version == 4 {

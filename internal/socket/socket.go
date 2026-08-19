@@ -389,6 +389,12 @@ func (c *PacketConn) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
 	return true
 }
 
+func (c *PacketConn) PrewarmFlow(dstIP net.IP, dstPort uint16) {
+	if c.sendHandle != nil {
+		c.sendHandle.PrewarmFlow(dstIP, dstPort)
+	}
+}
+
 func (c *PacketConn) GetCurrentPort() int {
 	if c.plugins != nil {
 		for _, pl := range c.plugins.plugins {

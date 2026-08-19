@@ -105,6 +105,17 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
 
+	// Wait for the raw socket flow to be warmed by the background SYN/SYN-ACK handshake.
+	// This prevents transports from blasting data packets into Netfilter before the state is ESTABLISHED,
+	// which would cause Netfilter to drop the packets as INVALID.
+	pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
+	for i := 0; i < 150; i++ { // Wait up to 1.5s
+		if pConn.IsFlowWarmed(remoteAddr.IP, uint16(remoteAddr.Port)) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":
 		// Adjust MTU to account for obfuscation overhead
@@ -149,6 +160,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		conn, err = transport.DialProto(best, remoteAddr, &tc.srvCfg.Transport, pConn)
 	default:
 		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)

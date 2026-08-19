@@ -5,7 +5,6 @@ package socket
 import (
 	"fmt"
 	"paqet/internal/conf"
-	"runtime"
 	"strings"
 
 	"github.com/gopacket/gopacket/pcap"
@@ -21,12 +20,10 @@ func newPcapSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
 	}
 
-	// SetDirection is not fully supported on Windows Npcap, so skip it
-	if runtime.GOOS != "windows" {
-		if err := handle.SetDirection(pcap.DirectionIn); err != nil {
-			return nil, fmt.Errorf("failed to set pcap direction in: %v", err)
-		}
-	}
+	// We do not set DirectionIn because in Gateway modes (where paqet binds to the LAN interface
+	// but receives NAT'd packets from the WAN interface), the server's replies will appear as
+	// outgoing packets on the LAN interface. Since we strictly filter by `dst host <our_ip>`,
+	// we will never capture our own injected packets anyway.
 
 	// Base filter: TCP
 	filterParts := []string{"tcp"}
