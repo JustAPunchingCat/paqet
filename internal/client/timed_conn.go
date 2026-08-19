@@ -145,6 +145,28 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
+	if tc.srvCfg.Hopping.Enabled && tc.rootCfg.Network.TCP.Handshake != nil && *tc.rootCfg.Network.TCP.Handshake && tc.srvCfg.Server.Addr != nil {
+		targetIP := tc.srvCfg.Server.Addr.IP
+		for attempt := 0; attempt < 8; attempt++ {
+			port := uint16(pConn.GetCurrentPort())
+			warmed := false
+			for i := 0; i < 8; i++ {
+				if pConn.IsFlowWarmed(targetIP, port) {
+					warmed = true
+					break
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			if warmed {
+				flog.Infof("Connection verified open on port :%d (handshake OK)", port)
+				tc.lastPort = int(port)
+				break
+			}
+			flog.Debugf("Port :%d blocked by ISP (no SYN-ACK), hopping to next port...", port)
+			pConn.ForceHop()
+		}
+	}
+
 	err = tc.sendTCPF(conn)
 	if err != nil {
 		conn.Close() // also releases pConn via the transport Close chain
