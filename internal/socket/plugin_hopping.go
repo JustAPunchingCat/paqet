@@ -19,6 +19,7 @@ type HoppingPlugin struct {
 	label       string
 	targetIP    net.IP
 	sendHandle  *SendHandle
+	autoRotate  bool
 }
 
 func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
@@ -48,14 +49,15 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 	}
 
 	hp := &HoppingPlugin{
-		ranges:   ranges,
-		interval: time.Duration(cfg.Interval) * time.Second,
-		warmup:   warmup,
-		stop:     make(chan struct{}),
-		minPort:  minPort,
-		isClient: isClient,
-		label:    label,
-		targetIP: targetIP,
+		ranges:     ranges,
+		interval:   time.Duration(cfg.Interval) * time.Second,
+		warmup:     warmup,
+		stop:       make(chan struct{}),
+		minPort:    minPort,
+		isClient:   isClient,
+		label:      label,
+		targetIP:   targetIP,
+		autoRotate: cfg.AutoRotate,
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -99,9 +101,27 @@ func (p *HoppingPlugin) loop() {
 	for {
 		select {
 		case <-time.After(p.interval - leadTime):
-			nextPort := p.pickNextPort()
-			if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
-				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
+			var nextPort uint32
+			for attempt := 0; attempt < 4; attempt++ {
+				nextPort = p.pickNextPort()
+				if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
+					p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
+				}
+				if !p.autoRotate || p.sendHandle == nil || p.targetIP == nil {
+					break
+				}
+				// Verify candidate port responsiveness
+				warmed := false
+				for i := 0; i < 4; i++ {
+					time.Sleep(30 * time.Millisecond)
+					if p.sendHandle.IsFlowWarmed(p.targetIP, uint16(nextPort)) {
+						warmed = true
+						break
+					}
+				}
+				if warmed {
+					break
+				}
 			}
 
 			select {
@@ -109,9 +129,9 @@ func (p *HoppingPlugin) loop() {
 				if nextPort > 0 {
 					p.currentPort.Store(nextPort)
 					if p.label != "" {
-						flog.Debugf("Hopping: switched to port %d for %s", nextPort, p.label)
+						flog.Infof("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
 					} else {
-						flog.Debugf("Hopping: switched to port %d", nextPort)
+						flog.Infof("Hopping: interval hopped to port :%d", nextPort)
 					}
 				}
 			case <-p.stop:
