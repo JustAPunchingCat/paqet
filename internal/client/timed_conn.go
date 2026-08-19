@@ -256,17 +256,20 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 			return nil, err
 		}
 
-		// 4. For TCP streams, read the 1-byte readiness confirmation from server
-		// to verify the connection is 100% alive and the remote target was reached.
+		// 4. For TCP streams, read the 1-byte readiness confirmation from server.
+		// The server sends this ACK immediately on stream accept, so a timeout
+		// means the KCP session is dead (e.g. server restarted). Kill and retry once.
 		if p.Type == protocol.PTCP {
-			strm.SetReadDeadline(time.Now().Add(15 * time.Second))
+			strm.SetReadDeadline(time.Now().Add(5 * time.Second))
 			var ack [1]byte
 			_, err = io.ReadFull(strm, ack[:])
 			strm.SetReadDeadline(time.Time{})
 			if err != nil {
-				flog.Debugf("stream handshake failed (timeout/error): %v", err)
+				flog.Debugf("stream handshake failed (session dead, reconnecting): %v", err)
 				strm.Close()
-				return nil, err
+				tc.conn.Close()
+				tc.conn = nil
+				continue
 			}
 		}
 
