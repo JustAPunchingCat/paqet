@@ -44,6 +44,14 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.rootCfg.Network
+	if tc.rootCfg.Network.IPv4.Addr != nil {
+		cloneAddr := *tc.rootCfg.Network.IPv4.Addr
+		netCfg.IPv4.Addr = &cloneAddr
+	}
+	if tc.rootCfg.Network.IPv6.Addr != nil {
+		cloneAddr := *tc.rootCfg.Network.IPv6.Addr
+		netCfg.IPv6.Addr = &cloneAddr
+	}
 	// Use server-specific transport settings (e.g. Key) for this connection
 	netCfg.Transport = &tc.srvCfg.Transport
 	// Explicitly copy spoof config from root
