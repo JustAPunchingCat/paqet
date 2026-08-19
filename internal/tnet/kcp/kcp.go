@@ -44,7 +44,7 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 
 func smuxConf(cfg *conf.KCP, isServer bool) *smux.Config {
 	var sconf = smux.DefaultConfig()
-	sconf.KeepAliveTimeout = 30 * time.Second
+	sconf.KeepAliveTimeout = 15 * time.Second
 
 	if isServer {
 		// Server is strictly passive: never initiates keepalive pings.
