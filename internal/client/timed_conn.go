@@ -210,6 +210,65 @@ func (tc *timedConn) markDead() {
 	}
 }
 
+func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	// 1. If connection is nil, create it
+	if tc.conn == nil {
+		var err error
+		tc.conn, err = tc.createConn()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 2. Try opening stream on current connection and writing protocol header
+	strm, err := tc.conn.OpenStrm()
+	if err == nil {
+		strm.SetWriteDeadline(time.Now().Add(1500 * time.Millisecond))
+		err = p.Write(strm)
+		strm.SetWriteDeadline(time.Time{})
+		if err == nil {
+			return strm, nil
+		}
+		// Write timed out or failed (stale session from server reboot)
+		strm.Close()
+	}
+
+	// 3. Current connection is dead, close it and immediately dial fresh connection
+	if tc.conn != nil {
+		tc.conn.Close()
+		tc.conn = nil
+	}
+
+	var dialErr error
+	tc.conn, dialErr = tc.createConn()
+	if dialErr != nil {
+		return nil, dialErr
+	}
+
+	strm, err = tc.conn.OpenStrm()
+	if err != nil {
+		tc.conn.Close()
+		tc.conn = nil
+		return nil, err
+	}
+
+	strm.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	err = p.Write(strm)
+	strm.SetWriteDeadline(time.Time{})
+	if err != nil {
+		strm.Close()
+		tc.conn.Close()
+		tc.conn = nil
+		return nil, err
+	}
+
+	flog.Infof("reconnected timedConn slot after server restart")
+	return strm, nil
+}
+
 func (tc *timedConn) startPMTUD(conn tnet.Conn, baseMTU, overhead int) {
 	go func() {
 		// Give the connection a moment to stabilize
