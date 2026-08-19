@@ -57,7 +57,7 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 		return nil, false, 0, err
 	}
 
-	ts := newTrackedStrm(&clientStrm{Strm: strm, tc: tc})
+	ts := newTrackedStrm(strm)
 
 	pool.mu.Lock()
 	// Double-check if created concurrently
