@@ -32,88 +32,112 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 	}
 	pool.mu.RUnlock()
 
-	strm, tc, err := c.newStrm(serverIdx)
-	if err != nil {
-		flog.Debugf("failed to create stream for UDP %s -> %s: %v", lAddr, tAddr, err)
-		return nil, false, 0, err
-	}
-
 	taddr, err := tnet.NewAddr(tAddr)
 	if err != nil {
 		flog.Debugf("invalid UDP address %s: %v", tAddr, err)
-		strm.Close()
 		return nil, false, 0, err
 	}
-	p := protocol.Proto{Type: protocol.PUDP, Addr: taddr}
-	strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = p.Write(strm)
-	strm.SetWriteDeadline(time.Time{})
-	if err != nil {
-		flog.Debugf("failed to write UDP protocol header for %s -> %s on stream %d: %v", lAddr, tAddr, strm.SID(), err)
-		strm.Close()
-		if tc != nil {
-			tc.markDead()
+
+	iter := c.iters[serverIdx]
+	maxAttempts := len(iter.Items)
+	if maxAttempts == 0 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		strm, tc, err := c.newStrm(serverIdx)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		return nil, false, 0, err
-	}
 
-	ts := newTrackedStrm(strm)
+		p := protocol.Proto{Type: protocol.PUDP, Addr: taddr}
+		strm.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		err = p.Write(strm)
+		strm.SetWriteDeadline(time.Time{})
+		if err != nil {
+			flog.Debugf("failed to write UDP protocol header for %s -> %s on stream %d (attempt %d/%d): %v", lAddr, tAddr, strm.SID(), attempt+1, maxAttempts, err)
+			strm.Close()
+			if tc != nil {
+				tc.markDead()
+			}
+			lastErr = err
+			continue
+		}
 
-	pool.mu.Lock()
-	// Double-check if created concurrently
-	if existing, exists := pool.strms[key]; exists {
+		ts := newTrackedStrm(strm)
+
+		pool.mu.Lock()
+		// Double-check if created concurrently
+		if existing, exists := pool.strms[key]; exists {
+			pool.mu.Unlock()
+			ts.Close()
+			return existing, false, key, nil
+		}
+		pool.strms[key] = ts
 		pool.mu.Unlock()
-		ts.Close()
-		return existing, false, key, nil
-	}
-	pool.strms[key] = ts
-	pool.mu.Unlock()
 
-	flog.Debugf("established UDP stream %d for %s -> %s", ts.SID(), lAddr, tAddr)
-	return ts, true, key, nil
+		flog.Debugf("established UDP stream %d for %s -> %s", ts.SID(), lAddr, tAddr)
+		return ts, true, key, nil
+	}
+
+	return nil, false, 0, fmt.Errorf("failed to establish UDP stream for %s -> %s: %v", lAddr, tAddr, lastErr)
 }
 
 // UDPNew creates a new UDP stream without caching.
 // Used by forward mode for parallel streams to the same target.
 func (c *Client) UDPNew(serverIdx int, tAddr string, unordered bool) (tnet.Strm, uint64, error) {
-	strm, tc, err := c.newStrm(serverIdx)
-	if err != nil {
-		flog.Debugf("failed to create stream for UDP -> %s: %v", tAddr, err)
-		return nil, 0, err
-	}
-
-	if unordered {
-		if udpStrm, ok := strm.(*udp.Strm); ok {
-			udpStrm.SetUnordered(true)
-		} else if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
-			unorderable.SetUnordered(true)
-		}
-	}
-
 	taddr, err := tnet.NewAddr(tAddr)
 	if err != nil {
 		flog.Debugf("invalid UDP address %s: %v", tAddr, err)
-		strm.Close()
 		return nil, 0, err
 	}
-	p := protocol.Proto{Type: protocol.PUDP, Addr: taddr}
-	strm.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err = p.Write(strm)
-	strm.SetWriteDeadline(time.Time{})
-	if err != nil {
-		flog.Debugf("failed to write UDP protocol header for -> %s on stream %d: %v", tAddr, strm.SID(), err)
-		strm.Close()
-		if tc != nil {
-			tc.markDead()
+
+	iter := c.iters[serverIdx]
+	maxAttempts := len(iter.Items)
+	if maxAttempts == 0 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		strm, tc, err := c.newStrm(serverIdx)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		return nil, 0, err
+
+		if unordered {
+			if udpStrm, ok := strm.(*udp.Strm); ok {
+				udpStrm.SetUnordered(true)
+			} else if unorderable, ok := strm.(interface{ SetUnordered(bool) }); ok {
+				unorderable.SetUnordered(true)
+			}
+		}
+
+		p := protocol.Proto{Type: protocol.PUDP, Addr: taddr}
+		strm.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		err = p.Write(strm)
+		strm.SetWriteDeadline(time.Time{})
+		if err != nil {
+			flog.Debugf("failed to write UDP protocol header for -> %s on stream %d (attempt %d/%d): %v", tAddr, strm.SID(), attempt+1, maxAttempts, err)
+			strm.Close()
+			if tc != nil {
+				tc.markDead()
+			}
+			lastErr = err
+			continue
+		}
+
+		// Generate unique key for tracking (not stored in pool)
+		key := atomic.AddUint64(&udpStreamCounter, 1)
+
+		flog.Debugf("established UDP stream %d for -> %s", strm.SID(), tAddr)
+		return strm, key, nil
 	}
 
-	// Generate unique key for tracking (not stored in pool)
-	key := atomic.AddUint64(&udpStreamCounter, 1)
-
-	flog.Debugf("established UDP stream %d for -> %s", strm.SID(), tAddr)
-	return strm, key, nil
+	return nil, 0, fmt.Errorf("failed to create UDP stream for -> %s: %v", tAddr, lastErr)
 }
 
 // CloseUDPStream closes a stream directly (for UDPNew streams).
