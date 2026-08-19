@@ -205,15 +205,6 @@ func (tc *timedConn) reconnect() {
 	}
 }
 
-func (tc *timedConn) markDead() {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	if tc.conn != nil {
-		tc.conn.Close()
-		tc.conn = nil
-	}
-}
-
 func (tc *timedConn) startPMTUD(conn tnet.Conn, baseMTU, overhead int) {
 	go func() {
 		// Give the connection a moment to stabilize

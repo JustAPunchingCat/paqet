@@ -32,7 +32,7 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 	}
 	pool.mu.RUnlock()
 
-	strm, tc, err := c.newStrm(serverIdx)
+	strm, err := c.newStrm(serverIdx)
 	if err != nil {
 		flog.Debugf("failed to create stream for UDP %s -> %s: %v", lAddr, tAddr, err)
 		return nil, false, 0, err
@@ -49,9 +49,6 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 	if err != nil {
 		flog.Debugf("failed to write UDP protocol header for %s -> %s on stream %d: %v", lAddr, tAddr, strm.SID(), err)
 		strm.Close()
-		if tc != nil {
-			tc.markDead()
-		}
 		return nil, false, 0, err
 	}
 
@@ -74,7 +71,7 @@ func (c *Client) UDPByIndex(serverIdx int, lAddr, tAddr string) (tnet.Strm, bool
 // UDPNew creates a new UDP stream without caching.
 // Used by forward mode for parallel streams to the same target.
 func (c *Client) UDPNew(serverIdx int, tAddr string, unordered bool) (tnet.Strm, uint64, error) {
-	strm, tc, err := c.newStrm(serverIdx)
+	strm, err := c.newStrm(serverIdx)
 	if err != nil {
 		flog.Debugf("failed to create stream for UDP -> %s: %v", tAddr, err)
 		return nil, 0, err
@@ -99,9 +96,6 @@ func (c *Client) UDPNew(serverIdx int, tAddr string, unordered bool) (tnet.Strm,
 	if err != nil {
 		flog.Debugf("failed to write UDP protocol header for -> %s on stream %d: %v", tAddr, strm.SID(), err)
 		strm.Close()
-		if tc != nil {
-			tc.markDead()
-		}
 		return nil, 0, err
 	}
 

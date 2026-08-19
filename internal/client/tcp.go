@@ -11,7 +11,7 @@ func (c *Client) TCP(addr string) (tnet.Strm, error) {
 }
 
 func (c *Client) TCPByIndex(serverIdx int, addr string) (tnet.Strm, error) {
-	strm, tc, err := c.newStrm(serverIdx)
+	strm, err := c.newStrm(serverIdx)
 	if err != nil {
 		flog.Debugf("failed to create stream for TCP %s: %v", addr, err)
 		return nil, err
@@ -29,9 +29,6 @@ func (c *Client) TCPByIndex(serverIdx int, addr string) (tnet.Strm, error) {
 	if err != nil {
 		flog.Debugf("failed to write TCP protocol header for %s on stream %d: %v", addr, strm.SID(), err)
 		strm.Close()
-		if tc != nil {
-			tc.markDead()
-		}
 		return nil, err
 	}
 
