@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
@@ -242,6 +241,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		// 2. Open stream
 		strm, err := tc.conn.OpenStrm()
 		if err != nil {
+			// smux session is dead (server restarted or KCP DeadLink)
 			tc.conn.Close()
 			tc.conn = nil
 			continue
@@ -253,29 +253,16 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		strm.SetWriteDeadline(time.Time{})
 		if err != nil {
 			strm.Close()
-			return nil, err
+			tc.conn.Close()
+			tc.conn = nil
+			continue
 		}
 
-		// 4. For TCP streams, read the 1-byte readiness confirmation from server.
-		// The server sends this ACK immediately on stream accept, so a timeout
-		// means the KCP session is dead (e.g. server restarted). Kill and retry once.
-		if p.Type == protocol.PTCP {
-			strm.SetReadDeadline(time.Now().Add(5 * time.Second))
-			var ack [1]byte
-			_, err = io.ReadFull(strm, ack[:])
-			strm.SetReadDeadline(time.Time{})
-			if err != nil {
-				flog.Debugf("stream handshake failed (session dead, reconnecting): %v", err)
-				strm.Close()
-				tc.conn.Close()
-				tc.conn = nil
-				continue
-			}
-		}
-
+		// Stream is ready. KCP ARQ guarantees delivery; DPI warm-up is handled by
+		// PrewarmFlow (sends SYN). If the DPI drops early KCP packets, KCP retransmits
+		// naturally within ~400ms. Server restart is detected via RST in recv_handle.go.
 		return strm, nil
 	}
 
 	return nil, fmt.Errorf("failed to open stream after reconnection attempts")
 }
-

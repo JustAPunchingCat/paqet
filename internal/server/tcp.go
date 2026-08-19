@@ -25,14 +25,8 @@ func (s *Server) handleTCPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 }
 
 func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) error {
-	// Send 1-byte readiness confirmation IMMEDIATELY upon stream acceptance
-	// so client stream handshake is verified without waiting for target DNS/dial.
-	if _, err := strm.Write([]byte{0x00}); err != nil {
-		return err
-	}
-
 	dialer := &net.Dialer{
-		Timeout:   15 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
