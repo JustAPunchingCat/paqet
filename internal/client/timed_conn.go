@@ -192,6 +192,9 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 func (tc *timedConn) close() {
 	if tc.conn != nil {
 		tc.conn.Close()
+		if tc.pConn != nil {
+			tc.pConn.Close()
+		}
 	}
 }
 
@@ -211,6 +214,9 @@ func (tc *timedConn) reconnect() {
 	oldPort := tc.lastPort
 	if tc.conn != nil {
 		tc.conn.Close()
+		if tc.pConn != nil {
+			tc.pConn.Close()
+		}
 	}
 	var err error
 	tc.conn, err = tc.createConn()
@@ -225,7 +231,11 @@ func (tc *timedConn) markDead() {
 	defer tc.mu.Unlock()
 	if tc.conn != nil {
 		tc.conn.Close()
+		if tc.pConn != nil {
+			tc.pConn.Close()
+		}
 		tc.conn = nil
+		tc.pConn = nil
 	}
 }
 
@@ -248,7 +258,11 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		if err != nil {
 			// smux session is dead (server restarted or KCP DeadLink)
 			tc.conn.Close()
+			if tc.pConn != nil {
+				tc.pConn.Close()
+			}
 			tc.conn = nil
+			tc.pConn = nil
 			continue
 		}
 
@@ -259,7 +273,11 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		if err != nil {
 			strm.Close()
 			tc.conn.Close()
+			if tc.pConn != nil {
+				tc.pConn.Close()
+			}
 			tc.conn = nil
+			tc.pConn = nil
 			continue
 		}
 
@@ -290,7 +308,11 @@ func (tc *timedConn) idleCheckLoop() {
 			tc.mu.Lock()
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 10*time.Second {
 				tc.conn.Close()
+				if tc.pConn != nil {
+					tc.pConn.Close()
+				}
 				tc.conn = nil
+				tc.pConn = nil
 				tc.lastIdle = time.Time{}
 			}
 			tc.mu.Unlock()

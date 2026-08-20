@@ -326,10 +326,10 @@ func (c *PacketConn) Close() error {
 		c.plugins.Close()
 
 		if c.sendHandle != nil {
-			go c.sendHandle.Close()
+			c.sendHandle.Close()
 		}
 		if c.recvHandle != nil {
-			go c.recvHandle.Close()
+			c.recvHandle.Close()
 		}
 	})
 	return nil
