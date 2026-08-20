@@ -46,5 +46,6 @@ func initialize(cfg *conf.Conf) {
 		cfg.Log.Level = int(flog.Debug)
 	}
 	flog.SetLevel(cfg.Log.Level)
+	flog.SetTrace(cfg.Log.Trace)
 	buffer.Initialize(cfg.Transport.TCPBuf, cfg.Transport.UDPBuf)
 }

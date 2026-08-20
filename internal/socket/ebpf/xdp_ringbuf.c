@@ -64,9 +64,21 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *role = bpf_map_lookup_elem(&config_map, &zero);
     __u8 is_client = role ? *role : 0;
 
-    if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
-        return XDP_PASS;
+    if (is_client) {
+        // Client: match if the registered port is the source OR dest. The client's
+        // own injected packets loop back through the bridge (source == registered
+        // port), and server replies arrive with dest == registered port.
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
+            return XDP_PASS;
+        }
+    } else {
+        // Server: strictly match destination port to avoid blocking local outgoing traffic.
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
+            return XDP_PASS;
+        }
     }
+
+
 
     // Filter by Destination IP
     if (l3_proto == ETH_P_IP) {

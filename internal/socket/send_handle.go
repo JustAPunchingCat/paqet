@@ -761,6 +761,8 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	binary.BigEndian.PutUint16(buf[tcpStart+16:tcpStart+18], tcpChecksum)
 
 	// Inject the packet
+	flog.Tracef("send %s:%d -> %s:%d syn=%v ack=%v rst=%v psh=%v seq=%d payload=%d",
+		srcIP, srcPort, dstIP, dstPort, f.SYN, f.ACK, f.RST, f.PSH, seq, len(payload))
 	err := h.injector.WritePacketData(buf[:totalLen])
 	if err != nil {
 		if strings.Contains(err.Error(), "device attached to the system is not functioning") {

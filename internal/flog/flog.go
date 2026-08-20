@@ -18,9 +18,21 @@ const (
 )
 
 var (
-	minLevel = Info
-	logCh    = make(chan string, 1024)
+	minLevel  = Info
+	traceMode = false
+	logCh     = make(chan string, 1024)
 )
+
+// SetTrace enables verbose packet-level tracing regardless of log level.
+func SetTrace(on bool) { traceMode = on }
+
+// Tracef logs only when trace mode is enabled, at Debug level.
+func Tracef(format string, args ...any) {
+	if !traceMode {
+		return
+	}
+	logf(Debug, "[trace] "+format, args...)
+}
 
 func init() {
 

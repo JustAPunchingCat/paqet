@@ -1,9 +1,9 @@
 module paqet
 
-go 1.25
+go 1.25.0
 
 require (
-	github.com/cilium/ebpf v0.20.0
+	github.com/cilium/ebpf v0.22.0
 	github.com/coreos/go-iptables v0.8.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/gopacket/gopacket v1.5.0
@@ -25,6 +25,6 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/txthinking/runnergroup v0.0.0-20250224021307-5864ffeb65ae // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )

@@ -175,27 +175,20 @@ func (c *Client) UDPDatagramByIndex(serverIdx int, lAddr, tAddr string) (*UDPDat
 // UDPDatagramNew creates a new datagram-based UDP session if the transport supports it.
 // Returns nil if datagrams are not supported (caller should fall back to streams).
 func (c *Client) UDPDatagramNew(ctx context.Context, serverIdx int, tAddr string) (*UDPDatagramSession, error) {
-	// Get a connection and check if it supports datagrams
-	iter := c.iters[serverIdx]
-	if iter == nil {
-		return nil, nil
-	}
-	// Get a connection (reuse existing logic)
-	tc := iter.Next()
-	if tc == nil || tc.conn == nil {
-		return nil, nil
+	// Get a stream and connection using standard reconnect logic
+	strm, tc, err := c.newStrm(serverIdx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stream for datagram: %w", err)
 	}
 
 	// Ensure the underlying transport actually supports boundary-less datagrams
+	tc.mu.Lock()
 	if dconn, ok := tc.conn.(interface{ SupportsDatagrams() bool }); !ok || !dconn.SupportsDatagrams() {
+		tc.mu.Unlock()
+		strm.Close()
 		return nil, fmt.Errorf("transport does not support datagram mode")
 	}
-
-	// Open a control stream to register the datagram session
-	strm, err := tc.conn.OpenStrm()
-	if err != nil {
-		return nil, err
-	}
+	tc.mu.Unlock()
 
 	// Enable unordered mode on the client side too
 	if udpStrm, ok := strm.(*udp.Strm); ok {

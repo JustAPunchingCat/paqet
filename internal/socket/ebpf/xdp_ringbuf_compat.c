@@ -63,8 +63,19 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *role = bpf_map_lookup_elem(&config_map, &zero);
     __u8 is_client = role ? *role : 0;
 
-    if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
-        return XDP_PASS;
+    if (is_client) {
+        // Client: match if the registered port is the source OR dest. The client's
+        // own injected packets loop back through the bridge (source == registered
+        // port), and server replies arrive with dest == registered port. Filtering
+        // only by dest lets the looped-back packets hit the OS and break the flow.
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
+            return XDP_PASS;
+        }
+    } else {
+        // Server: strictly match destination port to avoid blocking local outgoing traffic.
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
+            return XDP_PASS;
+        }
     }
 
     // Filter by Destination IP
@@ -84,6 +95,8 @@ int xdp_main(struct xdp_md *ctx)
     #define RES_SIZE (4 + CAP_LEN)
     
     void *buf = bpf_ringbuf_reserve(&packets, RES_SIZE, 0);
+    // Drop on a full ringbuf: passing it to the kernel lets the OS emit an RST,
+    // which tears down the tunnel. KCP will retransmit the lost data naturally.
     if (!buf) return XDP_DROP;
 
     // Write the actual length at the start

@@ -296,6 +296,8 @@ func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
+	flog.Tracef("ebpf XDP attached: driver=%s iface=%d generic=%v", cfg.Driver, cfg.Interface.Index, cfg.Driver == "ebpf-generic")
+
 	rd, err := ringbuf.NewReader(objs.Packets)
 	if err != nil {
 		l.Close()
@@ -409,6 +411,8 @@ func (m *ebpfManager) dispatch() {
 			m.mu.RLock()
 			ch, ok := m.listeners[port]
 			m.mu.RUnlock()
+
+			flog.Tracef("ebpf dispatch: port=%d listener=%v len=%d", port, ok, len(record.RawSample))
 
 			if ok {
 				// Copy data because the ringbuf memory might be reused

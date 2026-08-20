@@ -259,6 +259,9 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		isACK := tcpFlags&0x10 != 0
 		isRST := tcpFlags&0x04 != 0
 
+		flog.Tracef("recv %s:%d -> %s:%d flags=0x%02x syn=%v ack=%v rst=%v payload=%d",
+			srcIP, srcPort, dstIP, dstPort, tcpFlags, isSYN, isACK, isRST, len(data)-transStart-tcpLen)
+
 		// On clients, RST signifies the server's OS rejected our packet (e.g. server restarted and lost flow state).
 		// Returning ErrClosed forcefully terminates the KCP session and triggers an immediate reconnect,
 		// preventing the client from hanging for 30s while KCP DeadLink times out.

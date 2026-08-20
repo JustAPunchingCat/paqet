@@ -6,6 +6,7 @@ import (
 
 type Log struct {
 	Level_ string `yaml:"level"`
+	Trace  bool   `yaml:"trace"`
 
 	Level int `yaml:"-"`
 }

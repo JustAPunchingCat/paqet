@@ -176,10 +176,8 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 
 		strm, err := tc.conn.OpenStrm()
 		if err == nil {
-			tc.activeStreams++
-			tc.lastIdle = time.Time{}
 			tc.mu.Unlock()
-			return &idleTrackedStrm{Strm: strm, tc: tc}, tc, nil
+			return strm, tc, nil
 		}
 
 		flog.Debugf("failed to open stream, reconnecting: %v", err)

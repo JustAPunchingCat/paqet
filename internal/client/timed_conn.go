@@ -284,12 +284,10 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		// Stream is ready. KCP ARQ guarantees delivery; DPI warm-up is handled by
 		// PrewarmFlow (sends SYN). If the DPI drops early KCP packets, KCP retransmits
 		// naturally within ~400ms. Server restart is detected via RST in recv_handle.go.
-		
-		tc.mu.Lock()
+		// NOTE: tc.mu is already held (locked at function entry, deferred unlock) — do not re-lock.
 		tc.activeStreams++
 		tc.lastIdle = time.Time{}
-		tc.mu.Unlock()
-		
+
 		return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 	}
 
