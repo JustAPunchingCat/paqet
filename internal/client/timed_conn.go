@@ -104,10 +104,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
 
-	// Fire the raw socket TCP SYN to warm the connection state for DPI/Netfilter.
-	// We explicitly do NOT block here as per user request to maintain 0-RTT tunnel speeds,
-	// understanding that the first few data packets might be dropped by Netfilter until SYN-ACK arrives.
-	pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
+	// The user requested not to depend on a fake TCP handshake.
+	// We send KCP data directly to open ports (eBPF drops it before the OS sees it to prevent RSTs).
 
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":
