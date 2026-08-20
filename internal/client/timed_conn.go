@@ -39,6 +39,8 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 		return nil, err
 	}
 
+	go tc.healthCheckLoop()
+
 	return &tc, nil
 }
 
@@ -265,4 +267,32 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	}
 
 	return nil, fmt.Errorf("failed to open stream after reconnection attempts")
+}
+
+func (tc *timedConn) healthCheckLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-tc.ctx.Done():
+			return
+		case <-ticker.C:
+			tc.mu.Lock()
+			conn := tc.conn
+			tc.mu.Unlock()
+
+			if conn == nil {
+				continue
+			}
+
+			// Send a ping and wait for response.
+			// If the server rebooted, KCP will have a mismatched session
+			// and won't respond to smux pings, causing this to time out.
+			if err := conn.Ping(true); err != nil {
+				flog.Debugf("health check failed: %v. Marking connection dead.", err)
+				tc.markDead()
+			}
+		}
+	}
 }
