@@ -28,7 +28,9 @@ struct vlan_hdr {
 
 static __always_inline int parse_tcp(void *data, void *data_end,
                                      struct tcphdr **tcp,
+                                     __u32 *src_ipv4,
                                      __u32 *dst_ipv4,
+                                     struct in6_addr *src_ipv6,
                                      struct in6_addr *dst_ipv6,
                                      __u16 *l3_proto)
 {
@@ -78,6 +80,7 @@ static __always_inline int parse_tcp(void *data, void *data_end,
 
         *tcp = t;
         *l3_proto = ETH_P_IP;
+        *src_ipv4 = ip->saddr;
         *dst_ipv4 = ip->daddr;
         return 1;
     } else if (h_proto == bpf_htons(ETH_P_IPV6)) {
@@ -92,6 +95,7 @@ static __always_inline int parse_tcp(void *data, void *data_end,
 
         *tcp = t;
         *l3_proto = ETH_P_IPV6;
+        *src_ipv6 = ip6->saddr;
         *dst_ipv6 = ip6->daddr;
         return 1;
     }

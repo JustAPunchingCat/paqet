@@ -36,6 +36,25 @@ func (h *RecvHandle) SetFlowUpdater(u FlowUpdater) {
 	h.flowUpdater = u
 }
 
+// isAllowed reports whether ip is permitted by the client allowlist.
+// An empty allowlist means "allow all".
+func (h *RecvHandle) isAllowed(ip net.IP) bool {
+	if len(h.allowedIPs) == 0 && len(h.allowedNets) == 0 {
+		return true
+	}
+	for _, a := range h.allowedIPs {
+		if a.Equal(ip) {
+			return true
+		}
+	}
+	for _, n := range h.allowedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 type packetDecoder struct {
 	eth     layers.Ethernet
 	ip4     layers.IPv4
@@ -228,6 +247,25 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		dstIP = net.IP(data[ipStart+24 : ipStart+40])
 	}
 
+	// Reverse-map a spoofed source IP to the real client IP before making any
+	// allowlist decision or responding with the handshake.
+	realIP := srcIP
+	if len(h.mappings) > 0 {
+		for _, m := range h.mappings {
+			if m.network.Contains(srcIP) {
+				realIP = m.realIP
+				break
+			}
+		}
+	}
+
+	// Enforce the client allowlist before responding to anything (the stateless
+	// SYN-ACK handshake included), so scanners and unknown IPs never get a reply.
+	// An empty allowlist means "allow all".
+	if !h.isAllowed(realIP) {
+		return nil, nil, 0, nil
+	}
+
 	// Only process TCP (6) or UDP (17)
 	if protocol != 6 && protocol != 17 {
 		return nil, nil, 0, nil
@@ -332,44 +370,12 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	}
 
 	addr := &net.UDPAddr{
-		IP:   srcIP,
+		IP:   realIP,
 		Port: srcPort,
-	}
-
-	// Overwrite source IP if it matches a spoof mapping
-	if len(h.mappings) > 0 {
-		for _, m := range h.mappings {
-			if m.network.Contains(addr.IP) {
-				addr.IP = m.realIP
-				break
-			}
-		}
 	}
 
 	if len(payload) == 0 {
 		return nil, addr, dstPort, nil
-	}
-
-	// Enforce Allowed IPs (only if explicitly configured)
-	if len(h.allowedIPs) > 0 || len(h.allowedNets) > 0 {
-		allowed := false
-		for _, ip := range h.allowedIPs {
-			if ip.Equal(addr.IP) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			for _, net := range h.allowedNets {
-				if net.Contains(addr.IP) {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed {
-			return nil, nil, 0, nil // Silently ignore the packet without killing the read loop
-		}
 	}
 
 	return payload, addr, dstPort, nil

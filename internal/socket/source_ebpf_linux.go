@@ -35,9 +35,11 @@ type ebpfManager struct {
 	reader PacketReader
 
 	// Maps
-	portsMap *ebpf.Map
-	ip4Map   *ebpf.Map
-	ip6Map   *ebpf.Map
+	portsMap     *ebpf.Map
+	ip4Map       *ebpf.Map
+	ip6Map       *ebpf.Map
+	clientIP4Map *ebpf.Map
+	clientIP6Map *ebpf.Map
 
 	// Dispatcher
 	listeners map[uint16]chan []byte
@@ -220,7 +222,7 @@ func newManager(cfg *conf.Network) (*ebpfManager, error) {
 }
 
 // Helper to initialize common manager fields
-func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketReader, ports, ip4, ip6, configMap *ebpf.Map) *ebpfManager {
+func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketReader, ports, ip4, ip6, clientIP4, clientIP6, configMap *ebpf.Map) *ebpfManager {
 	if configMap != nil {
 		zero := uint32(0)
 		val := uint8(0)
@@ -231,19 +233,82 @@ func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketR
 	}
 
 	mgr := &ebpfManager{
-		ifaceIndex: cfg.Interface.Index,
-		refCount:   0, // Will be incremented by caller
-		objs:       objs,
-		link:       link,
-		reader:     rd,
-		portsMap:   ports,
-		ip4Map:     ip4,
-		ip6Map:     ip6,
-		listeners:  make(map[uint16]chan []byte),
-		done:       make(chan struct{}),
+		ifaceIndex:   cfg.Interface.Index,
+		refCount:     0, // Will be incremented by caller
+		objs:         objs,
+		link:         link,
+		reader:       rd,
+		portsMap:     ports,
+		ip4Map:       ip4,
+		ip6Map:       ip6,
+		clientIP4Map: clientIP4,
+		clientIP6Map: clientIP6,
+		listeners:    make(map[uint16]chan []byte),
+		done:         make(chan struct{}),
 	}
+
+	mgr.configureClientAllowlist(cfg, configMap)
+
 	go mgr.dispatch()
 	return mgr
+}
+
+// configureClientAllowlist populates the eBPF source-IP allowlist maps and sets
+// config_map[1] to enable the early drop. HASH maps can only represent exact
+// IPs (not CIDRs), so the eBPF drop is only armed when every configured entry
+// is an exact IP that was added successfully. Empty lists and CIDR-containing
+// lists leave the flag at zero (allow all in eBPF); the Go layer enforces the
+// full allowlist either way.
+func (m *ebpfManager) configureClientAllowlist(cfg *conf.Network, configMap *ebpf.Map) {
+	// eBPF inspects the raw wire source IP and cannot reverse-map spoofed
+	// clients, so the early drop would wrongly reject them. When spoofing is
+	// enabled, leave the eBPF filter off and let the Go layer enforce the
+	// allowlist against the reverse-mapped (real) client IP.
+	if cfg.Spoof != nil && cfg.Spoof.Enabled {
+		return
+	}
+	if len(cfg.AllowedClientIPs) == 0 {
+		return
+	}
+
+	allExact := true
+	for _, s := range cfg.AllowedClientIPs {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			allExact = false
+			continue
+		}
+		if v4 := ip.To4(); v4 != nil {
+			if m.clientIP4Map == nil {
+				allExact = false
+				continue
+			}
+			var key [4]byte
+			copy(key[:], v4)
+			val := uint8(1)
+			if err := m.clientIP4Map.Put(&key, &val); err != nil {
+				flog.Warnf("failed to add client IP %s to eBPF allowlist: %v", s, err)
+				allExact = false
+			}
+		} else {
+			if m.clientIP6Map == nil {
+				allExact = false
+				continue
+			}
+			val := uint8(1)
+			if err := m.clientIP6Map.Put(ip.To16(), &val); err != nil {
+				flog.Warnf("failed to add client IP %s to eBPF allowlist: %v", s, err)
+				allExact = false
+			}
+		}
+	}
+
+	if !allExact || configMap == nil {
+		return
+	}
+	one := uint32(1)
+	on := uint8(1)
+	_ = configMap.Put(&one, &on)
 }
 
 func loadRingbuf(cfg *conf.Network) (*ebpfManager, error) {
@@ -273,7 +338,7 @@ func loadRingbuf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &ringbufReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.ConfigMap), nil
+	return initManager(cfg, &objs, l, &ringbufReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap), nil
 }
 
 func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
@@ -305,7 +370,7 @@ func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &ringbufCompatReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.ConfigMap), nil
+	return initManager(cfg, &objs, l, &ringbufCompatReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap), nil
 }
 
 func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
@@ -336,7 +401,7 @@ func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &perfReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.ConfigMap), nil
+	return initManager(cfg, &objs, l, &perfReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap), nil
 }
 
 func (m *ebpfManager) registerPorts(ports []uint16, ch chan []byte) error {
