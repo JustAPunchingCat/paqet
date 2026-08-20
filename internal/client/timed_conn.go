@@ -15,17 +15,25 @@ import (
 )
 
 type timedConn struct {
-	rootCfg *conf.Conf
-	srvCfg  *conf.ServerConfig
-	conn    tnet.Conn
-	expire  time.Time
-	ctx     context.Context
-	mu      sync.Mutex
+	rootCfg    *conf.Conf
+	srvCfg     *conf.ServerConfig
+	conn       tnet.Conn
+	pConn      *socket.PacketConn
+	lastPort   int
+	lastRotate time.Time
+	expire     time.Time
+	ctx        context.Context
+	mu         sync.Mutex
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
+	tc := timedConn{
+		ctx:     ctx,
+		rootCfg: rootCfg,
+		srvCfg:  srvCfg,
+	}
+
 	var err error
-	tc := timedConn{rootCfg: rootCfg, srvCfg: srvCfg, ctx: ctx}
 	tc.conn, err = tc.createConn()
 	if err != nil {
 		return nil, err
@@ -36,6 +44,14 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg := tc.rootCfg.Network
+	if tc.rootCfg.Network.IPv4.Addr != nil {
+		cloneAddr := *tc.rootCfg.Network.IPv4.Addr
+		netCfg.IPv4.Addr = &cloneAddr
+	}
+	if tc.rootCfg.Network.IPv6.Addr != nil {
+		cloneAddr := *tc.rootCfg.Network.IPv6.Addr
+		netCfg.IPv6.Addr = &cloneAddr
+	}
 	// Use server-specific transport settings (e.g. Key) for this connection
 	netCfg.Transport = &tc.srvCfg.Transport
 	// Explicitly copy spoof config from root
@@ -51,6 +67,16 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
+	tc.pConn = pConn
+	tc.lastPort = pConn.GetCurrentPort()
+	// Guard: close pConn on any error path so background goroutines and file
+	// descriptors are never orphaned when the server is offline or unreachable.
+	success := false
+	defer func() {
+		if !success {
+			pConn.Close()
+		}
+	}()
 
 	// If hopping is enabled, the raw socket normalizes incoming packets to hopping.Min.
 	// We must tell KCP to expect packets from this normalized port, ignoring the
@@ -70,9 +96,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 
 	var conn tnet.Conn
 
-	var isAutoMTU bool
-	var baseMTU int
-
 	// Calculate obfuscation overhead
 	overhead := 0
 	if obfsCfg.UseTLS {
@@ -81,6 +104,11 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
 
+	// Fire the raw socket TCP SYN to warm the connection state for DPI/Netfilter.
+	// We explicitly do NOT block here as per user request to maintain 0-RTT tunnel speeds,
+	// understanding that the first few data packets might be dropped by Netfilter until SYN-ACK arrives.
+	pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
+
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":
 		// Adjust MTU to account for obfuscation overhead
@@ -88,14 +116,9 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		tCfg := tc.srvCfg.Transport
 		kcpCfg := *tCfg.KCP
 
-		isAutoMTU = kcpCfg.MTU == 0
-		if isAutoMTU {
-			// Start with a safe 1380 MTU for Auto PMTUD before probing upward
-			kcpCfg.MTU = 1380
-			baseMTU = 1380
-			flog.Infof("Auto PMTUD enabled: Starting KCP with safe MTU %d", kcpCfg.MTU)
+		if kcpCfg.MTU == 0 {
+			kcpCfg.MTU = 1350
 		}
-
 		if overhead > 0 {
 			kcpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client KCP MTU to %d (overhead: %d)", kcpCfg.MTU, overhead)
@@ -107,14 +130,9 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	case "udp": // Also needs to pass `tc.rootCfg.Role` to `socket.NewWithHopping` when creating `newPConn` for probing.
 		tCfg := tc.srvCfg.Transport // Create a copy of Transport config
 		udpCfg := *tCfg.UDP
-
-		isAutoMTU = udpCfg.MTU == 0
-		if isAutoMTU {
-			udpCfg.MTU = 1380
-			baseMTU = 1380
-			flog.Infof("Auto PMTUD enabled: Starting UDP with safe MTU %d", udpCfg.MTU)
+		if udpCfg.MTU == 0 {
+			udpCfg.MTU = 1350
 		}
-
 		if overhead > 0 {
 			udpCfg.MTU -= overhead
 			flog.Debugf("Adjusted Client UDP MTU to %d (overhead: %d)", udpCfg.MTU, overhead)
@@ -135,23 +153,19 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		conn, err = transport.DialProto(best, remoteAddr, &tc.srvCfg.Transport, pConn)
 	default:
-		return nil, fmt.Errorf("unsupported protocol: %s", tc.srvCfg.Transport.Protocol)
+		return nil, fmt.Errorf("unsupported transport protocol: %s", tc.srvCfg.Transport.Protocol)
 	}
 
-	if err != nil {
-		return nil, err
-	}
 	err = tc.sendTCPF(conn)
 	if err != nil {
+		conn.Close() // also releases pConn via the transport Close chain
 		return nil, err
 	}
 
-	if isAutoMTU {
-		tc.startPMTUD(conn, baseMTU, overhead)
-	}
-
+	success = true
 	return conn, nil
 }
 
@@ -176,65 +190,79 @@ func (tc *timedConn) close() {
 	}
 }
 
-func (tc *timedConn) startPMTUD(conn tnet.Conn, baseMTU, overhead int) {
-	go func() {
-		// Give the connection a moment to stabilize
-		time.Sleep(1 * time.Second)
+func (tc *timedConn) reconnect() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if !tc.lastRotate.IsZero() && time.Since(tc.lastRotate) < 5*time.Second {
+		return
+	}
+	tc.lastRotate = time.Now()
 
-		type mtuSetter interface {
-			SetMtu(int) bool
-		}
-		setter, ok := conn.(mtuSetter)
-		if !ok {
-			return
-		}
+	srvLabel := ""
+	if tc.srvCfg != nil && tc.srvCfg.Server.Addr != nil {
+		srvLabel = tc.srvCfg.Server.Addr.IP.String()
+	}
 
-		// Standard MTU steps to probe
-		probeSizes := []int{1400, 1420, 1440, 1460, 1492, 1500}
-		bestPayloadMTU := baseMTU - overhead
+	oldPort := tc.lastPort
+	if tc.conn != nil {
+		tc.conn.Close()
+	}
+	var err error
+	tc.conn, err = tc.createConn()
+	if err != nil {
+		flog.Debugf("failed to reconnect timedConn [%s] on port %d: %v", srvLabel, oldPort, err)
+		tc.conn = nil
+	}
+}
 
-		for _, targetMTU := range probeSizes {
-			testPayloadMTU := targetMTU - overhead
-			if testPayloadMTU <= bestPayloadMTU {
-				continue
-			}
+func (tc *timedConn) markDead() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.conn != nil {
+		tc.conn.Close()
+		tc.conn = nil
+	}
+}
 
-			// Dynamically update the transport MTU limit
-			setter.SetMtu(testPayloadMTU)
+func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 
-			strm, err := conn.OpenStrm()
+	for attempt := 0; attempt < 2; attempt++ {
+		// 1. If connection is nil, create it
+		if tc.conn == nil {
+			var err error
+			tc.conn, err = tc.createConn()
 			if err != nil {
-				break
+				return nil, err
 			}
-
-			// Send a PPING header to the server
-			p := protocol.Proto{Type: protocol.PPING}
-			if err := p.Write(strm); err != nil {
-				strm.Close()
-				break
-			}
-
-			// Write dummy data to force the transport layer to generate full-sized MTU packets.
-			// We write 2x the MTU size to guarantee it fragments at the exact new MTU boundary.
-			dummy := make([]byte, testPayloadMTU*2)
-			strm.Write(dummy)
-
-			// Wait for the PPONG response from the server
-			strm.SetReadDeadline(time.Now().Add(2 * time.Second))
-			err = p.Read(strm)
-			strm.Close()
-
-			if err != nil || p.Type != protocol.PPONG {
-				flog.Infof("Auto PMTUD: Network bottleneck reached. Packet dropped at %d bytes.", targetMTU)
-				break
-			}
-
-			bestPayloadMTU = testPayloadMTU
-			flog.Debugf("Auto PMTUD: Successfully probed MTU %d (Payload MTU: %d)", targetMTU, testPayloadMTU)
 		}
 
-		// Lock in the highest successful MTU
-		setter.SetMtu(bestPayloadMTU)
-		flog.Infof("Auto PMTUD completed. Optimal Payload MTU set to: %d", bestPayloadMTU)
-	}()
+		// 2. Open stream
+		strm, err := tc.conn.OpenStrm()
+		if err != nil {
+			// smux session is dead (server restarted or KCP DeadLink)
+			tc.conn.Close()
+			tc.conn = nil
+			continue
+		}
+
+		// 3. Send protocol header
+		strm.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		err = p.Write(strm)
+		strm.SetWriteDeadline(time.Time{})
+		if err != nil {
+			strm.Close()
+			tc.conn.Close()
+			tc.conn = nil
+			continue
+		}
+
+		// Stream is ready. KCP ARQ guarantees delivery; DPI warm-up is handled by
+		// PrewarmFlow (sends SYN). If the DPI drops early KCP packets, KCP retransmits
+		// naturally within ~400ms. Server restart is detected via RST in recv_handle.go.
+		return strm, nil
+	}
+
+	return nil, fmt.Errorf("failed to open stream after reconnection attempts")
 }
