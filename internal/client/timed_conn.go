@@ -15,22 +15,25 @@ import (
 )
 
 type timedConn struct {
-	rootCfg    *conf.Conf
-	srvCfg     *conf.ServerConfig
-	conn       tnet.Conn
-	pConn      *socket.PacketConn
-	lastPort   int
-	lastRotate time.Time
-	expire     time.Time
-	ctx        context.Context
-	mu         sync.Mutex
+	rootCfg       *conf.Conf
+	srvCfg        *conf.ServerConfig
+	conn          tnet.Conn
+	pConn         *socket.PacketConn
+	lastPort      int
+	lastRotate    time.Time
+	expire        time.Time
+	ctx           context.Context
+	mu            sync.Mutex
+	activeStreams int
+	lastIdle      time.Time
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
 	tc := timedConn{
-		ctx:     ctx,
-		rootCfg: rootCfg,
-		srvCfg:  srvCfg,
+		ctx:      ctx,
+		rootCfg:  rootCfg,
+		srvCfg:   srvCfg,
+		lastIdle: time.Now(),
 	}
 
 	var err error
@@ -39,7 +42,7 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 		return nil, err
 	}
 
-	go tc.healthCheckLoop()
+	go tc.idleCheckLoop()
 
 	return &tc, nil
 }
@@ -263,14 +266,20 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		// Stream is ready. KCP ARQ guarantees delivery; DPI warm-up is handled by
 		// PrewarmFlow (sends SYN). If the DPI drops early KCP packets, KCP retransmits
 		// naturally within ~400ms. Server restart is detected via RST in recv_handle.go.
-		return strm, nil
+		
+		tc.mu.Lock()
+		tc.activeStreams++
+		tc.lastIdle = time.Time{}
+		tc.mu.Unlock()
+		
+		return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 	}
 
 	return nil, fmt.Errorf("failed to open stream after reconnection attempts")
 }
 
-func (tc *timedConn) healthCheckLoop() {
-	ticker := time.NewTicker(10 * time.Second)
+func (tc *timedConn) idleCheckLoop() {
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -279,20 +288,29 @@ func (tc *timedConn) healthCheckLoop() {
 			return
 		case <-ticker.C:
 			tc.mu.Lock()
-			conn := tc.conn
+			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 10*time.Second {
+				tc.conn.Close()
+				tc.conn = nil
+				tc.lastIdle = time.Time{}
+			}
 			tc.mu.Unlock()
-
-			if conn == nil {
-				continue
-			}
-
-			// Send a ping and wait for response.
-			// If the server rebooted, KCP will have a mismatched session
-			// and won't respond to smux pings, causing this to time out.
-			if err := conn.Ping(true); err != nil {
-				flog.Debugf("health check failed: %v. Marking connection dead.", err)
-				tc.markDead()
-			}
 		}
 	}
+}
+
+type idleTrackedStrm struct {
+	tnet.Strm
+	tc *timedConn
+}
+
+func (t *idleTrackedStrm) Close() error {
+	t.tc.mu.Lock()
+	if t.tc.activeStreams > 0 {
+		t.tc.activeStreams--
+	}
+	if t.tc.activeStreams == 0 {
+		t.tc.lastIdle = time.Now()
+	}
+	t.tc.mu.Unlock()
+	return t.Strm.Close()
 }
