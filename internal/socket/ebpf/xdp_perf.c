@@ -58,20 +58,9 @@ int xdp_main(struct xdp_md *ctx)
     // Never intercept SSH (22). If your VPS uses a custom SSH port, add it here.
     if (dest == 22 || source == 22) return XDP_PASS;
 
-    __u32 zero = 0;
-    __u8 *role = bpf_map_lookup_elem(&config_map, &zero);
-    __u8 is_client = role ? *role : 0;
-
-    if (is_client) {
-        // Client mode: Match if server's port is the source OR dest
-        if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
-            return XDP_PASS;
-        }
-    } else {
-        // Server mode: Strictly match destination port to avoid blocking local outgoing traffic
-        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
-            return XDP_PASS;
-        }
+    // Strictly match destination port to avoid blocking local outgoing traffic
+    if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
+        return XDP_PASS;
     }
 
     // Filter by Destination IP

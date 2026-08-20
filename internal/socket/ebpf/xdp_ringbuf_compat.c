@@ -63,14 +63,8 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *role = bpf_map_lookup_elem(&config_map, &zero);
     __u8 is_client = role ? *role : 0;
 
-    if (is_client) {
-        if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
-            return XDP_PASS;
-        }
-    } else {
-        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
-            return XDP_PASS;
-        }
+    if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
+        return XDP_PASS;
     }
 
     // Filter by Destination IP
