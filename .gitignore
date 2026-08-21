@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# Project build artifacts (never commit)
+/paqet
+/paqet.zip
+
 # Test binary, built with `go test -c`
 *.test
 
