@@ -18,6 +18,20 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
+// ipv4LPMKey mirrors the C struct ipv4_lpm_key (u32 prefixlen + 4-byte address).
+type ipv4LPMKey struct {
+	PrefixLen uint32
+	Data      [4]byte
+}
+
+// ipv6LPMKey mirrors the C struct ipv6_lpm_key (u32 prefixlen + 16-byte address
+// + 4 bytes padding, so the key size is a multiple of 8 for older kernels).
+type ipv6LPMKey struct {
+	PrefixLen uint32
+	Data      [16]byte
+	Pad       [4]byte
+}
+
 // Global manager to ensure only one XDP program runs per interface
 var (
 	managerMu sync.Mutex
@@ -253,57 +267,62 @@ func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketR
 	return mgr
 }
 
-// configureClientAllowlist populates the eBPF source-IP allowlist maps and sets
-// config_map[1] to enable the early drop. HASH maps can only represent exact
-// IPs (not CIDRs), so the eBPF drop is only armed when every configured entry
-// is an exact IP that was added successfully. Empty lists and CIDR-containing
-// lists leave the flag at zero (allow all in eBPF); the Go layer enforces the
-// full allowlist either way.
+// configureClientAllowlist populates the eBPF source-IP allowlist (LPM trie)
+// and sets config_map[1] to enable the early drop. Exact IPs are stored as /32
+// (or /128) and CIDRs as their prefix length, so the eBPF filter mirrors the
+// Go layer's allowlist against the raw source IP. Empty lists leave the flag at
+// zero (allow all).
 func (m *ebpfManager) configureClientAllowlist(cfg *conf.Network, configMap *ebpf.Map) {
-	// eBPF inspects the raw wire source IP and cannot reverse-map spoofed
-	// clients, so the early drop would wrongly reject them. When spoofing is
-	// enabled, leave the eBPF filter off and let the Go layer enforce the
-	// allowlist against the reverse-mapped (real) client IP.
-	if cfg.Spoof != nil && cfg.Spoof.Enabled {
-		return
-	}
 	if len(cfg.AllowedClientIPs) == 0 {
 		return
 	}
 
-	allExact := true
+	val := uint8(1)
+	armed := false
 	for _, s := range cfg.AllowedClientIPs {
-		ip := net.ParseIP(s)
-		if ip == nil {
-			allExact = false
+		var ip net.IP
+		var prefixLen int
+		if addr, ipnet, err := net.ParseCIDR(s); err == nil {
+			ip = addr
+			ones, _ := ipnet.Mask.Size()
+			prefixLen = ones
+		} else if parsed := net.ParseIP(s); parsed != nil {
+			ip = parsed
+			if parsed.To4() != nil {
+				prefixLen = 32
+			} else {
+				prefixLen = 128
+			}
+		} else {
+			flog.Warnf("Invalid IP/CIDR in allowed_client_ips: %s", s)
 			continue
 		}
+
 		if v4 := ip.To4(); v4 != nil {
 			if m.clientIP4Map == nil {
-				allExact = false
 				continue
 			}
-			var key [4]byte
-			copy(key[:], v4)
-			val := uint8(1)
+			key := ipv4LPMKey{PrefixLen: uint32(prefixLen)}
+			copy(key.Data[:], v4)
 			if err := m.clientIP4Map.Put(&key, &val); err != nil {
-				flog.Warnf("failed to add client IP %s to eBPF allowlist: %v", s, err)
-				allExact = false
+				flog.Warnf("failed to add %s to eBPF allowlist: %v", s, err)
+				continue
 			}
 		} else {
 			if m.clientIP6Map == nil {
-				allExact = false
 				continue
 			}
-			val := uint8(1)
-			if err := m.clientIP6Map.Put(ip.To16(), &val); err != nil {
-				flog.Warnf("failed to add client IP %s to eBPF allowlist: %v", s, err)
-				allExact = false
+			key := ipv6LPMKey{PrefixLen: uint32(prefixLen)}
+			copy(key.Data[:], ip.To16())
+			if err := m.clientIP6Map.Put(&key, &val); err != nil {
+				flog.Warnf("failed to add %s to eBPF allowlist: %v", s, err)
+				continue
 			}
 		}
+		armed = true
 	}
 
-	if !allExact || configMap == nil {
+	if !armed || configMap == nil {
 		return
 	}
 	one := uint32(1)

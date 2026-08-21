@@ -51,8 +51,8 @@ network:
     
   # Allowed Client IPs (optional)
   # Only process packets from these IPs or CIDRs to instantly drop scanners.
-  # Exact IPs are also dropped early at the XDP/eBPF layer for performance;
-  # CIDRs are enforced in userspace (Go). Empty list = allow all.
+  # Matched against the raw source IP at both the eBPF/XDP layer (LPM trie)
+  # and in userspace. Empty list = allow all.
   # allowed_client_ips: ["203.0.113.5", "10.0.0.0/8"]
 
   # Source IP Spoofing (optional)

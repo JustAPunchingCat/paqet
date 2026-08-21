@@ -247,8 +247,18 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		dstIP = net.IP(data[ipStart+24 : ipStart+40])
 	}
 
-	// Reverse-map a spoofed source IP to the real client IP before making any
-	// allowlist decision or responding with the handshake.
+	// Enforce the client allowlist against the raw wire source IP before
+	// responding to anything (the stateless SYN-ACK handshake included), so
+	// scanners and unknown IPs never get a reply. The allowlist is the single
+	// source of truth and does NOT consult spoof mappings. An empty allowlist
+	// means "allow all".
+	if !h.isAllowed(srcIP) {
+		return nil, nil, 0, nil
+	}
+
+	// Reverse-map a spoofed source IP to the real client IP for session routing
+	// (the KCP session address). The allowlist check above deliberately uses the
+	// raw source IP.
 	realIP := srcIP
 	if len(h.mappings) > 0 {
 		for _, m := range h.mappings {
@@ -257,13 +267,6 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 				break
 			}
 		}
-	}
-
-	// Enforce the client allowlist before responding to anything (the stateless
-	// SYN-ACK handshake included), so scanners and unknown IPs never get a reply.
-	// An empty allowlist means "allow all".
-	if !h.isAllowed(realIP) {
-		return nil, nil, 0, nil
 	}
 
 	// Only process TCP (6) or UDP (17)

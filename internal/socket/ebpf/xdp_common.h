@@ -26,6 +26,21 @@ struct vlan_hdr {
 	__be16	h_vlan_encapsulated_proto;
 };
 
+/* LPM trie keys for the source-IP allowlist. Layout: a u32 prefix length
+ * (native byte order) followed by the address bytes in network order. The IPv6
+ * key is padded to 24 bytes so its size is a multiple of 8, which the LPM trie
+ * key-size check on older kernels requires. */
+struct ipv4_lpm_key {
+	__u32 prefixlen;
+	__u8 data[4];
+};
+
+struct ipv6_lpm_key {
+	__u32 prefixlen;
+	__u8 data[16];
+	__u8 pad[4];
+};
+
 static __always_inline int parse_tcp(void *data, void *data_end,
                                      struct tcphdr **tcp,
                                      __u32 *src_ipv4,

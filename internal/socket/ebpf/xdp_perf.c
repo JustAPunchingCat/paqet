@@ -28,17 +28,19 @@ struct {
 } allowed_ips_v6 SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 256);
-    __type(key, __u32);
+    __type(key, struct ipv4_lpm_key);
     __type(value, __u8);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
 } allowed_client_ips_v4 SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __uint(max_entries, 256);
-    __type(key, struct in6_addr);
+    __type(key, struct ipv6_lpm_key);
     __type(value, __u8);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
 } allowed_client_ips_v6 SEC(".maps");
 
 struct {
@@ -98,10 +100,16 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *allow_on = bpf_map_lookup_elem(&config_map, &one);
     if (allow_on && *allow_on && !is_client) {
         if (l3_proto == ETH_P_IP) {
-            if (!bpf_map_lookup_elem(&allowed_client_ips_v4, &src_ipv4))
+            struct ipv4_lpm_key lpm = {};
+            lpm.prefixlen = 32;
+            __builtin_memcpy(lpm.data, &src_ipv4, 4);
+            if (!bpf_map_lookup_elem(&allowed_client_ips_v4, &lpm))
                 return XDP_DROP;
         } else if (l3_proto == ETH_P_IPV6) {
-            if (!bpf_map_lookup_elem(&allowed_client_ips_v6, &src_ipv6))
+            struct ipv6_lpm_key lpm = {};
+            lpm.prefixlen = 128;
+            __builtin_memcpy(lpm.data, &src_ipv6, 16);
+            if (!bpf_map_lookup_elem(&allowed_client_ips_v6, &lpm))
                 return XDP_DROP;
         }
     }
