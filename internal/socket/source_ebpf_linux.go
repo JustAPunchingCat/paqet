@@ -144,19 +144,50 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 		ch:  make(chan []byte, 65536),
 	}
 
-	// Register IP
-	if cfg.IPv4.Addr != nil {
-		s.ipv4 = cfg.IPv4.Addr.IP
-		if err := mgr.addIPv4(s.ipv4); err != nil {
-			s.Close()
-			return nil, err
+	// Register IP(s): for the client, register the remote SERVER IP(s) so the XDP
+	// filter drops all packets to/from the server (source OR dest) regardless of
+	// port, instead of leaking stale-port packets to the kernel (which emits an
+	// RST and tears the tunnel down). For the server, register its own IP.
+	if cfg.Role == "client" {
+		for _, sip := range cfg.ServerIPs {
+			if sip == nil {
+				continue
+			}
+			if v4 := sip.To4(); v4 != nil {
+				if s.ipv4 == nil {
+					s.ipv4 = v4
+				}
+				if err := mgr.addIPv4(v4); err != nil {
+					s.Close()
+					return nil, err
+				}
+			} else {
+				if s.ipv6 == nil {
+					s.ipv6 = sip
+				}
+				if err := mgr.addIPv6(sip); err != nil {
+					s.Close()
+					return nil, err
+				}
+			}
 		}
-	}
-	if cfg.IPv6.Addr != nil {
-		s.ipv6 = cfg.IPv6.Addr.IP
-		if err := mgr.addIPv6(s.ipv6); err != nil {
-			s.Close()
-			return nil, err
+		if len(cfg.ServerIPs) == 0 {
+			flog.Warnf("eBPF client has no server IPs registered; XDP filter will not capture tunnel traffic")
+		}
+	} else {
+		if cfg.IPv4.Addr != nil {
+			s.ipv4 = cfg.IPv4.Addr.IP
+			if err := mgr.addIPv4(s.ipv4); err != nil {
+				s.Close()
+				return nil, err
+			}
+		}
+		if cfg.IPv6.Addr != nil {
+			s.ipv6 = cfg.IPv6.Addr.IP
+			if err := mgr.addIPv6(s.ipv6); err != nil {
+				s.Close()
+				return nil, err
+			}
 		}
 	}
 

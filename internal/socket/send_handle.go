@@ -512,21 +512,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	}
 
 	isIPv4 := dstIP.To4() != nil
-	var srcIP net.IP
-	var isSpoofed bool
-
-	if isIPv4 {
-		srcIP = h.srcIPv4
-	} else {
-		srcIP = h.srcIPv6
-	}
-
-	if len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 || len(h.targetSpoofRules) > 0 {
-		if spoofedIP := h.getSpoofedIP(isIPv4, dstIP); spoofedIP != nil {
-			srcIP = spoofedIP
-			isSpoofed = true
-		}
-	}
+	srcIP, isSpoofed := h.resolveSrcIP(isIPv4, dstIP)
 
 	state := h.getFlowState(srcIP, srcPort, dstIP, dstPort)
 	f := h.getClientTCPF(dstIP, dstPort)
@@ -932,6 +918,28 @@ func (h *SendHandle) getSpoofedIP(isIPv4 bool, dstIP net.IP) net.IP {
 	return pickRandomIP(isIPv4, h.spoofIPs, h.spoofNets)
 }
 
+// hasSpoofing reports whether any source-IP spoofing is configured.
+func (h *SendHandle) hasSpoofing() bool {
+	return len(h.spoofIPs) > 0 || len(h.spoofNets) > 0 || len(h.targetSpoofRules) > 0
+}
+
+// resolveSrcIP returns the source IP for an outbound packet to dstIP, applying
+// per-target and global spoofing rules exactly as the data path does.
+func (h *SendHandle) resolveSrcIP(isIPv4 bool, dstIP net.IP) (net.IP, bool) {
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+	if h.hasSpoofing() {
+		if spoofedIP := h.getSpoofedIP(isIPv4, dstIP); spoofedIP != nil {
+			return spoofedIP, true
+		}
+	}
+	return srcIP, false
+}
+
 func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPort uint16) *flowState {
 	key := srcIP.String() + ":" + strconv.Itoa(srcPort) + "->" + dstIP.String() + ":" + strconv.Itoa(int(dstPort))
 	h.statesMu.Lock()
@@ -1027,6 +1035,31 @@ func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, ser
 
 	ackF := conf.TCPF{ACK: true}
 	return h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
+}
+
+// SendRST emits a bare fake-TCP RST from this handle's source port to the
+// remote. Clients use it as an orderly goodbye so the server's RST handler
+// tears the orphaned flow down immediately instead of retransmitting for the
+// full KCP DeadLink (~30s). Skipped when source-IP spoofing is active: the
+// source IP is ephemeral there, so the RST can't reliably match the server's
+// session key and would risk leaking the real IP — the server falls back to
+// DeadLink teardown.
+func (h *SendHandle) SendRST(remoteIP net.IP, remotePort int) error {
+	if h.hasSpoofing() {
+		return nil
+	}
+	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
+	isIPv4 := remoteIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+
+	state := h.getFlowState(srcIP, int(h.srcPort), remoteIP, uint16(remotePort))
+	rstF := conf.TCPF{RST: true, ACK: true}
+	return h.writeRaw(nil, addr, int(h.srcPort), rstF, srcIP, isIPv4, false, state)
 }
 
 func (h *SendHandle) PrewarmFlow(dstIP net.IP, dstPort uint16) {

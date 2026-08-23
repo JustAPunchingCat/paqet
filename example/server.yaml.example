@@ -152,6 +152,11 @@ transport:
     # dshard: 10    # Data shards for FEC  
     # pshard: 3     # Parity shards for FEC
 
+    # Liveness / dead-peer detection
+    # deadlink: 30           # Seconds of silence before the peer is declared dead (default: 30).
+                            # Detects a crashed/killed peer and tears the session down instead of
+                            # retransmitting forever. Raise it for high-latency/lossy links.
+
   # QUIC protocol settings (used when protocol: "quic")
   # quic:
   #   key: "your-secret-key-here"   # Shared secret for deterministic TLS cert (must match client)

@@ -15,6 +15,7 @@ type KCP struct {
 	NoCongestion int    `yaml:"nocongestion"`
 	WDelay       bool   `yaml:"wdelay"`
 	AckNoDelay   bool   `yaml:"acknodelay"`
+	DeadLink     int    `yaml:"deadlink"` // seconds before an unresponsive peer is declared dead (0 = default 30)
 
 	MTU    int `yaml:"mtu"`
 	Rcvwnd int `yaml:"rcvwnd"`
@@ -49,6 +50,9 @@ func (k *KCP) setDefaults() {
 	}
 	if k.Sndwnd == 0 {
 		k.Sndwnd = 2048
+	}
+	if k.DeadLink == 0 {
+		k.DeadLink = 30
 	}
 
 	// if k.Dshard == 0 {
@@ -90,6 +94,9 @@ func (k *KCP) validate() []error {
 	}
 	if k.Sndwnd < 1 || k.Sndwnd > 32768 {
 		errors = append(errors, fmt.Errorf("KCP sndwnd must be between 1-32768"))
+	}
+	if k.DeadLink < 0 {
+		errors = append(errors, fmt.Errorf("KCP deadlink must be >= 0 (0 defaults to 30)"))
 	}
 
 	validBlocks := []string{"aes", "aes-128", "aes-128-gcm", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none", "null"}

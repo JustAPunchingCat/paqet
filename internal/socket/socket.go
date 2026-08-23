@@ -406,6 +406,16 @@ func (c *PacketConn) PrewarmFlow(dstIP net.IP, dstPort uint16) {
 	}
 }
 
+// SendRST emits a goodbye RST on this connection's source port so the remote
+// tears down the associated flow immediately. Safe no-op when no send handle
+// is configured.
+func (c *PacketConn) SendRST(remoteIP net.IP, remotePort int) error {
+	if c.sendHandle != nil {
+		return c.sendHandle.SendRST(remoteIP, remotePort)
+	}
+	return nil
+}
+
 func (c *PacketConn) GetCurrentPort() int {
 	if c.plugins != nil {
 		for _, pl := range c.plugins.plugins {

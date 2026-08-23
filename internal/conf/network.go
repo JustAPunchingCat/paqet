@@ -54,6 +54,11 @@ type Network struct {
 	Spoof            *Spoof         `yaml:"spoof"`
 	Role             string         `yaml:"-"`
 	AllowedClientIPs []string       `yaml:"allowed_client_ips"`
+	// ServerIPs holds the remote server IP(s) a client talks to. It is populated
+	// at runtime (not from YAML) and fed to the eBPF source so the XDP filter can
+	// drop ALL packets to/from the server regardless of port, instead of leaking
+	// stale-port packets to the kernel (which emits an RST).
+	ServerIPs []net.IP `yaml:"-"`
 }
 
 func (n *Network) setDefaults(role string) {

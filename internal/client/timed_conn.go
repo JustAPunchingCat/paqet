@@ -20,6 +20,7 @@ type timedConn struct {
 	conn          tnet.Conn
 	pConn         *socket.PacketConn
 	lastPort      int
+	remoteAddr    *net.UDPAddr
 	lastRotate    time.Time
 	expire        time.Time
 	ctx           context.Context
@@ -63,6 +64,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg.Spoof = tc.rootCfg.Network.Spoof
 	// Server-specific fake TCP handshake config
 	netCfg.Handshake = &tc.srvCfg.Handshake
+	// Server IP(s) for the eBPF XDP filter (drop all server traffic, no leak)
+	if tc.srvCfg.Server.Addr != nil && tc.srvCfg.Server.Addr.IP != nil {
+		netCfg.ServerIPs = []net.IP{tc.srvCfg.Server.Addr.IP}
+	}
 
 	// Explicitly use the server's obfuscation config
 	// We do not propagate global obfuscation settings to allow mixing obfuscated
@@ -100,6 +105,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		clone.Port = canonicalPort
 		remoteAddr = &clone
 	}
+	tc.remoteAddr = remoteAddr
 
 	var conn tnet.Conn
 
@@ -194,8 +200,22 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 	return nil
 }
 
+// sendGoodbyeRST emits a single fake-TCP RST on the current packet conn's
+// source port before it is torn down, so the server's RST handler kills the
+// orphaned KCP session immediately instead of retransmitting for ~30s (KCP
+// DeadLink). Must be called while holding tc.mu and before tc.pConn.Close().
+func (tc *timedConn) sendGoodbyeRST() {
+	if tc.pConn == nil || tc.remoteAddr == nil || tc.remoteAddr.IP == nil {
+		return
+	}
+	if err := tc.pConn.SendRST(tc.remoteAddr.IP, tc.remoteAddr.Port); err != nil {
+		flog.Debugf("failed to send goodbye RST to %s: %v", tc.remoteAddr, err)
+	}
+}
+
 func (tc *timedConn) close() {
 	if tc.conn != nil {
+		tc.sendGoodbyeRST()
 		tc.conn.Close()
 		if tc.pConn != nil {
 			tc.pConn.Close()
@@ -218,6 +238,7 @@ func (tc *timedConn) reconnect() {
 
 	oldPort := tc.lastPort
 	if tc.conn != nil {
+		tc.sendGoodbyeRST()
 		tc.conn.Close()
 		if tc.pConn != nil {
 			tc.pConn.Close()
@@ -235,6 +256,7 @@ func (tc *timedConn) markDead() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	if tc.conn != nil {
+		tc.sendGoodbyeRST()
 		tc.conn.Close()
 		if tc.pConn != nil {
 			tc.pConn.Close()
@@ -310,6 +332,7 @@ func (tc *timedConn) idleCheckLoop() {
 		case <-ticker.C:
 			tc.mu.Lock()
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 10*time.Second {
+				tc.sendGoodbyeRST()
 				tc.conn.Close()
 				if tc.pConn != nil {
 					tc.pConn.Close()

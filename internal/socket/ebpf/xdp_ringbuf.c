@@ -82,29 +82,36 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *role = bpf_map_lookup_elem(&config_map, &zero);
     __u8 is_client = role ? *role : 0;
 
+    __u8 ip_match = 0;
+    __u8 port_match = 0;
+
     if (is_client) {
-        // Client: match if the registered port is the source OR dest. The client's
-        // own injected packets loop back through the bridge (source == registered
-        // port), and server replies arrive with dest == registered port.
-        if (!bpf_map_lookup_elem(&allowed_ports, &dest) && !bpf_map_lookup_elem(&allowed_ports, &source)) {
-            return XDP_PASS;
+        // Client: match any packet whose source OR dest IP is a registered server.
+        // This drops ALL server traffic (including stale-port packets from a
+        // lingering server session) so it never leaks to the kernel, which would
+        // otherwise emit an RST and tear the tunnel down.
+        if (l3_proto == ETH_P_IP) {
+            if (bpf_map_lookup_elem(&allowed_ips_v4, &src_ipv4)) ip_match = 1;
+            if (bpf_map_lookup_elem(&allowed_ips_v4, &dst_ipv4)) ip_match = 1;
+        } else if (l3_proto == ETH_P_IPV6) {
+            if (bpf_map_lookup_elem(&allowed_ips_v6, &src_ipv6)) ip_match = 1;
+            if (bpf_map_lookup_elem(&allowed_ips_v6, &dst_ipv6)) ip_match = 1;
         }
+        if (!ip_match) return XDP_PASS;
+
+        // Ringbuf only the current registered port; silently drop stale ports.
+        if (bpf_map_lookup_elem(&allowed_ports, &dest)) port_match = 1;
+        if (bpf_map_lookup_elem(&allowed_ports, &source)) port_match = 1;
     } else {
-        // Server: strictly match destination port to avoid blocking local outgoing traffic.
-        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) {
-            return XDP_PASS;
+        // Server: strictly match destination port + destination IP to avoid
+        // blocking local outgoing traffic.
+        if (!bpf_map_lookup_elem(&allowed_ports, &dest)) return XDP_PASS;
+        if (l3_proto == ETH_P_IP) {
+            if (!bpf_map_lookup_elem(&allowed_ips_v4, &dst_ipv4)) return XDP_PASS;
+        } else if (l3_proto == ETH_P_IPV6) {
+            if (!bpf_map_lookup_elem(&allowed_ips_v6, &dst_ipv6)) return XDP_PASS;
         }
-    }
-
-
-
-    // Filter by Destination IP
-    if (l3_proto == ETH_P_IP) {
-        if (!bpf_map_lookup_elem(&allowed_ips_v4, &dst_ipv4))
-            return XDP_PASS;
-    } else if (l3_proto == ETH_P_IPV6) {
-        if (!bpf_map_lookup_elem(&allowed_ips_v6, &dst_ipv6))
-            return XDP_PASS;
+        port_match = 1;
     }
 
     // Filter by client source IP (server only, when allowlist enabled).
@@ -126,6 +133,9 @@ int xdp_main(struct xdp_md *ctx)
                 return XDP_DROP;
         }
     }
+
+    // Silently drop server traffic that isn't on our current port (no leak, no RST).
+    if (!port_match) return XDP_DROP;
 
     __u64 len = data_end - data;
     if (len > CAP_LEN) len = CAP_LEN;
