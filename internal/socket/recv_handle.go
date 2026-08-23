@@ -137,12 +137,17 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 		}
 	}
 
+	hs := cfg.Handshake
+	if hs == nil {
+		hs = &conf.Handshake{}
+	}
+
 	return &RecvHandle{
 		source:      source,
 		mappings:    mappings,
 		allowedIPs:  allowedIPs,
 		allowedNets: allowedNets,
-		handshake:   cfg.TCP.IsHandshakeEnabled(),
+		handshake:   hs.IsEnabled(),
 		decoderPool: sync.Pool{
 			New: func() any {
 				d := &packetDecoder{
@@ -179,7 +184,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		hasEthernet = true
 		etherType := binary.BigEndian.Uint16(data[12:14])
 		offset := 14
-		
+
 		// Handle VLANs (802.1Q: 0x8100, 802.1ad: 0x88A8)
 		for etherType == 0x8100 || etherType == 0x88a8 {
 			if len(data) < offset+4 {
@@ -188,7 +193,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 			etherType = binary.BigEndian.Uint16(data[offset+2 : offset+4])
 			offset += 4
 		}
-		
+
 		if etherType == 0x0800 {
 			ipStart = offset
 			isIPv4 = true

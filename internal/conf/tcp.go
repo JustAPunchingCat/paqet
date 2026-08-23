@@ -5,26 +5,17 @@ import (
 )
 
 type TCP struct {
-	Handshake *bool    `yaml:"handshake"`
-	LF_       []string `yaml:"local_flag"`
-	RF_       []string `yaml:"remote_flag"`
-	LF        []TCPF   `yaml:"-"`
-	RF        []TCPF   `yaml:"-"`
+	LF_ []string `yaml:"local_flag"`
+	RF_ []string `yaml:"remote_flag"`
+	LF  []TCPF   `yaml:"-"`
+	RF  []TCPF   `yaml:"-"`
 }
 
 type TCPF struct {
 	FIN, SYN, RST, PSH, ACK, URG, ECE, CWR, NS bool
 }
 
-func (t *TCP) IsHandshakeEnabled() bool {
-	return t.Handshake == nil || *t.Handshake
-}
-
 func (t *TCP) setDefaults() {
-	if t.Handshake == nil {
-		def := true
-		t.Handshake = &def
-	}
 	if len(t.LF_) == 0 {
 		t.LF_ = []string{"PA"}
 	}

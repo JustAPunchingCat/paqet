@@ -19,6 +19,7 @@ type ServerConfig struct {
 	Transport   Transport   `yaml:"transport"`
 	Hopping     Hopping     `yaml:"hopping"`
 	Obfuscation Obfuscation `yaml:"obfuscation"`
+	Handshake   Handshake   `yaml:"handshake"`
 }
 
 type Conf struct {
@@ -32,6 +33,7 @@ type Conf struct {
 	Transport   Transport      `yaml:"transport"`
 	Hopping     Hopping        `yaml:"hopping"`
 	Obfuscation Obfuscation    `yaml:"obfuscation"`
+	Handshake   Handshake      `yaml:"handshake"`
 	Servers     []ServerConfig `yaml:"servers"`
 }
 
@@ -64,11 +66,13 @@ func (c *Conf) setDefaults() {
 	c.Log.setDefaults()
 	c.Listen.setDefaults()
 	c.Obfuscation.setDefaults()
+	c.Handshake.setDefaults()
 	c.Network.setDefaults(c.Role)
 
 	// Pass transport config to network for SendHandle initialization
 	c.Network.Transport = &c.Transport
 	c.Network.Obfuscation = &c.Obfuscation
+	c.Network.Handshake = &c.Handshake
 
 	if c.Role == "client" {
 		if len(c.Servers) == 0 {
@@ -79,6 +83,7 @@ func (c *Conf) setDefaults() {
 				Transport:   c.Transport,
 				Obfuscation: c.Obfuscation,
 				Hopping:     c.Hopping,
+				Handshake:   c.Handshake,
 			})
 		}
 		for i := range c.Servers {
@@ -88,6 +93,7 @@ func (c *Conf) setDefaults() {
 			}
 			c.Servers[i].Server.setDefaults()
 			c.Servers[i].Obfuscation.setDefaults()
+			c.Servers[i].Handshake.setDefaults()
 			for j := range c.Servers[i].SOCKS5 {
 				c.Servers[i].SOCKS5[j].setDefaults()
 			}
@@ -131,6 +137,7 @@ func (c *Conf) validate() error {
 	allErrors = append(allErrors, c.Network.validate()...)
 	allErrors = append(allErrors, c.Hopping.validate(c.Role)...)
 	allErrors = append(allErrors, c.Obfuscation.validate()...)
+	allErrors = append(allErrors, c.Handshake.validate()...)
 
 	if c.Role == "server" {
 		allErrors = append(allErrors, c.Listen.validate()...)
@@ -153,6 +160,7 @@ func (c *Conf) validate() error {
 
 			allErrors = append(allErrors, srv.Server.validate()...)
 			allErrors = append(allErrors, srv.Transport.validate()...)
+			allErrors = append(allErrors, srv.Handshake.validate()...)
 
 			for j := range srv.SOCKS5 {
 				errs := srv.SOCKS5[j].validate()
@@ -228,7 +236,6 @@ type Hopping struct {
 	Enabled    bool     `yaml:"enabled"`
 	AutoRotate bool     `yaml:"auto_rotate"` // Auto-rotate connection on zero-byte responses (default: false)
 	Interval   int      `yaml:"interval"`    // Hopping interval in seconds
-	Warmup     int      `yaml:"warmup"`      // Warm up lead time in seconds (default: 3s)
 	Min        int      `yaml:"min"`         // Legacy: single range min
 	Max        int      `yaml:"max"`         // Legacy: single range max
 	Ports      []string `yaml:"ports"`       // New: list of ports or ranges ("80", "1000-2000")

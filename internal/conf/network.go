@@ -50,6 +50,7 @@ type Network struct {
 	Port             int            `yaml:"-"`
 	Transport        *Transport     `yaml:"-"`
 	Obfuscation      *Obfuscation   `yaml:"-"`
+	Handshake        *Handshake     `yaml:"-"`
 	Spoof            *Spoof         `yaml:"spoof"`
 	Role             string         `yaml:"-"`
 	AllowedClientIPs []string       `yaml:"allowed_client_ips"`

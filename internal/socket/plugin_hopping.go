@@ -12,16 +12,17 @@ type HoppingPlugin struct {
 	ranges      []conf.PortRange
 	interval    time.Duration
 	warmup      time.Duration
+	lazyWarmup  bool
 	stop        chan struct{}
 	currentPort atomic.Uint32
 	minPort     int
 	isClient    bool
 	label       string
-	targetIP   net.IP
-	sendHandle *SendHandle
+	targetIP    net.IP
+	sendHandle  *SendHandle
 }
 
-func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
+func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.Handshake) (*HoppingPlugin, error) {
 	ranges, err := cfg.GetRanges()
 	if err != nil {
 		return nil, err
@@ -42,20 +43,24 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 		}
 	}
 
-	warmup := time.Duration(cfg.Warmup) * time.Second
+	if hs == nil {
+		hs = &conf.Handshake{}
+	}
+	warmup := time.Duration(hs.EagerTime) * time.Second
 	if warmup <= 0 {
 		warmup = 3 * time.Second
 	}
 
 	hp := &HoppingPlugin{
-		ranges:   ranges,
-		interval: time.Duration(cfg.Interval) * time.Second,
-		warmup:   warmup,
-		stop:     make(chan struct{}),
-		minPort:  minPort,
-		isClient: isClient,
-		label:    label,
-		targetIP: targetIP,
+		ranges:     ranges,
+		interval:   time.Duration(cfg.Interval) * time.Second,
+		warmup:     warmup,
+		lazyWarmup: hs.IsLazy(),
+		stop:       make(chan struct{}),
+		minPort:    minPort,
+		isClient:   isClient,
+		label:      label,
+		targetIP:   targetIP,
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -66,7 +71,7 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 
 func (p *HoppingPlugin) SetSendHandle(sh *SendHandle) {
 	p.sendHandle = sh
-	if p.targetIP != nil && sh != nil {
+	if !p.lazyWarmup && p.targetIP != nil && sh != nil {
 		if port := p.currentPort.Load(); port > 0 {
 			sh.PrewarmFlow(p.targetIP, uint16(port))
 		}
@@ -100,7 +105,7 @@ func (p *HoppingPlugin) loop() {
 		select {
 		case <-time.After(p.interval - leadTime):
 			nextPort := p.pickNextPort()
-			if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
+			if !p.lazyWarmup && nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
 				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
 			}
 
@@ -109,9 +114,9 @@ func (p *HoppingPlugin) loop() {
 				if nextPort > 0 {
 					p.currentPort.Store(nextPort)
 					if p.label != "" {
-						flog.Infof("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
+						flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
 					} else {
-						flog.Infof("Hopping: interval hopped to port :%d", nextPort)
+						flog.Debugf("Hopping: interval hopped to port :%d", nextPort)
 					}
 				}
 			case <-p.stop:
@@ -144,7 +149,7 @@ func (p *HoppingPlugin) ForceHop() {
 	if newPort == 0 {
 		return
 	}
-	if p.sendHandle != nil && p.targetIP != nil {
+	if !p.lazyWarmup && p.sendHandle != nil && p.targetIP != nil {
 		p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
 	}
 	p.currentPort.Store(newPort)
@@ -172,7 +177,8 @@ func (p *HoppingPlugin) OnWrite(data []byte, addr net.Addr) ([]byte, net.Addr, e
 	if !p.isClient {
 		return data, addr, nil
 	}
-	// Override destination port
+	// Override destination port. Lazy warm-up is handled in SendHandle.Write
+	// so it applies uniformly whether hopping is enabled or not.
 	if port := p.currentPort.Load(); port > 0 {
 		if udpAddr, ok := addr.(*net.UDPAddr); ok {
 			newAddr := *udpAddr

@@ -24,6 +24,10 @@ type PacketInjector interface {
 	Close()
 }
 
+// lazyWarmupTimeout bounds how long a lazy-mode write blocks waiting for the
+// fake handshake's SYN-ACK before falling back to 0-RTT.
+const lazyWarmupTimeout = time.Second
+
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
 	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
@@ -78,15 +82,16 @@ type SendHandle struct {
 	ttl       uint8
 	startTime time.Time
 
-	tcpF        TCPF
-	handshake   bool
-	role        string
-	ethPool     sync.Pool
-	ipv4Pool    sync.Pool
-	ipv6Pool   sync.Pool
-	tcpPool    sync.Pool
-	bufPool    sync.Pool
-	packetPool sync.Pool
+	tcpF          TCPF
+	handshake     bool
+	handshakeLazy bool
+	role          string
+	ethPool       sync.Pool
+	ipv4Pool      sync.Pool
+	ipv6Pool      sync.Pool
+	tcpPool       sync.Pool
+	bufPool       sync.Pool
+	packetPool    sync.Pool
 
 	globalState *flowState
 	spoofStates map[string]*flowState
@@ -142,23 +147,29 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	tos := tosChoices[randRange(0, len(tosChoices)-1)]
 	ttl := uint8(randRange(60, 68))
 
+	hs := cfg.Handshake
+	if hs == nil {
+		hs = &conf.Handshake{}
+	}
+
 	sh := &SendHandle{
-		injector:    injector,
-		cfg:         cfg,
-		driver:      cfg.Driver,
-		srcPort:     uint16(cfg.Port),
-		role:        cfg.Role,
-		synOptions:  synOptions,
-		ackOptions:  ackOptions,
-		tcpF:        TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
-		handshake:   cfg.TCP.IsHandshakeEnabled(),
-		time:        uint32(time.Now().UnixNano() / int64(time.Millisecond)),
-		tos:         tos,
-		ttl:         ttl,
-		startTime:   time.Now(),
-		globalState: &flowState{ipId: randUint32(), baseTS: randUint32(), seq: randUint32()},
-		spoofStates: make(map[string]*flowState),
-		nameMapping: make(map[string]string),
+		injector:      injector,
+		cfg:           cfg,
+		driver:        cfg.Driver,
+		srcPort:       uint16(cfg.Port),
+		role:          cfg.Role,
+		synOptions:    synOptions,
+		ackOptions:    ackOptions,
+		tcpF:          TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		handshake:     hs.IsEnabled(),
+		handshakeLazy: hs.IsLazy(),
+		time:          uint32(time.Now().UnixNano() / int64(time.Millisecond)),
+		tos:           tos,
+		ttl:           ttl,
+		startTime:     time.Now(),
+		globalState:   &flowState{ipId: randUint32(), baseTS: randUint32(), seq: randUint32()},
+		spoofStates:   make(map[string]*flowState),
+		nameMapping:   make(map[string]string),
 		ethPool: sync.Pool{
 			New: func() any {
 				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
@@ -491,6 +502,15 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
+	// Lazy warm-up: fire the fake SYN and block for the SYN-ACK before the
+	// first data packet goes out, so strict DPI/Netfilter sees an established
+	// flow. Client-side only; the server responds to SYNs instead of sending
+	// them. Bounded by lazyWarmupTimeout, after which we fall back to 0-RTT.
+	if h.role == "client" && h.handshake && h.handshakeLazy && !h.IsFlowWarmed(dstIP, dstPort) {
+		h.PrewarmFlow(dstIP, dstPort)
+		h.WaitFlowWarm(dstIP, dstPort, lazyWarmupTimeout)
+	}
+
 	isIPv4 := dstIP.To4() != nil
 	var srcIP net.IP
 	var isSpoofed bool
@@ -627,7 +647,7 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 		binary.BigEndian.PutUint16(buf[ipStart+4:ipStart+6], uint16(id))
 		binary.BigEndian.PutUint16(buf[ipStart+6:ipStart+8], 0x4000) // DF Flag set, FragmentOffset = 0
 		buf[ipStart+8] = ttl
-		buf[ipStart+9] = 6 // TCP protocol
+		buf[ipStart+9] = 6                                        // TCP protocol
 		binary.BigEndian.PutUint16(buf[ipStart+10:ipStart+12], 0) // Checksum initially 0
 		copy(buf[ipStart+12:ipStart+16], srcIP.To4())
 		copy(buf[ipStart+16:ipStart+20], dstIP.To4())
@@ -675,19 +695,35 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	if f.SYN {
 		offsetByte = 10 << 4 // 40 bytes / 4 = 10
 	} else {
-		offsetByte = 8 << 4  // 32 bytes / 4 = 8
+		offsetByte = 8 << 4 // 32 bytes / 4 = 8
 	}
 	buf[tcpStart+12] = offsetByte
 
 	var flags byte
-	if f.FIN { flags |= 0x01 }
-	if f.SYN { flags |= 0x02 }
-	if f.RST { flags |= 0x04 }
-	if f.PSH { flags |= 0x08 }
-	if f.ACK { flags |= 0x10 }
-	if f.URG { flags |= 0x20 }
-	if f.ECE { flags |= 0x40 }
-	if f.CWR { flags |= 0x80 }
+	if f.FIN {
+		flags |= 0x01
+	}
+	if f.SYN {
+		flags |= 0x02
+	}
+	if f.RST {
+		flags |= 0x04
+	}
+	if f.PSH {
+		flags |= 0x08
+	}
+	if f.ACK {
+		flags |= 0x10
+	}
+	if f.URG {
+		flags |= 0x20
+	}
+	if f.ECE {
+		flags |= 0x40
+	}
+	if f.CWR {
+		flags |= 0x80
+	}
 	buf[tcpStart+13] = flags
 
 	binary.BigEndian.PutUint16(buf[tcpStart+14:tcpStart+16], winSize)
@@ -1037,6 +1073,31 @@ func (h *SendHandle) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
 	}
 	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
 	return atomic.LoadUint32(&state.hasRemote) == 1
+}
+
+// WaitFlowWarm blocks until the SYN-ACK for the given flow has been received
+// (handshake complete) or timeout elapses. Used by lazy warm-up mode so the
+// fake handshake finishes before the first data packet is sent. Returns early
+// when the handshake is disabled or the flow is already warmed.
+func (h *SendHandle) WaitFlowWarm(dstIP net.IP, dstPort uint16, timeout time.Duration) {
+	if !h.handshake || dstIP == nil {
+		return
+	}
+	isIPv4 := dstIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
+	deadline := time.Now().Add(timeout)
+	for atomic.LoadUint32(&state.hasRemote) == 0 {
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {

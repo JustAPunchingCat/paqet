@@ -52,7 +52,7 @@ type PacketConn struct {
 	workersWg  sync.WaitGroup
 	numWorkers int
 	closeOnce  sync.Once
-	
+
 	OnRST func(addr net.Addr)
 }
 
@@ -143,7 +143,7 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	}
 
 	if hopping != nil && hopping.Enabled {
-		hp, err := NewHoppingPlugin(hopping, writeHopping, label)
+		hp, err := NewHoppingPlugin(hopping, writeHopping, label, connCfg.Handshake)
 		if err != nil {
 			return nil, fmt.Errorf("invalid hopping configuration: %w", err)
 		}

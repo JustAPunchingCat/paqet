@@ -41,7 +41,6 @@ network:
         spoofed_server_ips: ["10.2.0.0/16"]
 
   tcp:
-    handshake: true                         # Enable automatic stateless 3-way handshake simulation (Default: true)
     local_flag: ["PA"]                      # Local TCP flags (Push+Ack default)
     remote_flag: ["PA"]                     # Remote TCP flags (Push+Ack default)
     
@@ -64,36 +63,43 @@ servers:
                                 # NOTE: If hopping is enabled, this port is ignored for transport
                                 # and the hopping range is used instead.
     
-      # Port Hopping Configuration (Optional)
-      # Periodically changes the destination port to evade detection on fixed ports.
-      # The server must be configured with the same range.
+    # Fake TCP Handshake Configuration (Optional)
+    # Satisfies strict DPI/Netfilter middleboxes that drop flows without a
+    # proper SYN exchange. Server-dependent: each remote server below enables
+    # it independently. Works with or without port hopping.
+    handshake:
+      enabled: false   # Enable the fake 3-way handshake (default: false)
+      mode: lazy       # "lazy" (default): handshake on first data; "eager": pre-warm ahead of hop
+      eager_time: 3    # Eager-mode lead time in seconds (default: 3, only used when mode: eager)
 
-      hopping:
-        enabled: false      # Enable port hopping
-        auto_rotate: true   # Find & verify open ports on connection initiation and hopping interval
-        interval: 180       # Interval in seconds to change ports (default: 180-300)
-        warmup: 3           # Pre-warms the link in advance (default: 3)
-        ports:              # List of single ports or ranges
-          - "80"
-          - "20000-45000"   # Recommended: 20000-45000
-      
-      # Obfuscation Configuration (Optional)
-      obfuscation:
-        use_tls: true       # Wraps traffic in TLS Application Data (0x17)
-        padding:
-          enabled: true    # Enable random padding
-          min: 32           # Minimum padding bytes
-          max: 64           # Maximum padding bytes
-        headers:
-          randomize_tos: false      # Turn off to act like a standard OS
-          randomize_ttl: false      # Turn off to prevent 'packet crafting' signatures
-          randomize_window: true
+    # Port Hopping Configuration (Optional)
+    # Periodically changes the destination port to evade detection on fixed ports.
+    # The server must be configured with the same range.
+    hopping:
+      enabled: false      # Enable port hopping
+      auto_rotate: true   # Find & verify open ports on connection initiation and hopping interval
+      interval: 180       # Interval in seconds to change ports (default: 180-300)
+      ports:              # List of single ports or ranges
+        - "80"
+        - "20000-45000"   # Recommended: 20000-45000
 
-      socks5:
-        - listen: "127.0.0.1:1080"
-          username: ""
-          password: ""
-          # sockbuf: 4194304        # UDP socket buffer size (default: 4MB). Reduce to 1048576 (1MB) for low-RAM devices.
+    # Obfuscation Configuration (Optional)
+    obfuscation:
+      use_tls: true       # Wraps traffic in TLS Application Data (0x17)
+      padding:
+        enabled: true    # Enable random padding
+        min: 32           # Minimum padding bytes
+        max: 64           # Maximum padding bytes
+      headers:
+        randomize_tos: false      # Turn off to act like a standard OS
+        randomize_ttl: false      # Turn off to prevent 'packet crafting' signatures
+        randomize_window: true
+
+    socks5:
+      - listen: "127.0.0.1:1080"
+        username: ""
+        password: ""
+        # sockbuf: 4194304        # UDP socket buffer size (default: 4MB). Reduce to 1048576 (1MB) for low-RAM devices.
     # forward:
     #   - listen: "127.0.0.1:8080"
     #     target: "127.0.0.1:80"

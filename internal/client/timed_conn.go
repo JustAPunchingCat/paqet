@@ -61,6 +61,8 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg.Transport = &tc.srvCfg.Transport
 	// Explicitly copy spoof config from root
 	netCfg.Spoof = tc.rootCfg.Network.Spoof
+	// Server-specific fake TCP handshake config
+	netCfg.Handshake = &tc.srvCfg.Handshake
 
 	// Explicitly use the server's obfuscation config
 	// We do not propagate global obfuscation settings to allow mixing obfuscated
@@ -110,9 +112,12 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	}
 
 	// Fire the raw socket TCP SYN to warm the connection state for DPI/Netfilter.
-	// We explicitly do NOT block here as per user request to maintain 0-RTT tunnel speeds,
-	// understanding that the first few data packets might be dropped by Netfilter until SYN-ACK arrives.
-	pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
+	// Eager mode only: the SYN is fired now (non-blocking 0-RTT) so the flow is
+	// established before the first data. In lazy mode the SYN is fired on first
+	// data instead (see SendHandle.Write).
+	if tc.srvCfg.Handshake.IsEnabled() && !tc.srvCfg.Handshake.IsLazy() {
+		pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
+	}
 
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":
