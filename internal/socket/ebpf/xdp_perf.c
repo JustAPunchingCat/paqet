@@ -135,13 +135,17 @@ int xdp_main(struct xdp_md *ctx)
     // Silently drop server traffic that isn't on our current port (no leak, no RST).
     if (!port_match) return XDP_DROP;
 
-    // Pass the EXACT packet size. Any cap or bitmask on len destroys the
-    // verifier's ability to track 'data + len' within packet bounds and is
-    // rejected with 'helper access to the packet is not allowed' (verified on
-    // both 5.10 and 6.x). data + (data_end - data) = data_end always verifies.
+    // perf_event_output has no .pkt_access either, so passing the raw packet
+    // pointer is rejected ('helper access to the packet is not allowed').
+    // Use the BPF_F_CTXLEN_MASK trick (bpf_xdp_event_output,
+    // net/core/filter.c): shift the packet size into the upper 32 bits of
+    // flags; the kernel copies xdp->data itself and uses arg4/arg5 only as
+    // optional metadata. Zero-size metadata keeps the userspace sample as the
+    // raw packet, so parsing is unchanged.
+    __u32 meta = 0;
     bpf_perf_event_output(ctx, &packets,
-                          BPF_F_CURRENT_CPU,
-                          data, data_end - data);
+                          BPF_F_CURRENT_CPU | ((data_end - data) << 32),
+                          &meta, 0);
     return XDP_DROP;
 }
 
