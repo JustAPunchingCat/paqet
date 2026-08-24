@@ -135,18 +135,13 @@ int xdp_main(struct xdp_md *ctx)
     // Silently drop server traffic that isn't on our current port (no leak, no RST).
     if (!port_match) return XDP_DROP;
 
-    __u64 len = data_end - data;
-    if (len > CAP_LEN) len = CAP_LEN;
-    
-    // REMOVED: len &= 0xFFF; 
-    // Masking breaks the verifier's ability to track 'len' as being within packet bounds.
-    // bpf_perf_event_output needs to know that 'data + len' is safe.
-    // The 'if (len > CAP_LEN)' check above is sufficient for safety, 
-    // and without the mask, the verifier remembers the relationship to data_end.
-
+    // Pass the EXACT packet size. Any cap or bitmask on len destroys the
+    // verifier's ability to track 'data + len' within packet bounds and is
+    // rejected with 'helper access to the packet is not allowed' (verified on
+    // both 5.10 and 6.x). data + (data_end - data) = data_end always verifies.
     bpf_perf_event_output(ctx, &packets,
                           BPF_F_CURRENT_CPU,
-                          data, len);
+                          data, data_end - data);
     return XDP_DROP;
 }
 
