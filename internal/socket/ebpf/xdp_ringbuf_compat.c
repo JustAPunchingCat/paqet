@@ -90,17 +90,17 @@ int xdp_main(struct xdp_md *ctx)
         // lingering server session) so it never leaks to the kernel, which would
         // otherwise emit an RST and tear the tunnel down.
         if (l3_proto == ETH_P_IP) {
-            if (bpf_map_lookup_elem(&allowed_ips_v4, &src_ipv4)) ip_match = 1;
-            if (bpf_map_lookup_elem(&allowed_ips_v4, &dst_ipv4)) ip_match = 1;
+            if (map_has(&allowed_ips_v4, &src_ipv4)) ip_match = 1;
+            if (map_has(&allowed_ips_v4, &dst_ipv4)) ip_match = 1;
         } else if (l3_proto == ETH_P_IPV6) {
-            if (bpf_map_lookup_elem(&allowed_ips_v6, &src_ipv6)) ip_match = 1;
-            if (bpf_map_lookup_elem(&allowed_ips_v6, &dst_ipv6)) ip_match = 1;
+            if (map_has(&allowed_ips_v6, &src_ipv6)) ip_match = 1;
+            if (map_has(&allowed_ips_v6, &dst_ipv6)) ip_match = 1;
         }
         if (!ip_match) return XDP_PASS;
 
         // Ringbuf only the current registered port; silently drop stale ports.
-        if (bpf_map_lookup_elem(&allowed_ports, &dest)) port_match = 1;
-        if (bpf_map_lookup_elem(&allowed_ports, &source)) port_match = 1;
+        if (map_has(&allowed_ports, &dest)) port_match = 1;
+        if (map_has(&allowed_ports, &source)) port_match = 1;
     } else {
         // Server: strictly match destination port + destination IP to avoid
         // blocking local outgoing traffic.
