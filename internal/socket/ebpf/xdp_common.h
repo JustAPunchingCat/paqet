@@ -41,12 +41,15 @@ struct ipv6_lpm_key {
 	__u8 pad[4];
 };
 
-/* Map-lookup wrapper returning a boolean. Wrapping bpf_map_lookup_elem in a
- * function that returns __u8 stops clang from OR-ing two raw pointer results
- * together, which older verifiers (5.10) reject as "pointer |= pointer
- * prohibited". */
+/* Map-lookup wrapper returning the value byte as a scalar. Dereferencing the
+ * lookup result forces a real memory load, so clang cannot fold the result
+ * back into a raw pointer. Without this, two consecutive
+ * 'if (bpf_map_lookup_elem(...)) x = 1;' checks get OR'd together as
+ * 'pointer |= pointer', which the 5.10 verifier rejects. The value byte is 1
+ * whenever the key is present, so the boolean semantics are unchanged. */
 static __always_inline __u8 map_has(void *map, const void *key) {
-	return bpf_map_lookup_elem(map, key) ? 1 : 0;
+	__u8 *v = bpf_map_lookup_elem(map, key);
+	return v ? *v : 0;
 }
 
 static __always_inline int parse_tcp(void *data, void *data_end,
