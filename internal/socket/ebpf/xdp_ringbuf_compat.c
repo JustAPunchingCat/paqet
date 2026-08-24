@@ -156,27 +156,12 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *dst = (__u8 *)(len_ptr + 1);
     __u8 *src = (__u8 *)data;
 
-    // Fast copy: 64-bit chunks + 0..7 byte tail. ~8x fewer instructions than
-    // a byte loop. Requires unaligned 64-bit access, which x86_64 permits
-    // (CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS => verifier strict_alignment
-    // is off). Each chunk re-checks both bounds so the verifier can prove
-    // reads stay within data_end and writes within the RES_SIZE reservation.
-    __u64 *dst64 = (__u64 *)dst;
-    __u64 *src64 = (__u64 *)src;
+    // Manual copy loop
     #pragma clang loop unroll(full)
-    for (__u32 i = 0; i < (CAP_LEN / 8); i++) {
-        if ((i * 8 + 8) > len) break;
-        if ((void *)(src64 + i + 1) > data_end) break;
-        dst64[i] = src64[i];
-    }
-
-    // Tail: copy the remaining 0..7 bytes
-    __u32 copied = (len / 8) * 8;
-    #pragma clang loop unroll(full)
-    for (__u32 j = 0; j < 8; j++) {
-        if ((copied + j) >= len) break;
-        if ((void *)(src + copied + j + 1) > data_end) break;
-        dst[copied + j] = src[copied + j];
+    for (__u32 i = 0; i < CAP_LEN; i++) {
+        if (i >= len) break;
+        if ((void*)(src + i + 1) > data_end) break;
+        dst[i] = src[i];
     }
 
     bpf_ringbuf_submit(buf, 0);
