@@ -139,10 +139,13 @@ int xdp_main(struct xdp_md *ctx)
 
     __u64 len = data_end - data;
     if (len > CAP_LEN) len = CAP_LEN;
-    len &= 0xFFF;
 
     // Optimal path for modern kernels (5.8+)
-    // Uses built-in helper for efficient copy
+    // Uses built-in helper for efficient copy.
+    // NOTE: no 'len &= 0xFFF' mask here — masking destroys the verifier's
+    // ability to track len as being within packet bounds, producing
+    // "helper access to the packet is not allowed". The CAP_LEN check above
+    // is sufficient; it mirrors xdp_perf.c which already dropped the mask.
     bpf_ringbuf_output(&packets, data, len, 0);
 
     return XDP_DROP;
