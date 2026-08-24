@@ -226,6 +226,11 @@ func (tc *timedConn) close() {
 func (tc *timedConn) reconnect() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
+	// Never tear down a connection with live streams: a rotation here would
+	// kill active sessions (SSH, etc.) mid-flight.
+	if tc.activeStreams > 0 {
+		return
+	}
 	if !tc.lastRotate.IsZero() && time.Since(tc.lastRotate) < 5*time.Second {
 		return
 	}
@@ -255,6 +260,13 @@ func (tc *timedConn) reconnect() {
 func (tc *timedConn) markDead() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
+	// A connection with live streams is demonstrably alive — a transient
+	// failure on a sibling path (e.g. a UDP probe) must not reap it. If the
+	// peer is truly dead, the streams themselves will error and close, which
+	// drops activeStreams to 0 and lets idleCheckLoop clean up naturally.
+	if tc.activeStreams > 0 {
+		return
+	}
 	if tc.conn != nil {
 		tc.sendGoodbyeRST()
 		tc.conn.Close()
