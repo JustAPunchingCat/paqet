@@ -213,6 +213,15 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 }
 
 func (c *Client) MarkServerStale(serverIdx int) {
+	// auto_rotate: on stream failure, rotate the current connection to a
+	// fresh port instead of tearing down every connection. The rotation is
+	// rate-limited (5s) and skipped while streams are live, so a dead or
+	// blocked port recovers on the next request without killing sibling
+	// connections. Falls back to the full teardown when auto_rotate is off.
+	if c.IsAutoRotate(serverIdx) {
+		c.RotateServerConn(serverIdx)
+		return
+	}
 	if serverIdx >= 0 && serverIdx < len(c.iters) && c.iters[serverIdx] != nil {
 		for _, tc := range c.iters[serverIdx].Items {
 			tc.markDead()

@@ -77,7 +77,10 @@ servers:
     # The server must be configured with the same range.
     hopping:
       enabled: false      # Enable port hopping
-      auto_rotate: true   # Find & verify open ports on connection initiation and hopping interval
+      auto_rotate: true   # On stream failure, rotate the connection to a fresh
+                           # port (rate-limited, skips live streams) instead of
+                           # tearing down every connection. Helps recover from
+                           # dead/blocked ports on the next request.
       interval: 180       # Interval in seconds to change ports (default: 180-300)
       ports:              # List of single ports or ranges
         - "80"
