@@ -1141,6 +1141,25 @@ func (h *SendHandle) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
 	return atomic.LoadUint32(&state.hasRemote) == 1
 }
 
+// ProbePort sends an empty fake-TCP data segment to dstIP:dstPort ahead of a
+// port hop. It primes the NAT/firewall flow, the peer's reply-port mapping
+// (clientPorts) and the per-port fake-TCP flow state WITHOUT carrying any KCP
+// payload: the peer's transport layer drops the empty segment harmlessly, but
+// only after its socket layer has already recorded the new port. The empty
+// payload does not advance the flow sequence number, so the first real data
+// segment continues from the same ISN.
+func (h *SendHandle) ProbePort(dstIP net.IP, dstPort uint16) error {
+	if dstIP == nil {
+		return nil
+	}
+	isIPv4 := dstIP.To4() != nil
+	srcIP, isSpoofed := h.resolveSrcIP(isIPv4, dstIP)
+	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
+	f := h.getClientTCPF(dstIP, dstPort)
+	addr := &net.UDPAddr{IP: dstIP, Port: int(dstPort)}
+	return h.writeRaw(nil, addr, int(h.srcPort), f, srcIP, isIPv4, isSpoofed, state)
+}
+
 // WaitFlowWarm blocks until the SYN-ACK for the given flow has been received
 // (handshake complete) or timeout elapses. Used by lazy warm-up mode so the
 // fake handshake finishes before the first data packet is sent. Returns early
@@ -1188,4 +1207,3 @@ func (h *SendHandle) ResetFlow() {
 		atomic.StoreUint32(&h.globalState.ipId, randUint32())
 	}
 }
-
