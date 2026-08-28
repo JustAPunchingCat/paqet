@@ -314,7 +314,21 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		// Returning ErrClosed forcefully terminates the KCP session and triggers an immediate reconnect,
 		// preventing the client from hanging for 30s while KCP DeadLink times out.
 		// On servers, we ignore RSTs since PacketConn is shared across all clients.
-		if isRST || isFIN {
+		// RST: client OS rejected our packet (server restarted, lost flow state).
+		// FIN: paqet goodbye signal we use instead of RST to bypass ISP RST-drop rules.
+		// On the CLIENT: treat both RST and FIN as fatal → trigger immediate reconnect.
+		// On the SERVER: only treat them as fatal if the packet has no payload
+		//   (a real goodbye FIN has no data; data packets never carry FIN in paqet).
+		//   This prevents a stale FIN from a dead previous client session from killing
+		//   the current live session.
+		isGoodbye := isRST || isFIN
+		if isGoodbye {
+			if h.role == "server" && len(payload) > 0 {
+				// Data packet with FIN bit — not a goodbye, ignore the flag.
+				isGoodbye = false
+			}
+		}
+		if isGoodbye {
 			addr := &net.UDPAddr{
 				IP:   srcIP,
 				Port: srcPort,
