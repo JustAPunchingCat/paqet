@@ -105,17 +105,8 @@ func (p *HoppingPlugin) loop() {
 		select {
 		case <-time.After(p.interval - leadTime):
 			nextPort := p.pickNextPort()
-			// Prime the new port's flow BEFORE switching data to it: NAT
-			// entry, the server's reply-port mapping, and the per-port
-			// fake-TCP state. Without this, the first real packet to the new
-			// port can be dropped by stateful firewalls and KCP backoff costs
-			// seconds of blackout. Runs in a goroutine so the hop cadence is
-			// unaffected. Works with or without the fake handshake.
 			if !p.lazyWarmup && nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
 				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
-			}
-			if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
-				go p.probePort(p.targetIP, uint16(nextPort))
 			}
 
 			select {
@@ -134,25 +125,6 @@ func (p *HoppingPlugin) loop() {
 		case <-p.stop:
 			return
 		}
-	}
-}
-
-// probePort sends a few empty fake-TCP segments to the upcoming hop port so
-// the NAT/firewall flow, the server's reply-port mapping and the per-port
-// fake-TCP state are established before the data switch. The segments carry no
-// KCP payload, so the peer's transport drops them without touching the stream;
-// the socket layer has already recorded the new port by then.
-func (p *HoppingPlugin) probePort(dstIP net.IP, port uint16) {
-	for i := 0; i < 3; i++ {
-		select {
-		case <-p.stop:
-			return
-		default:
-		}
-		if p.sendHandle != nil {
-			_ = p.sendHandle.ProbePort(dstIP, port)
-		}
-		time.Sleep(500 * time.Millisecond)
 	}
 }
 
