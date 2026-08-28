@@ -239,7 +239,7 @@ type Hopping struct {
 	Min        int      `yaml:"min"`         // Legacy: single range min
 	Max        int      `yaml:"max"`         // Legacy: single range max
 	Ports      []string `yaml:"ports"`       // New: list of ports or ranges ("80", "1000-2000")
-	Prewarm    *bool    `yaml:"prewarm"`     // Send empty probe packets to the next hop port before switching (default: false)
+	Prewarm    *bool    `yaml:"prewarm"`     // Send empty probe packets to the next hop port before switching (default: true)
 }
 
 // IsEnabled reports whether port hopping is enabled. A nil Enabled pointer

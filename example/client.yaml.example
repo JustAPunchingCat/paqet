@@ -79,10 +79,10 @@ servers:
       enabled: false      # Enable port hopping
       auto_rotate: true   # Find & verify open ports on connection initiation and hopping interval
       interval: 180       # Interval in seconds to change ports (default: 180-300)
-      prewarm: false      # Send empty probe packets to the next hop port before switching (default: false)
-                          # Set true to prime the NAT/firewall flow + server reply-port mapping so the
-                          # first packet to the new port is not dropped (helps on stateful paths).
-                          # Works with or without the fake handshake (~3 empty packets per hop).
+      prewarm: true       # Send empty probe packets to the next hop port before switching (default: true)
+                          # Primes the NAT/firewall flow + server reply-port mapping so the first
+                          # packet to the new port is not dropped. Works with or without the fake
+                          # handshake. Set false to disable (extra probes are ~3 packets per hop).
       ports:              # List of single ports or ranges
         - "80"
         - "20000-45000"   # Recommended: 20000-45000
