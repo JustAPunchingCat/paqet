@@ -149,8 +149,11 @@ func (p *HoppingPlugin) ForceHop() {
 	if newPort == 0 {
 		return
 	}
-	if !p.lazyWarmup && p.sendHandle != nil && p.targetIP != nil {
-		p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
+	if p.sendHandle != nil {
+		p.sendHandle.ResetFlow()
+		if !p.lazyWarmup && p.targetIP != nil {
+			p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
+		}
 	}
 	p.currentPort.Store(newPort)
 }

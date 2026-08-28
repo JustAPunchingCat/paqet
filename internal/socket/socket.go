@@ -177,10 +177,7 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		}
 
 		// Store client port for Server NAT routing
-		key := hash.IPAddr(pkt.addr.(*net.UDPAddr).IP, uint16(pkt.addr.(*net.UDPAddr).Port))
-		if lastPort, ok := c.clientPorts.Load(key); !ok || lastPort.(int) != pkt.port {
-			c.clientPorts.Store(key, pkt.port)
-		}
+		c.updateClientPort(pkt.addr.(*net.UDPAddr), pkt.port)
 
 		n = copy(data, pkt.data)
 		return n, pkt.addr, nil
@@ -211,6 +208,31 @@ func (c *PacketConn) workerLoop(ch chan rawJob) {
 	}
 }
 
+type clientPortEntry struct {
+	port       int
+	switchTime int64
+}
+
+func (c *PacketConn) updateClientPort(udpAddr *net.UDPAddr, dstPort int) {
+	key := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
+	now := time.Now().UnixNano()
+	
+	if val, ok := c.clientPorts.Load(key); ok {
+		entry := val.(*clientPortEntry)
+		if entry.port != dstPort {
+			// If the port changed recently (e.g. less than 1.5 seconds ago),
+			// this is almost certainly a delayed packet from the old port.
+			// Do not bounce back to the old port.
+			if now-entry.switchTime < int64(1500*time.Millisecond) {
+				return
+			}
+			c.clientPorts.Store(key, &clientPortEntry{port: dstPort, switchTime: now})
+		}
+	} else {
+		c.clientPorts.Store(key, &clientPortEntry{port: dstPort, switchTime: now})
+	}
+}
+
 func (c *PacketConn) backgroundReader() {
 	for {
 		select {
@@ -237,8 +259,7 @@ func (c *PacketConn) backgroundReader() {
 		}
 		if addr != nil && dstPort > 0 {
 			if udpAddr, ok := addr.(*net.UDPAddr); ok {
-				key := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
-				c.clientPorts.Store(key, dstPort)
+				c.updateClientPort(udpAddr, dstPort)
 			}
 		}
 
@@ -296,8 +317,8 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 
 	// Server Echo logic: try to reply from the port the client last contacted.
 	key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
-	if lastPort, ok := c.clientPorts.Load(key); ok {
-		srcPort = lastPort.(int)
+	if val, ok := c.clientPorts.Load(key); ok {
+		srcPort = val.(*clientPortEntry).port
 	}
 
 	// Cast again because plugins might return a generic net.Addr
@@ -353,8 +374,8 @@ func (c *PacketConn) LocalAddr() net.Addr {
 
 func (c *PacketConn) GetClientPort(addr net.Addr) int {
 	key := hash.IPAddr(addr.(*net.UDPAddr).IP, uint16(addr.(*net.UDPAddr).Port))
-	if port, ok := c.clientPorts.Load(key); ok {
-		return port.(int)
+	if val, ok := c.clientPorts.Load(key); ok {
+		return val.(*clientPortEntry).port
 	}
 	return 0
 }

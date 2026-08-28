@@ -293,6 +293,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 			return nil, nil, 0, nil
 		}
 		remoteSeq := binary.BigEndian.Uint32(data[transStart+4 : transStart+8])
+		remoteAck := binary.BigEndian.Uint32(data[transStart+8 : transStart+12])
 		dataOffset := data[transStart+12] >> 4
 		tcpLen := int(dataOffset) * 4
 		if len(data) < transStart+tcpLen {
@@ -350,7 +351,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 					i += length
 				}
 			}
-			h.flowUpdater.UpdateRemoteFlow(srcIP, srcPort, dstIP, dstPort, remoteSeq, uint32(len(payload)), tsVal)
+			h.flowUpdater.UpdateRemoteFlow(srcIP, srcPort, dstIP, dstPort, remoteSeq, remoteAck, uint32(len(payload)), tsVal)
 
 			if h.handshake {
 				if isSYN && !isACK && len(payload) == 0 {

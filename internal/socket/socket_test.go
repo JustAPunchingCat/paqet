@@ -137,7 +137,7 @@ func TestStatefulTCPDisguiseProgression(t *testing.T) {
 	}
 
 	// 4. Simulate remote peer incoming packet: from dstIP:10000 to srcIP:12345, Seq = 50000, PayloadLen = 1200, TSval = 888888
-	sh.UpdateRemoteFlow(dstIP, 10000, srcIP, 12345, 50000, 1200, 888888)
+	sh.UpdateRemoteFlow(dstIP, 10000, srcIP, 12345, 50000, 50001, 1200, 888888)
 
 	// 5. Send Packet 4: 200 bytes
 	p4 := make([]byte, 200)
@@ -148,10 +148,10 @@ func TestStatefulTCPDisguiseProgression(t *testing.T) {
 	pkt4 := inj.packets[4]
 	seq4 := binary.BigEndian.Uint32(pkt4[38:42])
 	ack4 := binary.BigEndian.Uint32(pkt4[42:46])
-	tsEcr4 := binary.BigEndian.Uint32(pkt4[62:66]) // Timestamp echo in TCP options
-
-	if seq4 != seq3+80 {
-		t.Errorf("expected seq4=%d (seq3+80), got %d", seq3+80, seq4)
+	tsEcr4 := binary.BigEndian.Uint32(pkt4[62:66]) // Expected seq4: prev state.seq (seq3 + 80)
+	expectedSeq4 := seq3 + 80
+	if seq4 != expectedSeq4 {
+		t.Errorf("expected seq4=%d, got %d", expectedSeq4, seq4)
 	}
 	if ack4 != 51200 { // 50000 + 1200
 		t.Errorf("expected ack4=51200, got %d", ack4)

@@ -14,6 +14,8 @@
 
 # Test binary, built with `go test -c`
 *.test
+latency_test.py
+test_socks.py
 
 # Code coverage profiles and other test artifacts
 *.out

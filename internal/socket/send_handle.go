@@ -35,7 +35,7 @@ type TCPF struct {
 }
 
 type FlowUpdater interface {
-	UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, payloadLen uint32, tsVal uint32)
+	UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32)
 	SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error
 	SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error
 }
@@ -562,18 +562,15 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	var ack uint32
 	var tsEcr uint32
 	if atomic.LoadUint32(&state.hasRemote) == 1 {
-		rSeq := atomic.LoadUint32(&state.remoteSeq)
-		rLen := atomic.LoadUint32(&state.remoteLen)
-		ack = rSeq + rLen
+		ack = atomic.LoadUint32(&state.remoteSeq) + atomic.LoadUint32(&state.remoteLen)
 		tsEcr = atomic.LoadUint32(&state.remoteTSval)
 	} else {
-		if f.SYN {
+		if f.SYN && !f.ACK {
 			ack = 0
-			if f.ACK {
-				ack = seq + 1
-			}
 		} else {
-			ack = seq + 1
+			// Use the randomized baseTS as a completely arbitrary but CONSTANT
+			// initial ACK number until the server actually replies.
+			ack = atomic.LoadUint32(&state.baseTS)
 		}
 		if !f.SYN {
 			tsEcr = tsVal - uint32(randRange(50, 250))
@@ -981,10 +978,19 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	h.tcpF.mu.Unlock()
 }
 
-func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, payloadLen uint32, tsVal uint32) {
+func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) {
 	// The incoming packet arrived from (srcIP:srcPort) to our local (dstIP:dstPort).
 	// Our corresponding outgoing flow is keyed by (dstIP:dstPort -> srcIP:srcPort).
 	state := h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
+
+	// Sync our sequence number to the remote's ACK to prevent massive TCP AckNum jumps
+	// when the first reply arrives, which stateful firewalls drop as out-of-state.
+	// This must ONLY be done on the server, since the client initiated the connection
+	// and its state.seq is already correct.
+	if atomic.LoadUint32(&state.hasRemote) == 0 && remoteAck > 0 && h.role == "server" {
+		atomic.StoreUint32(&state.seq, remoteAck)
+	}
+
 	atomic.StoreUint32(&state.remoteSeq, remoteSeq)
 	atomic.StoreUint32(&state.remoteLen, payloadLen)
 	if tsVal > 0 {
@@ -1144,3 +1150,15 @@ func (h *SendHandle) Close() {
 		}
 	})
 }
+
+func (h *SendHandle) ResetFlow() {
+	if h.role == "client" && h.globalState != nil {
+		atomic.StoreUint32(&h.globalState.hasRemote, 0)
+		atomic.StoreUint32(&h.globalState.synSent, 0)
+		atomic.StoreUint32(&h.globalState.seq, randUint32())
+		atomic.StoreUint32(&h.globalState.baseTS, randUint32())
+		atomic.StoreUint32(&h.globalState.tsCounter, 0)
+		atomic.StoreUint32(&h.globalState.ipId, randUint32())
+	}
+}
+
