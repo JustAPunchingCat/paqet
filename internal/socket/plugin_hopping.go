@@ -9,17 +9,18 @@ import (
 )
 
 type HoppingPlugin struct {
-	ranges      []conf.PortRange
-	interval    time.Duration
-	warmup      time.Duration
-	lazyWarmup  bool
-	stop        chan struct{}
-	currentPort atomic.Uint32
-	minPort     int
-	isClient    bool
-	label       string
-	targetIP    net.IP
-	sendHandle  *SendHandle
+	ranges         []conf.PortRange
+	interval       time.Duration
+	warmup         time.Duration
+	lazyWarmup     bool
+	stop           chan struct{}
+	currentPort    atomic.Uint32
+	lastActivePort atomic.Uint32
+	minPort        int
+	isClient       bool
+	label          string
+	targetIP       net.IP
+	sendHandle     *SendHandle
 }
 
 func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.Handshake) (*HoppingPlugin, error) {
@@ -186,10 +187,24 @@ func (p *HoppingPlugin) OnWrite(data []byte, addr net.Addr) ([]byte, net.Addr, e
 		if udpAddr, ok := addr.(*net.UDPAddr); ok {
 			newAddr := *udpAddr
 			newAddr.Port = int(port)
+			// Remember the most recent port we actually wrote to. The goodbye
+			// FIN (SendRST) must go to a port the client has already used —
+			// only those flows are primed through the ISP NAT, so the server
+			// actually receives the FIN and tears down the orphan session.
+			// Sending it to the freshly hopped (but never used) port would be
+			// dropped as an un-primed flow, leaving the server session alive
+			// to retransmit forever (the stale-tunnel noise).
+			p.lastActivePort.Store(port)
 			return data, &newAddr, nil
 		}
 	}
 	return data, addr, nil
+}
+
+// LastActivePort returns the most recent port this client actually wrote to,
+// or 0 if nothing has been sent yet.
+func (p *HoppingPlugin) LastActivePort() uint32 {
+	return p.lastActivePort.Load()
 }
 
 func (p *HoppingPlugin) Close() error {

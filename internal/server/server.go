@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"paqet/internal/conf"
 	"paqet/internal/flog"
@@ -102,9 +103,62 @@ func (s *Server) Start() error {
 		s.listen(ctx, listener)
 	})
 
+	// Reap stale sessions. If a client vanishes without sending a goodbye
+	// FIN (crash, power loss, or a FIN that got dropped because it rode an
+	// un-primed hopped port), the server-side session would otherwise live
+	// forever: smux's keepalive only closes sessions that still have frames
+	// buffered in the recv bucket (bucket > 0), so a silently dead peer with
+	// an empty bucket is never reaped, and the KCP session keeps
+	// retransmitting forever — the stale-tunnel noise.
+	deadlink := 120
+	if s.cfg.Transport.KCP != nil && s.cfg.Transport.KCP.DeadLink != 0 {
+		deadlink = s.cfg.Transport.KCP.DeadLink
+	}
+	if deadlink > 0 {
+		s.wg.Go(func() {
+			s.reapStale(ctx, time.Duration(deadlink)*time.Second)
+		})
+	}
+
 	s.wg.Wait()
 	flog.Infof("Server shutdown completed")
 	return nil
+}
+
+// reapStale periodically closes sessions whose client has not sent any
+// packet for longer than the deadlink timeout. This is the server-side
+// backstop for dead-peer detection: it guarantees a vanished client cannot
+// keep a session alive to retransmit indefinitely.
+func (s *Server) reapStale(ctx context.Context, deadlink time.Duration) {
+	ticker := time.NewTicker(deadlink / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.pConn == nil {
+				continue
+			}
+			cutoff := time.Now().Add(-deadlink)
+			s.conns.Range(func(key, value interface{}) bool {
+				conn, ok := value.(tnet.Conn)
+				if !ok {
+					return true
+				}
+				last := s.pConn.GetClientLastSeen(conn.RemoteAddr())
+				if last.IsZero() {
+					return true
+				}
+				if last.Before(cutoff) {
+					flog.Warnf("Client %s silent for %s, closing stale session", conn.RemoteAddr(), deadlink)
+					conn.Close()
+					s.conns.Delete(key)
+				}
+				return true
+			})
+		}
+	}
 }
 
 func (s *Server) listen(ctx context.Context, listener tnet.Listener) {

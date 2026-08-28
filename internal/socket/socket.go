@@ -211,14 +211,16 @@ func (c *PacketConn) workerLoop(ch chan rawJob) {
 type clientPortEntry struct {
 	port       int
 	switchTime int64
+	lastSeen   int64
 }
 
 func (c *PacketConn) updateClientPort(udpAddr *net.UDPAddr, dstPort int) {
 	key := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
 	now := time.Now().UnixNano()
-	
+
 	if val, ok := c.clientPorts.Load(key); ok {
 		entry := val.(*clientPortEntry)
+		entry.lastSeen = now
 		if entry.port != dstPort {
 			// If the port changed recently (e.g. less than 1.5 seconds ago),
 			// this is almost certainly a delayed packet from the old port.
@@ -226,11 +228,24 @@ func (c *PacketConn) updateClientPort(udpAddr *net.UDPAddr, dstPort int) {
 			if now-entry.switchTime < int64(1500*time.Millisecond) {
 				return
 			}
-			c.clientPorts.Store(key, &clientPortEntry{port: dstPort, switchTime: now})
+			c.clientPorts.Store(key, &clientPortEntry{port: dstPort, switchTime: now, lastSeen: now})
 		}
 	} else {
-		c.clientPorts.Store(key, &clientPortEntry{port: dstPort, switchTime: now})
+		c.clientPorts.Store(key, &clientPortEntry{port: dstPort, switchTime: now, lastSeen: now})
 	}
+}
+
+// GetClientLastSeen returns the last time a packet was received from addr,
+// or the zero time if the client is unknown.
+func (c *PacketConn) GetClientLastSeen(addr net.Addr) time.Time {
+	if udpAddr, ok := addr.(*net.UDPAddr); ok {
+		key := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
+		if val, ok := c.clientPorts.Load(key); ok {
+			entry := val.(*clientPortEntry)
+			return time.Unix(0, entry.lastSeen)
+		}
+	}
+	return time.Time{}
 }
 
 func (c *PacketConn) backgroundReader() {
@@ -434,13 +449,36 @@ func (c *PacketConn) SendRST(remoteIP net.IP, remotePort int) error {
 	if c.sendHandle != nil {
 		port := remotePort
 		if c.cfg.Role == "client" {
-			if hp := c.GetCurrentPort(); hp > 0 {
+			// Prefer the most recent port we actually wrote to: only that
+			// flow is primed through the ISP NAT, so the goodbye FIN reaches
+			// the server and the orphan session is torn down. A freshly
+			// hopped (but never used) port is an un-primed flow — the FIN
+			// gets dropped, the server session lives on and retransmits
+			// forever (stale-tunnel noise).
+			if hp := c.GetLastActivePort(); hp > 0 {
+				port = hp
+			} else if hp := c.GetCurrentPort(); hp > 0 {
 				port = hp
 			}
 		}
 		return c.sendHandle.SendRST(remoteIP, port)
 	}
 	return nil
+}
+
+// GetLastActivePort returns the most recent port this connection actually
+// wrote to, or 0 if nothing has been sent yet. Client role only.
+func (c *PacketConn) GetLastActivePort() int {
+	if c.plugins != nil {
+		for _, pl := range c.plugins.plugins {
+			if hp, ok := pl.(*HoppingPlugin); ok {
+				if port := hp.LastActivePort(); port > 0 {
+					return int(port)
+				}
+			}
+		}
+	}
+	return 0
 }
 
 func (c *PacketConn) GetCurrentPort() int {
