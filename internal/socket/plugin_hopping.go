@@ -63,12 +63,12 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.H
 		label:      label,
 		targetIP:   targetIP,
 	}
-	// Pre-warm the next hop port with empty probe packets before switching
-	// data to it (default: true). This primes the NAT/firewall flow, the
-	// server's reply-port mapping and the per-port fake-TCP state, so the
-	// first real packet to the new port is not dropped. Works with or
-	// without the fake handshake.
-	hp.prewarm = true
+	// Optionally pre-warm the next hop port with empty probe packets before
+	// switching data to it (default: false). When enabled, this primes the
+	// NAT/firewall flow, the server's reply-port mapping and the per-port
+	// fake-TCP state, so the first real packet to the new port is not
+	// dropped on stateful paths. Works with or without the fake handshake.
+	hp.prewarm = false
 	if cfg.Prewarm != nil {
 		hp.prewarm = *cfg.Prewarm
 	}
