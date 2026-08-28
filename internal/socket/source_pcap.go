@@ -42,7 +42,7 @@ func newPcapSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 
 	// Port Filter
 	portFilter := fmt.Sprintf("dst port %d", cfg.Port)
-	if hopping != nil && hopping.Enabled {
+	if hopping != nil && hopping.IsEnabled() {
 		ranges, err := hopping.GetRanges()
 		if err == nil && len(ranges) > 0 {
 			var parts []string

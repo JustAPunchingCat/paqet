@@ -46,10 +46,13 @@ func smuxConf(cfg *conf.KCP, isServer bool) *smux.Config {
 	var sconf = smux.DefaultConfig()
 
 	// Dead-peer detection. kcp-go v5 dropped its old deadlink timer, so we use
-	// smux's keepalive (NOP ping/pong) as the liveness backstop: a peer is
-	// declared dead after `deadlink` seconds of silence and the session is
-	// closed. KeepAliveInterval is a fraction of the timeout so live peers keep
-	// each other refreshed (and satisfies smux's interval < timeout invariant).
+	// smux's one-way NOP keepalive as the liveness backstop: a peer is declared
+	// dead after `deadlink` seconds of silence and the session is closed.
+	// deadlink > 0 enables the keepalive with that timeout; deadlink -1 disables
+	// it entirely (no false kills on lossy links, at the cost of no dead-peer
+	// backstop — goodbye-RST still covers clean shutdowns). KeepAliveInterval is
+	// a fraction of the timeout so live peers keep each other refreshed (and
+	// satisfies smux's interval < timeout invariant).
 	if cfg != nil && cfg.DeadLink > 0 {
 		sconf.KeepAliveDisabled = false
 		sconf.KeepAliveTimeout = time.Duration(cfg.DeadLink) * time.Second
@@ -58,8 +61,8 @@ func smuxConf(cfg *conf.KCP, isServer bool) *smux.Config {
 			sconf.KeepAliveInterval = time.Second
 		}
 	} else {
-		// Keepalives disabled (legacy): no idle traffic, but no dead-peer
-		// detection either.
+		// deadlink == -1 (or otherwise non-positive): keepalive disabled — no
+		// idle traffic, but no dead-peer detection either.
 		sconf.KeepAliveDisabled = true
 		sconf.KeepAliveInterval = 0
 		sconf.KeepAliveTimeout = 0

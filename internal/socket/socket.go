@@ -142,7 +142,7 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 		}
 	}
 
-	if hopping != nil && hopping.Enabled {
+	if hopping != nil && hopping.IsEnabled() {
 		hp, err := NewHoppingPlugin(hopping, writeHopping, label, connCfg.Handshake)
 		if err != nil {
 			return nil, fmt.Errorf("invalid hopping configuration: %w", err)

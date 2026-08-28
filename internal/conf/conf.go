@@ -104,7 +104,7 @@ func (c *Conf) setDefaults() {
 				c.Servers[i].Obfuscation = c.Obfuscation
 			}
 			c.Servers[i].Obfuscation.setDefaults()
-			if !c.Servers[i].Hopping.Enabled && c.Hopping.Enabled {
+			if c.Servers[i].Hopping.Enabled == nil && c.Hopping.IsEnabled() {
 				c.Servers[i].Hopping = c.Hopping
 			}
 
@@ -233,12 +233,19 @@ type PortRange struct {
 }
 
 type Hopping struct {
-	Enabled    bool     `yaml:"enabled"`
+	Enabled    *bool    `yaml:"enabled"`
 	AutoRotate bool     `yaml:"auto_rotate"` // Auto-rotate connection on zero-byte responses (default: false)
 	Interval   int      `yaml:"interval"`    // Hopping interval in seconds
 	Min        int      `yaml:"min"`         // Legacy: single range min
 	Max        int      `yaml:"max"`         // Legacy: single range max
 	Ports      []string `yaml:"ports"`       // New: list of ports or ranges ("80", "1000-2000")
+}
+
+// IsEnabled reports whether port hopping is enabled. A nil Enabled pointer
+// means "not configured", which is treated as disabled (and lets the global
+// hopping setting be inherited when set).
+func (h *Hopping) IsEnabled() bool {
+	return h.Enabled != nil && *h.Enabled
 }
 
 func (h *Hopping) GetRanges() ([]PortRange, error) {
@@ -282,7 +289,7 @@ func (h *Hopping) GetRanges() ([]PortRange, error) {
 }
 
 func (h *Hopping) validate(role string) []error {
-	if !h.Enabled {
+	if !h.IsEnabled() {
 		return nil
 	}
 	var errs []error

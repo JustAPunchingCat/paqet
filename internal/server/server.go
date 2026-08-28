@@ -86,7 +86,7 @@ func (s *Server) Start() error {
 	}
 	defer listener.Close()
 	listenInfo := fmt.Sprintf(":%d", s.cfg.Listen.Addr.Port)
-	if s.cfg.Hopping.Enabled {
+	if s.cfg.Hopping.IsEnabled() {
 		ranges, err := s.cfg.Hopping.GetRanges()
 		if err == nil && len(ranges) > 0 {
 			var parts []string

@@ -110,6 +110,7 @@ func (r *perfReader) Read() (PacketRecord, error) {
 type sharedEBPFSource struct {
 	mgr   *ebpfManager
 	ch    chan []byte
+	done  chan struct{}
 	ports []uint16 // Track registered ports to remove on close
 	ipv4  net.IP
 	ipv6  net.IP
@@ -140,8 +141,9 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 
 	// Create the source
 	s := &sharedEBPFSource{
-		mgr: mgr,
-		ch:  make(chan []byte, 65536),
+		mgr:  mgr,
+		ch:   make(chan []byte, 65536),
+		done: make(chan struct{}),
 	}
 
 	// Register IP(s): for the client, register the remote SERVER IP(s) so the XDP
@@ -193,7 +195,7 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 
 	// Register Ports (Main port + Hopping ranges on server)
 	ports := []uint16{uint16(cfg.Port)}
-	if cfg.Role == "server" && hopping != nil && hopping.Enabled {
+	if cfg.Role == "server" && hopping != nil && hopping.IsEnabled() {
 		ranges, err := hopping.GetRanges()
 		if err == nil {
 			for _, r := range ranges {
@@ -219,11 +221,15 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 }
 
 func (s *sharedEBPFSource) ReadPacketData() ([]byte, error) {
-	data, ok := <-s.ch
-	if !ok {
+	select {
+	case data, ok := <-s.ch:
+		if !ok {
+			return nil, fmt.Errorf("ebpf source closed")
+		}
+		return data, nil
+	case <-s.done:
 		return nil, fmt.Errorf("ebpf source closed")
 	}
-	return data, nil
 }
 
 func (s *sharedEBPFSource) Close() {
@@ -233,14 +239,19 @@ func (s *sharedEBPFSource) Close() {
 	s.mgr.unregisterPorts(s.ports)
 	// Note: We don't remove IPs because other clients might share them.
 
-	// Close packet channel so ReadPacketData unblocks and allows backgroundReader to exit cleanly
-	close(s.ch)
+	// Signal closure via `done` rather than closing `ch`: dispatch() may still
+	// hold a reference to `ch` (read under RLock) and send on it, which would
+	// panic on a closed channel. Leaving `ch` open lets any in-flight send fall
+	// through the non-blocking default case harmlessly.
+	close(s.done)
 
 	s.mgr.refCount--
-	if s.mgr.refCount == 0 {
-		s.mgr.close()
-		delete(managers, s.mgr.ifaceIndex)
-	}
+	// Intentionally do NOT tear down the manager when refCount drops to zero.
+	// The XDP program must stay attached for the lifetime of the process so a
+	// reconnect (new source) can reuse the already-loaded program instead of
+	// triggering an expensive unload/reload cycle — which re-runs the optimal
+	// verifier failure and the compat fallback on every rotation. The kernel
+	// detaches the program automatically on process exit.
 }
 
 // --- Manager Implementation ---

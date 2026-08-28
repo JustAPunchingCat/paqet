@@ -153,9 +153,11 @@ transport:
     # pshard: 3     # Parity shards for FEC
 
     # Liveness / dead-peer detection
-    # deadlink: 30           # Seconds of silence before the peer is declared dead (default: 30).
+    # deadlink: 120          # Seconds of silence before the peer is declared dead (default: 120).
                             # Detects a crashed/killed peer and tears the session down instead of
-                            # retransmitting forever. Raise it for high-latency/lossy links.
+                            # retransmitting forever. Raise it for high-latency/lossy links, or set
+                            # -1 to disable the keepalive entirely (no false kills; goodbye-RST still
+                            # covers clean shutdowns).
 
   # QUIC protocol settings (used when protocol: "quic")
   # quic:

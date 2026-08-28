@@ -231,7 +231,7 @@ func getPorts(cfg *conf.Conf) []string {
 		if cfg.Listen.Addr != nil {
 			add(cfg.Listen.Addr.Port)
 		}
-		if cfg.Hopping.Enabled {
+		if cfg.Hopping.IsEnabled() {
 			ranges, _ := cfg.Hopping.GetRanges()
 			for _, r := range ranges {
 				addRange(r.Min, r.Max)
@@ -245,14 +245,14 @@ func getPorts(cfg *conf.Conf) []string {
 			if s.Server.Addr != nil {
 				add(s.Server.Addr.Port)
 			}
-			if s.Hopping.Enabled {
+			if s.Hopping.IsEnabled() {
 				ranges, _ := s.Hopping.GetRanges()
 				for _, r := range ranges {
 					addRange(r.Min, r.Max)
 				}
 			}
 		}
-		if cfg.Hopping.Enabled {
+		if cfg.Hopping.IsEnabled() {
 			ranges, _ := cfg.Hopping.GetRanges()
 			for _, r := range ranges {
 				addRange(r.Min, r.Max)

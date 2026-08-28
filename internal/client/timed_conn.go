@@ -94,7 +94,7 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	// We must tell KCP to expect packets from this normalized port, ignoring the
 	// static port defined in server.addr.
 	remoteAddr := tc.srvCfg.Server.Addr
-	if tc.srvCfg.Hopping.Enabled {
+	if tc.srvCfg.Hopping.IsEnabled() {
 		clone := *remoteAddr
 		canonicalPort := tc.srvCfg.Hopping.Min
 		if canonicalPort == 0 {
