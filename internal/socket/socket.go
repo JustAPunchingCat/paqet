@@ -432,7 +432,13 @@ func (c *PacketConn) PrewarmFlow(dstIP net.IP, dstPort uint16) {
 // is configured.
 func (c *PacketConn) SendRST(remoteIP net.IP, remotePort int) error {
 	if c.sendHandle != nil {
-		return c.sendHandle.SendRST(remoteIP, remotePort)
+		port := remotePort
+		if c.cfg.Role == "client" {
+			if hp := c.GetCurrentPort(); hp > 0 {
+				port = hp
+			}
+		}
+		return c.sendHandle.SendRST(remoteIP, port)
 	}
 	return nil
 }

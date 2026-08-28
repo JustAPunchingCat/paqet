@@ -1054,7 +1054,6 @@ func (h *SendHandle) SendRST(remoteIP net.IP, remotePort int) error {
 	if h.hasSpoofing() {
 		return nil
 	}
-	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
 	isIPv4 := remoteIP.To4() != nil
 	var srcIP net.IP
 	if isIPv4 {
@@ -1063,9 +1062,37 @@ func (h *SendHandle) SendRST(remoteIP net.IP, remotePort int) error {
 		srcIP = h.srcIPv6
 	}
 
-	state := h.getFlowState(srcIP, int(h.srcPort), remoteIP, uint16(remotePort))
-	rstF := conf.TCPF{RST: true, ACK: true}
-	return h.writeRaw(nil, addr, int(h.srcPort), rstF, srcIP, isIPv4, false, state)
+	rstF := conf.TCPF{FIN: true, ACK: true}
+
+	h.statesMu.Lock()
+	var targets []uint16
+	for key := range h.spoofStates {
+		// key format: srcIP:srcPort->dstIP:dstPort
+		if strings.Contains(key, "->"+remoteIP.String()+":") {
+			parts := strings.Split(key, ":")
+			if len(parts) == 3 {
+				portStr := parts[2]
+				if p, err := strconv.Atoi(portStr); err == nil {
+					targets = append(targets, uint16(p))
+				}
+			}
+		}
+	}
+	h.statesMu.Unlock()
+
+	if len(targets) == 0 {
+		targets = append(targets, uint16(remotePort))
+	}
+
+	var lastErr error
+	for _, port := range targets {
+		addr := &net.UDPAddr{IP: remoteIP, Port: int(port)}
+		state := h.getFlowState(srcIP, int(h.srcPort), remoteIP, port)
+		if err := h.writeRaw(nil, addr, int(h.srcPort), rstF, srcIP, isIPv4, false, state); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 func (h *SendHandle) PrewarmFlow(dstIP net.IP, dstPort uint16) {

@@ -305,6 +305,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		isSYN := tcpFlags&0x02 != 0
 		isACK := tcpFlags&0x10 != 0
 		isRST := tcpFlags&0x04 != 0
+		isFIN := tcpFlags&0x01 != 0
 
 		flog.Tracef("recv %s:%d -> %s:%d flags=0x%02x syn=%v ack=%v rst=%v payload=%d",
 			srcIP, srcPort, dstIP, dstPort, tcpFlags, isSYN, isACK, isRST, len(data)-transStart-tcpLen)
@@ -313,7 +314,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		// Returning ErrClosed forcefully terminates the KCP session and triggers an immediate reconnect,
 		// preventing the client from hanging for 30s while KCP DeadLink times out.
 		// On servers, we ignore RSTs since PacketConn is shared across all clients.
-		if isRST {
+		if isRST || isFIN {
 			addr := &net.UDPAddr{
 				IP:   srcIP,
 				Port: srcPort,

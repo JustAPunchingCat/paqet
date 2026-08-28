@@ -306,7 +306,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		}
 
 		// 3. Send protocol header
-		strm.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
 		err = p.Write(strm)
 		strm.SetWriteDeadline(time.Time{})
 		if err != nil {
