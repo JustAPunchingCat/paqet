@@ -343,7 +343,7 @@ func (tc *timedConn) idleCheckLoop() {
 			return
 		case <-ticker.C:
 			tc.mu.Lock()
-			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 10*time.Second {
+			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
 				tc.sendGoodbyeRST()
 				tc.conn.Close()
 				if tc.pConn != nil {
