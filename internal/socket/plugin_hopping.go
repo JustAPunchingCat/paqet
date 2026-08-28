@@ -13,7 +13,6 @@ type HoppingPlugin struct {
 	interval    time.Duration
 	warmup      time.Duration
 	lazyWarmup  bool
-	prewarm     bool
 	stop        chan struct{}
 	currentPort atomic.Uint32
 	minPort     int
@@ -62,15 +61,6 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.H
 		isClient:   isClient,
 		label:      label,
 		targetIP:   targetIP,
-	}
-	// Pre-warm the next hop port with empty probe packets before switching
-	// data to it (default: true). This primes the NAT/firewall flow, the
-	// server's reply-port mapping and the per-port fake-TCP state, so the
-	// first real packet to the new port is not dropped. Works with or
-	// without the fake handshake.
-	hp.prewarm = true
-	if cfg.Prewarm != nil {
-		hp.prewarm = *cfg.Prewarm
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -124,7 +114,7 @@ func (p *HoppingPlugin) loop() {
 			if !p.lazyWarmup && nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
 				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
 			}
-			if p.prewarm && nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
+			if nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
 				go p.probePort(p.targetIP, uint16(nextPort))
 			}
 
