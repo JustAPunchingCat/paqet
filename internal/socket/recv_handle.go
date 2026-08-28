@@ -314,9 +314,6 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		// preventing the client from hanging for 30s while KCP DeadLink times out.
 		// On servers, we ignore RSTs since PacketConn is shared across all clients.
 		if isRST {
-			if h.role == "client" {
-				return nil, nil, 0, net.ErrClosed
-			}
 			addr := &net.UDPAddr{
 				IP:   srcIP,
 				Port: srcPort,
