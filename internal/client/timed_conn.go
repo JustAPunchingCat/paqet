@@ -29,7 +29,6 @@ type timedConn struct {
 	activeStreams int
 	lastIdle      time.Time
 	lastRSTHop    atomic.Int64
-	lastHeldSnd   atomic.Int64
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -440,13 +439,6 @@ func (tc *timedConn) checkStuckReturnPath() {
 	if !tc.lastRSTHop.CompareAndSwap(last, now) {
 		return
 	}
-	// Guard against one-shot overreaction: require the silence condition to
-	// hold across two consecutive ticks before hopping.
-	if prev := tc.lastHeldSnd.Load(); prev == 0 || now-prev < int64(2*HOP_TIMEOUT_LIMIT) {
-		tc.lastHeldSnd.Store(now)
-		return
-	}
-	tc.lastHeldSnd.Store(now)
 	flog.Warnf("no server data for %v while streams active — forcing port hop to escape the stuck tuple", INBOUND_SILENCE)
 	tc.pConn.ForceHop()
 	// KCP retransmits into a blackholed tuple; a NEW server-side session
