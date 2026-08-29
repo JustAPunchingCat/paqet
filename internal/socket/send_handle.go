@@ -1027,12 +1027,19 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 
 	isFirstPacket := atomic.LoadUint32(&state.hasRemote) == 0
 
-	// Sync our sequence number to the remote's ACK to prevent massive TCP AckNum jumps
-	// when the first reply arrives, which stateful firewalls drop as out-of-state.
-	// This must ONLY be done on the server, since the client initiated the connection
-	// and its state.seq is already correct.
-	if isFirstPacket && remoteAck > 0 && h.role == "server" {
-		state.seq = remoteAck
+	// Sync our sequence number to the remote's ACK.
+	if remoteAck > 0 {
+		if isFirstPacket && h.role == "server" {
+			// On the first packet received by the server, jump to the client's initial ACK.
+			state.seq = remoteAck
+		} else if int32(state.seq - remoteAck) > 0 {
+			// If our current sequence number is ahead of the remote's ACK, it means
+			// the network dropped our packets. By rewinding state.seq to remoteAck,
+			// any KCP retransmissions will be sent with the EXACT sequence number
+			// that was dropped, perfectly filling the hole in the stateful firewall's
+			// tracking and preventing the connection from stalling on port hops.
+			state.seq = remoteAck
+		}
 	}
 
 	newAck := remoteSeq + payloadLen
