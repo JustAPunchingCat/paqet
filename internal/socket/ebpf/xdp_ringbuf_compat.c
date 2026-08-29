@@ -162,7 +162,9 @@ int xdp_main(struct xdp_md *ctx)
     // This avoids branch explosion in the verifier without unaligned memory access.
     #pragma clang loop unroll(full)
     for (__u32 i = 0; i < CAP_LEN / 4; i++) {
-        ((__u32 *)dst)[i] = 0;
+        // Volatile prevents Clang from "optimizing" this loop into a memset() call,
+        // which the BPF backend doesn't support.
+        *(volatile __u32 *)(dst + i * 4) = 0;
     }
 
     // Manual copy loop in 8-byte chunks to reduce verifier branch paths by 8x.
@@ -170,19 +172,16 @@ int xdp_main(struct xdp_md *ctx)
     // To satisfy strict alignment, we use __builtin_memcpy for the 8-byte chunks.
     #pragma clang loop unroll(full)
     for (__u32 i = 0; i < CAP_LEN / 8; i++) {
-        if ((void*)(src + 8) > data_end) break;
-        __builtin_memcpy(dst, src, 8);
-        src += 8;
-        dst += 8;
+        if ((void*)(src + i * 8 + 8) > data_end) break;
+        __builtin_memcpy(dst + i * 8, src + i * 8, 8);
     }
 
     // Remainder byte-by-byte copy (max 7 bytes)
     #pragma clang loop unroll(full)
     for (__u32 i = 0; i < 7; i++) {
-        if ((void*)(src + 1) > data_end) break;
-        *dst = *src;
-        src++;
-        dst++;
+        __u32 offset = (CAP_LEN / 8) * 8 + i;
+        if ((void*)(src + offset + 1) > data_end) break;
+        dst[offset] = src[offset];
     }
 
     bpf_ringbuf_submit(buf, 0);
