@@ -167,21 +167,16 @@ int xdp_main(struct xdp_md *ctx)
         *(volatile __u32 *)(dst + i * 4) = 0;
     }
 
-    // Manual copy loop in 8-byte chunks to reduce verifier branch paths by 8x.
-    // We cannot use 8-byte casting on dst because dst is only 4-byte aligned (buf + 4).
-    // To satisfy strict alignment, we use __builtin_memcpy for the 8-byte chunks.
+    // Manual copy loop. 
+    // We use early breaks because forcing the verifier to evaluate all 2048 
+    // iterations without breaking (e.g. using if/else) causes a 1M instruction 
+    // branch explosion on 5.10. Since we zeroed the entire buffer above,
+    // early breaks are now 100% safe and leak no uninitialized memory!
     #pragma clang loop unroll(full)
-    for (__u32 i = 0; i < CAP_LEN / 8; i++) {
-        if ((void*)(src + i * 8 + 8) > data_end) break;
-        __builtin_memcpy(dst + i * 8, src + i * 8, 8);
-    }
-
-    // Remainder byte-by-byte copy (max 7 bytes)
-    #pragma clang loop unroll(full)
-    for (__u32 i = 0; i < 7; i++) {
-        __u32 offset = (CAP_LEN / 8) * 8 + i;
-        if ((void*)(src + offset + 1) > data_end) break;
-        dst[offset] = src[offset];
+    for (__u32 i = 0; i < CAP_LEN; i++) {
+        if (i >= len) break;
+        if ((void*)(src + i + 1) > data_end) break;
+        dst[i] = src[i];
     }
 
     bpf_ringbuf_submit(buf, 0);
