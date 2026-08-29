@@ -20,6 +20,7 @@ type ServerConfig struct {
 	Hopping     Hopping     `yaml:"hopping"`
 	Obfuscation Obfuscation `yaml:"obfuscation"`
 	Handshake   Handshake   `yaml:"handshake"`
+	ColdStart   ColdStart   `yaml:"cold_start"`
 }
 
 type Conf struct {
@@ -34,6 +35,7 @@ type Conf struct {
 	Hopping     Hopping        `yaml:"hopping"`
 	Obfuscation Obfuscation    `yaml:"obfuscation"`
 	Handshake   Handshake      `yaml:"handshake"`
+	ColdStart   ColdStart      `yaml:"cold_start"`
 	Servers     []ServerConfig `yaml:"servers"`
 }
 
@@ -67,12 +69,14 @@ func (c *Conf) setDefaults() {
 	c.Listen.setDefaults()
 	c.Obfuscation.setDefaults()
 	c.Handshake.setDefaults()
+	c.ColdStart.setDefaults()
 	c.Network.setDefaults(c.Role)
 
 	// Pass transport config to network for SendHandle initialization
 	c.Network.Transport = &c.Transport
 	c.Network.Obfuscation = &c.Obfuscation
 	c.Network.Handshake = &c.Handshake
+	c.Network.ColdStart = c.ColdStart
 
 	if c.Role == "client" {
 		if len(c.Servers) == 0 {
@@ -84,6 +88,7 @@ func (c *Conf) setDefaults() {
 				Obfuscation: c.Obfuscation,
 				Hopping:     c.Hopping,
 				Handshake:   c.Handshake,
+				ColdStart:   c.ColdStart,
 			})
 		}
 		for i := range c.Servers {
@@ -94,6 +99,10 @@ func (c *Conf) setDefaults() {
 			c.Servers[i].Server.setDefaults()
 			c.Servers[i].Obfuscation.setDefaults()
 			c.Servers[i].Handshake.setDefaults()
+			c.Servers[i].ColdStart.setDefaults()
+			if !c.Servers[i].ColdStart.IsConfigured() {
+				c.Servers[i].ColdStart = c.ColdStart
+			}
 			for j := range c.Servers[i].SOCKS5 {
 				c.Servers[i].SOCKS5[j].setDefaults()
 			}
