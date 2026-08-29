@@ -160,7 +160,10 @@ int xdp_main(struct xdp_md *ctx)
 
     // Manual copy loop; zero the remainder of the fixed-size reservation so
     // no uninitialized kernel memory is leaked to userspace on submit.
-    #pragma clang loop unroll(full)
+    // Bounded by the CAP_LEN constant (not unrolled): full unroll of 2000+
+    // iterations with the zero-fill branch exceeds the verifier's 1M insn
+    // budget ("BPF program is too large"); a constant-bounded loop verifies
+    // cheaply on 5.10+.
     for (__u32 i = 0; i < CAP_LEN; i++) {
         if (i < len && (void*)(src + i + 1) <= data_end) {
             dst[i] = src[i];
