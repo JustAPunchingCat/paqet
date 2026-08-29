@@ -1034,13 +1034,6 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 		if isFirstPacket && h.role == "server" {
 			// On the first packet received by the server, jump to the client's initial ACK.
 			state.seq = remoteAck
-		} else if int32(state.seq - remoteAck) > 0 {
-			// If our current sequence number is ahead of the remote's ACK, it means
-			// the network dropped our packets. By rewinding state.seq to remoteAck,
-			// any KCP retransmissions will be sent with the EXACT sequence number
-			// that was dropped, perfectly filling the hole in the stateful firewall's
-			// tracking and preventing the connection from stalling on port hops.
-			state.seq = remoteAck
 		}
 	}
 
