@@ -983,11 +983,13 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 	// Our corresponding outgoing flow is keyed by (dstIP:dstPort -> srcIP:srcPort).
 	state := h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
 
+	isFirstPacket := atomic.LoadUint32(&state.hasRemote) == 0
+
 	// Sync our sequence number to the remote's ACK to prevent massive TCP AckNum jumps
 	// when the first reply arrives, which stateful firewalls drop as out-of-state.
 	// This must ONLY be done on the server, since the client initiated the connection
 	// and its state.seq is already correct.
-	if atomic.LoadUint32(&state.hasRemote) == 0 && remoteAck > 0 && h.role == "server" {
+	if isFirstPacket && remoteAck > 0 && h.role == "server" {
 		atomic.StoreUint32(&state.seq, remoteAck)
 	}
 
@@ -997,6 +999,24 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 		atomic.StoreUint32(&state.remoteTSval, tsVal)
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
+
+	// Workaround for strict ISP firewalls: if we are the client and this is the FIRST packet
+	// we've received from the server on this flow, the firewall may drop subsequent server
+	// packets (which often contain large payloads) until it sees an ACK from us. Since KCP
+	// may not have any immediate data to send (e.g. if the server packet was just an ACK),
+	// we fire a stateless pure TCP ACK here to unblock the flow.
+	if isFirstPacket && h.role == "client" {
+		go func() {
+			addr := &net.UDPAddr{IP: srcIP, Port: srcPort}
+			isIPv4 := dstIP.To4() != nil
+			f := h.getClientTCPF(srcIP, uint16(srcPort))
+			
+			// We only want to send a pure ACK, so we use the flags from config but ensure
+			// it's an ACK (and PSH, to match standard behavior in Paqet). 
+			// len(payload) == 0 ensures sequence number doesn't increment.
+			_ = h.writeRaw(nil, addr, dstPort, f, dstIP, isIPv4, h.hasSpoofing(), state)
+		}()
+	}
 }
 
 func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error {
