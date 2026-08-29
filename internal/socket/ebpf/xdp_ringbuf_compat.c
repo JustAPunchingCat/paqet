@@ -144,9 +144,11 @@ int xdp_main(struct xdp_md *ctx)
     #define RES_SIZE (4 + CAP_LEN)
     
     void *buf = bpf_ringbuf_reserve(&packets, RES_SIZE, 0);
-    // Drop on a full ringbuf: passing it to the kernel lets the OS emit an RST,
-    // which tears down the tunnel. KCP will retransmit the lost data naturally.
-    if (!buf) return XDP_DROP;
+    // Ringbuf full: pass the packet to the kernel so the OS TCP stack sees it
+    // and emits an RST — our client OnRST handler reacts with a forced port
+    // hop. (XDP_DROP here would silently swallow the packet and the RST would
+    // never fire; KCP retransmission alone recovers much slower.)
+    if (!buf) return XDP_PASS;
 
     // Write the actual length at the start
     __u32 *len_ptr = (__u32 *)buf;
@@ -156,12 +158,15 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *dst = (__u8 *)(len_ptr + 1);
     __u8 *src = (__u8 *)data;
 
-    // Manual copy loop
+    // Manual copy loop; zero the remainder of the fixed-size reservation so
+    // no uninitialized kernel memory is leaked to userspace on submit.
     #pragma clang loop unroll(full)
     for (__u32 i = 0; i < CAP_LEN; i++) {
-        if (i >= len) break;
-        if ((void*)(src + i + 1) > data_end) break;
-        dst[i] = src[i];
+        if (i < len && (void*)(src + i + 1) <= data_end) {
+            dst[i] = src[i];
+        } else {
+            dst[i] = 0;
+        }
     }
 
     bpf_ringbuf_submit(buf, 0);

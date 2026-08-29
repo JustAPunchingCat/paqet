@@ -1044,6 +1044,20 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 
 	newAck := remoteSeq + payloadLen
 	currentAck := state.remoteSeq + state.remoteLen
+
+	// Peer-state-reset detection: the packet was already authenticated by the
+	// obfuscation/decryption layer upstream, so a wildly out-of-window seq
+	// here can only mean the peer lost its flow state (server restart built a
+	// fresh random seq universe). Instead of silently ignoring the packet and
+	// deadlocking (old code kept the stale remoteSeq and dropped everything),
+	// adopt the new baseline — same semantics as a first packet of the flow.
+	// Threshold 1,000,000,000 is far beyond any legitimate int32 window step
+	// (a real regression is at most a few retransmitted payloads) and far
+	// below uint32 wraparound, so it cannot fire on ordinary loss.
+	if !isFirstPacket && int32(newAck-currentAck) < -1000000000 {
+		isFirstPacket = true
+	}
+
 	if isFirstPacket || int32(newAck-currentAck) > 0 {
 		state.remoteSeq = remoteSeq
 		state.remoteLen = payloadLen
