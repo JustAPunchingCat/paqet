@@ -67,9 +67,16 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 	flog.Infof("accepted TCP connection %s -> %s via %s", conn.RemoteAddr(), f.targetAddr, strm.RemoteAddr())
 
 	if err := buffer.RelayTCP(ctx, conn, strm); err != nil && err != io.EOF {
-		flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
-		if f.client != nil {
-			f.client.MarkServerStale(f.ServerIdx)
+		msg := err.Error()
+		// Client-side disconnect: the tunnel is healthy — rotating here
+		// would churn ports on every abrupt client close.
+		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+			flog.Debugf("TCP stream %d closed (client disconnect) for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+		} else {
+			flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+			if f.client != nil {
+				f.client.MarkServerStale(f.ServerIdx)
+			}
 		}
 		return err
 	}

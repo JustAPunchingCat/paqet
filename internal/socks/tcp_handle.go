@@ -73,11 +73,14 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 		msg := err.Error()
 		if strings.Contains(msg, "forcibly closed") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
 			flog.Debugf("SOCKS5 stream %d closed (client disconnect) for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
+			// Client-side disconnect (browser/app closed or cancelled).
+			// The tunnel is healthy — rotating here would churn ports on
+			// every abrupt client close and can leave the tunnel stuck.
 		} else {
 			flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
-		}
-		if h.client != nil {
-			h.client.MarkServerStale(h.ServerIdx)
+			if h.client != nil {
+				h.client.MarkServerStale(h.ServerIdx)
+			}
 		}
 	}
 
