@@ -64,8 +64,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	netCfg.Spoof = tc.rootCfg.Network.Spoof
 	// Server-specific fake TCP handshake config
 	netCfg.Handshake = &tc.srvCfg.Handshake
-	// Server-specific cold-start pacing config
-	netCfg.ColdStart = tc.srvCfg.ColdStart
 	// Server IP(s) for the eBPF XDP filter (drop all server traffic, no leak)
 	if tc.srvCfg.Server.Addr != nil && tc.srvCfg.Server.Addr.IP != nil {
 		netCfg.ServerIPs = []net.IP{tc.srvCfg.Server.Addr.IP}

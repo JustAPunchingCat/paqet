@@ -46,7 +46,6 @@ type Network struct {
 	IPv6             Addr           `yaml:"ipv6"`
 	PCAP             PCAP           `yaml:"pcap"`
 	TCP              TCP            `yaml:"tcp"`
-	ColdStart        ColdStart      `yaml:"cold_start"`
 	Interface        *net.Interface `yaml:"-"`
 	Port             int            `yaml:"-"`
 	Transport        *Transport     `yaml:"-"`
@@ -66,7 +65,6 @@ func (n *Network) setDefaults(role string) {
 	n.Role = role
 	n.PCAP.setDefaults(role)
 	n.TCP.setDefaults()
-	n.ColdStart.setDefaults()
 	if n.Driver == "" {
 		n.Driver = "pcap"
 	}

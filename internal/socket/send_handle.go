@@ -53,21 +53,6 @@ type flowState struct {
 	remoteLen   uint32
 	remoteTSval uint32
 	hasRemote   uint32
-	// Cold-start (slow-start) pacing for freshly admitted tuples. A brand-new
-	// 5-tuple that opens with a large burst gets flagged by stateful middleboxes
-	// and BOTH directions die for that tuple's whole lifetime (observed on the
-	// wire: server seq monotonic => not one packet got through either way, for
-	// the entire 10s hop window). Real TCP never does this: IW10 + slow-start
-	// ramp. These fields pace the opening burst. Guarded by mu. tupleBirth
-	// resets whenever the (srcPort,dstPort) tuple changes — a port hop changes
-	// the tuple on one side (client dst port / server src port), and the tuple,
-	// not the flowState, is what the middlebox admits. The flow key stays
-	// port-free, so seq/ack continuity is unaffected.
-	tupleBirth  time.Time
-	lastSend    time.Time
-	lastSrcPort uint16
-	lastDstPort uint16
-	pktCount    int
 }
 
 type targetSpoofRule struct {
@@ -118,12 +103,6 @@ type SendHandle struct {
 	lastErrTime time.Time
 	errMu       sync.Mutex
 	reopenMu    sync.Mutex
-
-	// Cold-start pacing (see conf.ColdStart). Zero values = disabled.
-	coldStartEnabled bool
-	coldStartWindow  time.Duration
-	coldStartIW      int
-	coldStartIntv    time.Duration
 }
 
 // randUint32 returns a cryptographically random uint32.
@@ -194,12 +173,6 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		globalState:   &flowState{ipId: randUint32(), baseTS: randUint32(), seq: randUint32()},
 		spoofStates:   make(map[string]*flowState),
 		nameMapping:   make(map[string]string),
-
-		coldStartEnabled: cfg.ColdStart.IsEnabled(),
-		coldStartWindow:  time.Duration(cfg.ColdStart.Window) * time.Second,
-		coldStartIW:      cfg.ColdStart.IW,
-		coldStartIntv:    time.Duration(cfg.ColdStart.Interval) * time.Millisecond,
-
 		ethPool: sync.Pool{
 			New: func() any {
 				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
@@ -565,52 +538,6 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
-
-	// Cold-start pacing (TCP slow-start emulation), opt-in via cold_start config.
-	// On a tuple younger than coldStartWindow, keep the opening burst inside
-	// what a stateful middlebox admits from a new connection: cap the first
-	// coldStartIW packets to coldStartIntv spacing, then ramp linearly toward
-	// zero pacing. After the window the flow is warm and pacing is free. KCP
-	// retransmissions are naturally spaced by its own RTO timers, so waiting
-	// here only bites the initial queued burst. Tuple change (port hop)
-	// restarts the clock on the affected side; the other side resets its clock
-	// on first sight of the new tuple since lastSrc/lastDst won't match.
-	if h.coldStartEnabled {
-		now := time.Now()
-		if state.lastSrcPort != uint16(srcPort) || state.lastDstPort != dstPort || state.tupleBirth.IsZero() {
-			// Tuple changed (port hop) or first packet ever: restart the
-			// cold clock AND the packet budget — the new tuple's opening
-			// burst is exactly what must be paced.
-			state.tupleBirth = now
-			state.lastSend = time.Time{}
-			state.pktCount = 0
-		} else if age := now.Sub(state.tupleBirth); age < h.coldStartWindow {
-			pktCount := int(state.pktCount)
-			if pktCount < h.coldStartIW {
-				// Initial window: fixed spacing, like TCP IW segments leaving
-				// in a measured burst.
-				if !state.lastSend.IsZero() {
-					if wait := h.coldStartIntv - now.Sub(state.lastSend); wait > 0 {
-						time.Sleep(wait)
-					}
-				}
-			} else {
-				// Post-IW ramp: linearly relax spacing over the rest of the
-				// window.
-				interval := h.coldStartIntv * time.Duration(h.coldStartIW) / time.Duration(pktCount+1)
-				if interval > 0 && !state.lastSend.IsZero() {
-					if wait := interval - now.Sub(state.lastSend); wait > 0 {
-						time.Sleep(wait)
-					}
-				}
-			}
-			now = time.Now()
-		}
-		state.lastSend = now
-		state.lastSrcPort = uint16(srcPort)
-		state.lastDstPort = dstPort
-		state.pktCount++
-	}
 
 	// Fetch dynamic header variables
 	tos := h.tos

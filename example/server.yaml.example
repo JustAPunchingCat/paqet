@@ -30,20 +30,6 @@ handshake:
   mode: lazy       # "lazy" (default) or "eager" (client-side timing)
   eager_time: 3    # Eager-mode lead time in seconds (default: 3)
 
-# Cold-start pacing (optional, default: disabled)
-# Emulates TCP slow-start for freshly opened connections: a brand-new
-# 5-tuple that opens with a large burst (e.g. the reply backlog queued at a
-# port hop) can get flagged by stateful middleboxes/DPI and BOTH directions
-# of that tuple die until the next hop. When enabled, the first packets of
-# each new tuple are spaced out like a real TCP initial window, then ramp
-# up; after the window the flow is warm and pacing is free.
-# Enable on BOTH server and client (both sides open bursts after a hop).
-cold_start:
-  enabled: false    # Enable slow-start pacing (default: false)
-  # window: 5       # Seconds a tuple is considered cold (default: 5)
-  # iw: 10          # Initial-window packet budget at fixed spacing (default: 10)
-  # interval: 20    # Milliseconds of spacing inside the initial window (default: 20)
-
 # Obfuscation Configuration (Optional)
 obfuscation:
   use_tls: true       # Wraps traffic in TLS Application Data (0x17)
