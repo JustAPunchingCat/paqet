@@ -158,18 +158,19 @@ int xdp_main(struct xdp_md *ctx)
     __u8 *dst = (__u8 *)(len_ptr + 1);
     __u8 *src = (__u8 *)data;
 
-    // Manual copy loop; zero the remainder of the fixed-size reservation so
-    // no uninitialized kernel memory is leaked to userspace on submit.
-    // Bounded by the CAP_LEN constant (not unrolled): full unroll of 2000+
-    // iterations with the zero-fill branch exceeds the verifier's 1M insn
-    // budget ("BPF program is too large"); a constant-bounded loop verifies
-    // cheaply on 5.10+.
+    // Zero out the entire buffer first using 32-bit blocks (since dst is offset by 4 bytes).
+    // This avoids branch explosion in the verifier without unaligned memory access.
+    #pragma clang loop unroll(full)
+    for (__u32 i = 0; i < CAP_LEN / 4; i++) {
+        ((__u32 *)dst)[i] = 0;
+    }
+
+    // Now do the copy loop with the early breaks.
+    #pragma clang loop unroll(full)
     for (__u32 i = 0; i < CAP_LEN; i++) {
-        if (i < len && (void*)(src + i + 1) <= data_end) {
-            dst[i] = src[i];
-        } else {
-            dst[i] = 0;
-        }
+        if (i >= len) break;
+        if ((void*)(src + i + 1) > data_end) break;
+        dst[i] = src[i];
     }
 
     bpf_ringbuf_submit(buf, 0);
