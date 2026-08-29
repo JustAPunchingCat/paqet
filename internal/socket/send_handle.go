@@ -567,8 +567,8 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	var ack uint32
 	var tsEcr uint32
 	if atomic.LoadUint32(&state.hasRemote) == 1 {
-		ack = atomic.LoadUint32(&state.remoteSeq) + atomic.LoadUint32(&state.remoteLen)
-		tsEcr = atomic.LoadUint32(&state.remoteTSval)
+		ack = state.remoteSeq + state.remoteLen
+		tsEcr = state.remoteTSval
 	} else {
 		if f.SYN && !f.ACK {
 			ack = 0
@@ -1003,10 +1003,16 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 		state.seq = remoteAck
 	}
 
-	atomic.StoreUint32(&state.remoteSeq, remoteSeq)
-	atomic.StoreUint32(&state.remoteLen, payloadLen)
+	newAck := remoteSeq + payloadLen
+	currentAck := state.remoteSeq + state.remoteLen
+	if isFirstPacket || int32(newAck-currentAck) > 0 {
+		state.remoteSeq = remoteSeq
+		state.remoteLen = payloadLen
+	}
 	if tsVal > 0 {
-		atomic.StoreUint32(&state.remoteTSval, tsVal)
+		if isFirstPacket || int32(tsVal-state.remoteTSval) > 0 {
+			state.remoteTSval = tsVal
+		}
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
 }
@@ -1022,12 +1028,14 @@ func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, 
 	}
 
 	state := h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
-	atomic.StoreUint32(&state.remoteSeq, clientSeq+1)
-	atomic.StoreUint32(&state.remoteLen, 0)
+	state.mu.Lock()
+	state.remoteSeq = clientSeq + 1
+	state.remoteLen = 0
 	if clientTSval > 0 {
-		atomic.StoreUint32(&state.remoteTSval, clientTSval)
+		state.remoteTSval = clientTSval
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
+	state.mu.Unlock()
 
 	synAckF := conf.TCPF{SYN: true, ACK: true}
 	return h.writeRaw(nil, addr, localPort, synAckF, srcIP, isIPv4, false, state)
@@ -1044,12 +1052,14 @@ func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, ser
 	}
 
 	state := h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
-	atomic.StoreUint32(&state.remoteSeq, serverSeq+1)
-	atomic.StoreUint32(&state.remoteLen, 0)
+	state.mu.Lock()
+	state.remoteSeq = serverSeq + 1
+	state.remoteLen = 0
 	if serverTSval > 0 {
-		atomic.StoreUint32(&state.remoteTSval, serverTSval)
+		state.remoteTSval = serverTSval
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
+	state.mu.Unlock()
 
 	ackF := conf.TCPF{ACK: true}
 	return h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
