@@ -1241,3 +1241,24 @@ func (h *SendHandle) ResetFlow() {
 		h.globalState.ipId = randUint32()
 	}
 }
+
+// ClearRemoteSync clears only the remote-sync bookkeeping (hasRemote + latch
+// bits) for the current flow, keeping our own seq/ts universe intact. The next
+// inbound packet from the peer re-syncs the client to whatever seq universe the
+// peer is running (e.g. after a server restart built a fresh one).
+func (h *SendHandle) ClearRemoteSync() {
+	if h.role != "client" {
+		return
+	}
+	if h.globalState != nil {
+		atomic.StoreUint32(&h.globalState.hasRemote, 0)
+	}
+	h.statesMu.Lock()
+	defer h.statesMu.Unlock()
+	for _, st := range h.spoofStates {
+		atomic.StoreUint32(&st.hasRemote, 0)
+		atomic.StoreUint32(&st.synSent, 0)
+		atomic.StoreUint32(&st.synAckSent, 0)
+		atomic.StoreUint32(&st.ackSent, 0)
+	}
+}

@@ -29,6 +29,7 @@ type timedConn struct {
 	activeStreams int
 	lastIdle      time.Time
 	lastRSTHop    atomic.Int64
+	lastHeldSnd   atomic.Int64
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -395,7 +396,65 @@ func (tc *timedConn) idleCheckLoop() {
 				tc.lastIdle = time.Time{}
 			}
 			tc.mu.Unlock()
+
+			tc.checkStuckReturnPath()
 		}
+	}
+}
+
+// checkStuckReturnPath detects a silently dead return path: a stream is
+// open, the client is still transmitting (KCP retries within the last
+// 10s), but NOTHING has come back from the server for 1s. That is the
+// no-RST blackout signature (middlebox one-way drop, stale server session,
+// or KCP RTO backoff pinning the tuple) — no RST ever arrives to trigger
+// the RST->hop path, so the tunnel starves until the next scheduled hop.
+// Escape the same way the RST path does: forced hop to a fresh tuple.
+// Rate-limited to one hop per 3s (shared cadence with the RST path) so
+// slow KCP retry spacing cannot churn ports. An idle-but-open stream
+// never trips this: no traffic means lastSend goes stale, not fresh.
+func (tc *timedConn) checkStuckReturnPath() {
+	const (
+		INBOUND_SILENCE   = 1 * time.Second
+		MUST_BE_SENDING   = 10 * time.Second
+		HOP_TIMEOUT_LIMIT = 3 * time.Second
+	)
+	if tc.pConn == nil || tc.remoteAddr == nil {
+		return
+	}
+	tc.mu.Lock()
+	busy := tc.activeStreams > 0
+	tc.mu.Unlock()
+	if !busy {
+		return
+	}
+	now := time.Now().UnixNano()
+	sentRecently := now-tc.pConn.LastSendNano() < int64(MUST_BE_SENDING)
+	recvStale := now-tc.pConn.LastRecvNano() > int64(INBOUND_SILENCE)
+	if !sentRecently || !recvStale {
+		return
+	}
+	last := tc.lastRSTHop.Load()
+	if last != 0 && now-last < int64(HOP_TIMEOUT_LIMIT) {
+		return
+	}
+	if !tc.lastRSTHop.CompareAndSwap(last, now) {
+		return
+	}
+	// Guard against one-shot overreaction: require the silence condition to
+	// hold across two consecutive ticks before hopping.
+	if prev := tc.lastHeldSnd.Load(); prev == 0 || now-prev < int64(2*HOP_TIMEOUT_LIMIT) {
+		tc.lastHeldSnd.Store(now)
+		return
+	}
+	tc.lastHeldSnd.Store(now)
+	flog.Warnf("no server data for %v while streams active — forcing port hop to escape the stuck tuple", INBOUND_SILENCE)
+	tc.pConn.ForceHop()
+	// KCP retransmits into a blackholed tuple; a NEW server-side session
+	// (restart) or middlebox block on the return path is silence, not RST.
+	// Clearing remote-sync bookkeeping lets the client re-sync its fake-TCP
+	// seq to the peer's (possibly fresh) universe on the next inbound packet.
+	if tc.pConn != nil {
+		tc.pConn.ClearRemoteSync()
 	}
 }
 

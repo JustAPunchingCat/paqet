@@ -45,6 +45,7 @@ type PacketConn struct {
 	clientPorts sync.Map
 
 	lastRecv atomic.Int64
+	lastSend atomic.Int64
 	lastHop  atomic.Int64
 
 	readQueue  chan processedPacket
@@ -292,6 +293,8 @@ func (c *PacketConn) backgroundReader() {
 		h := hash.IPAddr(udpAddr.IP, uint16(udpAddr.Port))
 		workerID := int(h % uint64(c.numWorkers))
 
+		c.lastSend.Store(time.Now().UnixNano())
+
 		select {
 		case c.workerChs[workerID] <- rawJob{data: payload, addr: addr, port: dstPort}:
 		case <-c.ctx.Done():
@@ -344,6 +347,15 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 
 	return len(data), nil
+}
+
+// ClearRemoteSync clears remote-sync bookkeeping on this connection's send
+// handle (see SendHandle.ClearRemoteSync) so the client re-syncs its fake-TCP
+// seq to the peer's possibly-fresh universe after a forced recovery hop.
+func (c *PacketConn) ClearRemoteSync() {
+	if c.sendHandle != nil {
+		c.sendHandle.ClearRemoteSync()
+	}
 }
 
 func (c *PacketConn) ForceHop() {
@@ -492,6 +504,18 @@ func (c *PacketConn) GetCurrentPort() int {
 		}
 	}
 	return c.cfg.Port
+}
+
+// LastRecvNano returns the Unix-nano timestamp of the last packet received
+// from the server (0 = nothing received yet).
+func (c *PacketConn) LastRecvNano() int64 {
+	return c.lastRecv.Load()
+}
+
+// LastSendNano returns the Unix-nano timestamp of the last packet written
+// to the server (0 = nothing sent yet).
+func (c *PacketConn) LastSendNano() int64 {
+	return c.lastSend.Load()
 }
 
 func min(a, b int) int {
