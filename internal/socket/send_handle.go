@@ -41,6 +41,7 @@ type FlowUpdater interface {
 }
 
 type flowState struct {
+	mu          sync.Mutex
 	ipId        uint32
 	baseTS      uint32
 	seq         uint32
@@ -521,6 +522,9 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 }
 
 func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f conf.TCPF, srcIP net.IP, isIPv4 bool, isSpoofed bool, state *flowState) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
@@ -547,7 +551,8 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 		winSize = GenerateRealisticWindow()
 	}
 
-	id := atomic.AddUint32(&state.ipId, 1)
+	id := state.ipId
+	state.ipId++
 
 	elapsed := time.Since(h.startTime)
 	tsVal := state.baseTS + uint32(elapsed.Milliseconds())
@@ -557,7 +562,7 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	if advanceLen == 0 && f.SYN {
 		advanceLen = 1
 	}
-	seq := atomic.AddUint32(&state.seq, advanceLen) - advanceLen
+	seq := state.seq
 
 	var ack uint32
 	var tsEcr uint32
@@ -783,7 +788,9 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	flog.Tracef("send %s:%d -> %s:%d syn=%v ack=%v rst=%v psh=%v seq=%d payload=%d",
 		srcIP, srcPort, dstIP, dstPort, f.SYN, f.ACK, f.RST, f.PSH, seq, len(payload))
 	err := h.injector.WritePacketData(buf[:totalLen])
-	if err != nil {
+	if err == nil {
+		state.seq += advanceLen
+	} else {
 		if strings.Contains(err.Error(), "device attached to the system is not functioning") {
 			if reopenErr := h.reopen(); reopenErr != nil {
 				flog.Errorf("Failed to reopen injection handle: %v", reopenErr)
@@ -983,6 +990,9 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 	// Our corresponding outgoing flow is keyed by (dstIP:dstPort -> srcIP:srcPort).
 	state := h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
 
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
 	isFirstPacket := atomic.LoadUint32(&state.hasRemote) == 0
 
 	// Sync our sequence number to the remote's ACK to prevent massive TCP AckNum jumps
@@ -990,7 +1000,7 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 	// This must ONLY be done on the server, since the client initiated the connection
 	// and its state.seq is already correct.
 	if isFirstPacket && remoteAck > 0 && h.role == "server" {
-		atomic.StoreUint32(&state.seq, remoteAck)
+		state.seq = remoteAck
 	}
 
 	atomic.StoreUint32(&state.remoteSeq, remoteSeq)
@@ -999,24 +1009,6 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 		atomic.StoreUint32(&state.remoteTSval, tsVal)
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
-
-	// Workaround for strict ISP firewalls: if we are the client and this is the FIRST packet
-	// we've received from the server on this flow, the firewall may drop subsequent server
-	// packets (which often contain large payloads) until it sees an ACK from us. Since KCP
-	// may not have any immediate data to send (e.g. if the server packet was just an ACK),
-	// we fire a stateless pure TCP ACK here to unblock the flow.
-	if isFirstPacket && h.role == "client" {
-		go func() {
-			addr := &net.UDPAddr{IP: srcIP, Port: srcPort}
-			isIPv4 := dstIP.To4() != nil
-			f := h.getClientTCPF(srcIP, uint16(srcPort))
-			
-			// We only want to send a pure ACK, so we use the flags from config but ensure
-			// it's an ACK (and PSH, to match standard behavior in Paqet). 
-			// len(payload) == 0 ensures sequence number doesn't increment.
-			_ = h.writeRaw(nil, addr, dstPort, f, dstIP, isIPv4, h.hasSpoofing(), state)
-		}()
-	}
 }
 
 func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error {
@@ -1173,11 +1165,13 @@ func (h *SendHandle) Close() {
 
 func (h *SendHandle) ResetFlow() {
 	if h.role == "client" && h.globalState != nil {
+		h.globalState.mu.Lock()
+		defer h.globalState.mu.Unlock()
 		atomic.StoreUint32(&h.globalState.hasRemote, 0)
 		atomic.StoreUint32(&h.globalState.synSent, 0)
-		atomic.StoreUint32(&h.globalState.seq, randUint32())
+		h.globalState.seq = randUint32()
 		atomic.StoreUint32(&h.globalState.baseTS, randUint32())
 		atomic.StoreUint32(&h.globalState.tsCounter, 0)
-		atomic.StoreUint32(&h.globalState.ipId, randUint32())
+		h.globalState.ipId = randUint32()
 	}
 }
