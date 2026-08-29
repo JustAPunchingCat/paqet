@@ -161,14 +161,15 @@ func NewRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*Recv
 	}, nil
 }
 
-func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
+func (h *RecvHandle) Read() ([]byte, net.Addr, int, bool, error) {
+	isForward := false
 	data, err := h.source.ReadPacketData()
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, false, err
 	}
 
 	if len(data) < 20 {
-		return nil, nil, 0, nil
+		return nil, nil, 0, false, nil
 	}
 
 	var ipStart int
@@ -188,7 +189,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		// Handle VLANs (802.1Q: 0x8100, 802.1ad: 0x88A8)
 		for etherType == 0x8100 || etherType == 0x88a8 {
 			if len(data) < offset+4 {
-				return nil, nil, 0, nil
+				return nil, nil, 0, false, nil
 			}
 			etherType = binary.BigEndian.Uint16(data[offset+2 : offset+4])
 			offset += 4
@@ -202,7 +203,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 			isIPv4 = false
 		} else {
 			// It has an ethernet header but is not IPv4/IPv6 (e.g., ARP)
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 	}
 
@@ -216,23 +217,23 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 			ipStart = 0
 			isIPv4 = false
 		} else {
-			return nil, nil, 0, nil // Unsupported link type or protocol
+			return nil, nil, 0, false, nil // Unsupported link type or protocol
 		}
 	}
 
 	if isIPv4 {
 		if len(data) < ipStart+20 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		versionIHL := data[ipStart]
 		version := versionIHL >> 4
 		if version != 4 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		ihl := versionIHL & 0x0f
 		ipLen = int(ihl) * 4
 		if len(data) < ipStart+ipLen {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		protocol = data[ipStart+9]
 		srcIP = net.IP(data[ipStart+12 : ipStart+16])
@@ -240,11 +241,11 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	} else {
 		// IPv6
 		if len(data) < ipStart+40 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		version := data[ipStart] >> 4
 		if version != 6 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		ipLen = 40
 		protocol = data[ipStart+6]
@@ -258,7 +259,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	// source of truth and does NOT consult spoof mappings. An empty allowlist
 	// means "allow all".
 	if !h.isAllowed(srcIP) {
-		return nil, nil, 0, nil
+		return nil, nil, 0, false, nil
 	}
 
 	// Reverse-map a spoofed source IP to the real client IP for session routing
@@ -276,12 +277,12 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 
 	// Only process TCP (6) or UDP (17)
 	if protocol != 6 && protocol != 17 {
-		return nil, nil, 0, nil
+		return nil, nil, 0, false, nil
 	}
 
 	transStart := ipStart + ipLen
 	if len(data) < transStart+4 {
-		return nil, nil, 0, nil
+		return nil, nil, 0, false, nil
 	}
 
 	srcPort := int(binary.BigEndian.Uint16(data[transStart : transStart+2]))
@@ -290,14 +291,14 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	var payload []byte
 	if protocol == 6 { // TCP
 		if len(data) < transStart+20 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		remoteSeq := binary.BigEndian.Uint32(data[transStart+4 : transStart+8])
 		remoteAck := binary.BigEndian.Uint32(data[transStart+8 : transStart+12])
 		dataOffset := data[transStart+12] >> 4
 		tcpLen := int(dataOffset) * 4
 		if len(data) < transStart+tcpLen {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		payload = data[transStart+tcpLen:]
 
@@ -333,7 +334,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 				IP:   srcIP,
 				Port: srcPort,
 			}
-			return nil, addr, dstPort, ErrRST
+			return nil, addr, dstPort, false, ErrRST
 		}
 
 		if h.flowUpdater != nil {
@@ -363,7 +364,11 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 					i += length
 				}
 			}
-			h.flowUpdater.UpdateRemoteFlow(srcIP, srcPort, dstIP, dstPort, remoteSeq, remoteAck, uint32(len(payload)), tsVal)
+			isReset, fwd := h.flowUpdater.UpdateRemoteFlow(srcIP, srcPort, dstIP, dstPort, remoteSeq, remoteAck, uint32(len(payload)), tsVal)
+			isForward = fwd
+			if isReset && h.role == "server" {
+				return nil, nil, 0, false, ErrRST
+			}
 
 			if h.handshake {
 				if isSYN && !isACK && len(payload) == 0 {
@@ -377,11 +382,11 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 		}
 	} else { // UDP
 		if len(data) < transStart+8 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		udpLen := int(binary.BigEndian.Uint16(data[transStart+4 : transStart+6]))
 		if len(data) < transStart+8 || udpLen < 8 {
-			return nil, nil, 0, nil
+			return nil, nil, 0, false, nil
 		}
 		pEnd := transStart + udpLen
 		if pEnd > len(data) {
@@ -396,10 +401,10 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, error) {
 	}
 
 	if len(payload) == 0 {
-		return nil, addr, dstPort, nil
+		return nil, addr, dstPort, false, nil
 	}
 
-	return payload, addr, dstPort, nil
+	return payload, addr, dstPort, isForward, nil
 }
 
 func (h *RecvHandle) Close() {

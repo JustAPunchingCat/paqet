@@ -114,6 +114,9 @@ func (p *HoppingPlugin) loop() {
 			case <-time.After(leadTime):
 				if nextPort > 0 {
 					p.currentPort.Store(nextPort)
+					if p.isClient && p.sendHandle != nil {
+						p.sendHandle.ClearRemoteSync()
+					}
 					if p.label != "" {
 						flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
 					} else {
@@ -151,7 +154,7 @@ func (p *HoppingPlugin) ForceHop() {
 		return
 	}
 	if p.sendHandle != nil {
-		p.sendHandle.ResetFlow()
+		p.sendHandle.ClearRemoteSync()
 		if !p.lazyWarmup && p.targetIP != nil {
 			p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
 		}

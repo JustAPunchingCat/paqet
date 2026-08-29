@@ -257,7 +257,7 @@ func (c *PacketConn) backgroundReader() {
 		default:
 		}
 
-		payload, addr, dstPort, err := c.recvHandle.Read()
+		payload, addr, dstPort, isForward, err := c.recvHandle.Read()
 		if err != nil {
 			if err == ErrRST {
 				if c.OnRST != nil && addr != nil {
@@ -273,7 +273,7 @@ func (c *PacketConn) backgroundReader() {
 			}
 			return
 		}
-		if addr != nil && dstPort > 0 {
+		if isForward && addr != nil && dstPort > 0 {
 			if udpAddr, ok := addr.(*net.UDPAddr); ok {
 				c.updateClientPort(udpAddr, dstPort)
 			}

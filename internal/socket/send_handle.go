@@ -35,7 +35,7 @@ type TCPF struct {
 }
 
 type FlowUpdater interface {
-	UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32)
+	UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) (bool, bool)
 	SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error
 	SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error
 }
@@ -1005,7 +1005,7 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	h.tcpF.mu.Unlock()
 }
 
-func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) {
+func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) (bool, bool) {
 	// The incoming packet arrived from (srcIP:srcPort) to our local (dstIP:dstPort).
 	// Our corresponding outgoing flow is keyed by the CLIENT identity
 	// (clientIP:clientPort -> serverIP) so the fake-TCP seq/ack state survives
@@ -1026,6 +1026,8 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 	defer state.mu.Unlock()
 
 	isFirstPacket := atomic.LoadUint32(&state.hasRemote) == 0
+	isReset := false
+	isForward := false
 
 	// Sync our sequence number to the remote's ACK.
 	if remoteAck > 0 {
@@ -1058,16 +1060,28 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 		isFirstPacket = true
 	}
 
+	if !isFirstPacket && tsVal > 0 && state.remoteTSval > 0 {
+		tsDiff := int32(tsVal - state.remoteTSval)
+		if tsDiff > 3600000 || tsDiff < -3600000 {
+			isReset = true
+			isFirstPacket = true
+		}
+	}
+
 	if isFirstPacket || int32(newAck-currentAck) > 0 {
 		state.remoteSeq = remoteSeq
 		state.remoteLen = payloadLen
+		isForward = true
 	}
 	if tsVal > 0 {
 		if isFirstPacket || int32(tsVal-state.remoteTSval) > 0 {
 			state.remoteTSval = tsVal
+			isForward = true
 		}
 	}
 	atomic.StoreUint32(&state.hasRemote, 1)
+
+	return isReset, isForward
 }
 
 func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error {
@@ -1087,9 +1101,7 @@ func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, 
 		state = h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
 	}
 
-	if !atomic.CompareAndSwapUint32(&state.synAckSent, 0, 1) {
-		return nil
-	}
+	atomic.StoreUint32(&state.synAckSent, 1)
 	state.mu.Lock()
 	state.remoteSeq = clientSeq + 1
 	state.remoteLen = 0
@@ -1266,6 +1278,9 @@ func (h *SendHandle) ClearRemoteSync() {
 	}
 	if h.globalState != nil {
 		atomic.StoreUint32(&h.globalState.hasRemote, 0)
+		atomic.StoreUint32(&h.globalState.synSent, 0)
+		atomic.StoreUint32(&h.globalState.synAckSent, 0)
+		atomic.StoreUint32(&h.globalState.ackSent, 0)
 	}
 	h.statesMu.Lock()
 	defer h.statesMu.Unlock()
