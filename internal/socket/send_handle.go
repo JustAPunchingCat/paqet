@@ -514,16 +514,7 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	isIPv4 := dstIP.To4() != nil
 	srcIP, isSpoofed := h.resolveSrcIP(isIPv4, dstIP)
 
-	var state *flowState
-	if h.role == "server" {
-		// Server reply flow: key by the CLIENT identity (dstIP:dstPort -> srcIP)
-		// so the fake-TCP seq/ack state survives port hops. If the server's own
-		// (hopped) port were in the key, every hop would create a fresh random
-		// seq and the reply would look like a new TCP conversation.
-		state = h.getFlowState(dstIP, int(dstPort), srcIP, uint16(srcPort))
-	} else {
-		state = h.getFlowState(srcIP, srcPort, dstIP, dstPort)
-	}
+	state := h.getFlowState(srcIP, srcPort, dstIP, dstPort)
 	f := h.getClientTCPF(dstIP, dstPort)
 
 	return h.writeRaw(payload, addr, srcPort, f, srcIP, isIPv4, isSpoofed, state)
@@ -947,16 +938,7 @@ func (h *SendHandle) resolveSrcIP(isIPv4 bool, dstIP net.IP) (net.IP, bool) {
 }
 
 func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPort uint16) *flowState {
-	// The flow key intentionally EXCLUDES dstPort. With port hopping the
-	// destination port changes every interval, and if the port were part of
-	// the key a brand-new flowState (fresh random seq/baseTS/ipId) would be
-	// created on every hop. That restarts the fake-TCP sequence numbers
-	// mid-conversation, and a stateful middlebox (ISP DPI/NAT) sees the same
-	// client src port suddenly opening a new TCP flow with a random seq
-	// restart — the packet is dropped and the tunnel goes black until the
-	// next hop. Keying by (srcIP:srcPort -> dstIP) keeps seq/ack/TSval/IP-ID
-	// continuous across hops so the fake TCP conversation never restarts.
-	key := srcIP.String() + ":" + strconv.Itoa(srcPort) + "->" + dstIP.String()
+	key := srcIP.String() + ":" + strconv.Itoa(srcPort) + "->" + dstIP.String() + ":" + strconv.Itoa(int(dstPort))
 	h.statesMu.Lock()
 	defer h.statesMu.Unlock()
 
@@ -998,20 +980,8 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 
 func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) {
 	// The incoming packet arrived from (srcIP:srcPort) to our local (dstIP:dstPort).
-	// Our corresponding outgoing flow is keyed by the CLIENT identity
-	// (clientIP:clientPort -> serverIP) so the fake-TCP seq/ack state survives
-	// port hops. The server's own (hopped) port must NOT be in the key, or every
-	// hop would restart the reply's sequence numbers mid-conversation.
-	var state *flowState
-	if h.role == "server" {
-		// Incoming from client (src) to server (dst): the outgoing reply flows
-		// from server back to client, but keyed by client identity.
-		state = h.getFlowState(srcIP, srcPort, dstIP, uint16(dstPort))
-	} else {
-		// Incoming from server (src) to client (dst): the outgoing flow is
-		// client -> server, keyed by client identity as in Write.
-		state = h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
-	}
+	// Our corresponding outgoing flow is keyed by (dstIP:dstPort -> srcIP:srcPort).
+	state := h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
 
 	// Sync our sequence number to the remote's ACK to prevent massive TCP AckNum jumps
 	// when the first reply arrives, which stateful firewalls drop as out-of-state.
