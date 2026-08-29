@@ -1066,7 +1066,13 @@ func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, 
 		srcIP = h.srcIPv6
 	}
 
-	state := h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
+	var state *flowState
+	if h.role == "server" {
+		state = h.getFlowState(remoteIP, remotePort, srcIP, uint16(localPort))
+	} else {
+		state = h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
+	}
+
 	if !atomic.CompareAndSwapUint32(&state.synAckSent, 0, 1) {
 		return nil
 	}
