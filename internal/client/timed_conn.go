@@ -11,6 +11,7 @@ import (
 	"paqet/internal/tnet"
 	"paqet/internal/transport"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type timedConn struct {
 	mu            sync.Mutex
 	activeStreams int
 	lastIdle      time.Time
+	lastRSTHop    atomic.Int64
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -41,6 +43,13 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 	tc.conn, err = tc.createConn()
 	if err != nil {
 		return nil, err
+	}
+
+	// Wire the RST handler: a middlebox RST means the current
+	// (clientPort, serverPort) tuple is being reset by a stateful box —
+	// a forced hop to a fresh port is the capture-proven recovery.
+	if tc.pConn != nil {
+		tc.pConn.OnRST = tc.OnRST
 	}
 
 	go tc.idleCheckLoop()
@@ -220,6 +229,38 @@ func (tc *timedConn) close() {
 		if tc.pConn != nil {
 			tc.pConn.Close()
 		}
+	}
+}
+
+// OnRST reacts to an incoming fake-TCP RST from the server's side. On the
+// wire these carry a kernel fingerprint (seq = our ack, win 0): a stateful
+// middlebox has dropped our (clientPort, serverPort) tuple and is resetting
+// every packet we send on it. Retransmitting into a dead tuple is pointless
+// — the capture-proven recovery is a FRESH tuple, which is exactly what a
+// forced port hop produces (KCP session preserved, fake-TCP seq continues).
+// Rate-limited to one forced hop per RST_TIMEOUT_INTERVAL so a storm of RSTs
+// (one per retransmit) cannot churn ports.
+func (tc *timedConn) OnRST(addr net.Addr) {
+	const RST_TIMEOUT_INTERVAL = 3 * time.Second
+	last := tc.lastRSTHop.Load()
+	now := time.Now().UnixNano()
+	if last != 0 && now-last < int64(RST_TIMEOUT_INTERVAL) {
+		return
+	}
+	if !tc.lastRSTHop.CompareAndSwap(last, now) {
+		return
+	}
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok || udpAddr.IP == nil {
+		return
+	}
+	if tc.remoteAddr == nil || tc.remoteAddr.IP == nil || !udpAddr.IP.Equal(tc.remoteAddr.IP) {
+		// RST from some other server (multi-server config) — ignore.
+		return
+	}
+	flog.Warnf("RST from server %s — forcing port hop to escape the blocked tuple", udpAddr.String())
+	if tc.pConn != nil {
+		tc.pConn.ForceHop()
 	}
 }
 
