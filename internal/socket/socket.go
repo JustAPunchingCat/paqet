@@ -50,6 +50,17 @@ type PacketConn struct {
 	// goodbye-RST straggler after client local-port rotation.
 	clientIPSeen sync.Map
 
+	// clientCanonical maps client IP string -> canonical *net.UDPAddr used
+	// as the kcp-go session key on the server. Client local-port rotation
+	// changes the wire source port every hop; kcp-go keys sessions by
+	// addr.String(), so reporting the raw rotating port would mint a
+	// duplicate session per hop and force supersession to kill the live
+	// one (field-proven: latency test died at every hop). Instead the
+	// server reports a STABLE canonical addr per client IP: kcp sees one
+	// session for the whole client lifetime, streams survive hops, and
+	// replies still follow the client's latest port via clientPorts.
+	clientCanonical sync.Map
+
 	lastRecv atomic.Int64
 	lastSend atomic.Int64
 	lastHop  atomic.Int64
@@ -183,10 +194,27 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		}
 
 		// Store client port for Server NAT routing
-		c.updateClientPort(pkt.addr.(*net.UDPAddr), pkt.port)
+		udpAddr := pkt.addr.(*net.UDPAddr)
+		c.updateClientPort(udpAddr, pkt.port)
+
+		// SERVER ROLE: report a STABLE canonical client addr to the
+		// transport above (kcp-go keys sessions by addr.String()). Without
+		// this, every client port rotation mints a duplicate session and
+		// the live one gets torn down — killing all open streams.
+		reportAddr := udpAddr
+		if c.cfg.Role == "server" && udpAddr.IP != nil {
+			key := udpAddr.IP.String()
+			canonical := 45 * time.Second
+			if val, ok := c.clientCanonical.Load(key); ok {
+				reportAddr = &net.UDPAddr{IP: udpAddr.IP, Port: val.(int)}
+			} else {
+				c.clientCanonical.Store(key, udpAddr.Port)
+			}
+			_ = canonical
+		}
 
 		n = copy(data, pkt.data)
-		return n, pkt.addr, nil
+		return n, reportAddr, nil
 	}
 }
 
@@ -396,10 +424,12 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 // layer is stateless (synthetic seq/ack); there is nothing to clear.
 func (c *PacketConn) ClearRemoteSync() {
 }
+
 // ReArmHandshake is retained for API compatibility. The fake-TCP
 // layer is stateless; no handshake state to re-arm.
 func (c *PacketConn) ReArmHandshake() {
 }
+
 // RotateLocalPort rebinds the client's local source port to a fresh random
 // ephemeral port (same port family as NewWithHopping's initial bind). This
 // creates a brand-new NAT mapping on the path — used to escape middleboxes
@@ -598,6 +628,15 @@ func (c *PacketConn) LocalSrcPort() int {
 		return c.sendHandle.SrcPort()
 	}
 	return 0
+}
+
+// ClearClientCanonical drops the stable-addr mapping for a client IP —
+// called when the server reaps a stale session so a returning client
+// starts a fresh session instead of feeding a dead one.
+func (c *PacketConn) ClearClientCanonical(ip net.IP) {
+	if ip != nil {
+		c.clientCanonical.Delete(ip.String())
+	}
 }
 
 func (c *PacketConn) GetLastActivePort() int {
