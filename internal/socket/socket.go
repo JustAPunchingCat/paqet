@@ -249,7 +249,10 @@ func (c *PacketConn) workerLoop(ch chan rawJob) {
 			}
 			payload, addr, err := c.plugins.OnRead(job.data, job.addr)
 			if err != nil {
-				// Drop invalid packet (e.g. obfuscation mismatch)
+				// Drop invalid packet (e.g. obfuscation mismatch) — but
+				// NEVER silently: this is the only silent drop in the recv
+				// pipeline and it has hidden field bugs before.
+				flog.Debugf("[trace] OnRead drop from %s: %v", job.addr, err)
 				continue
 			}
 			select {
