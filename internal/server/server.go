@@ -204,6 +204,29 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			}
 		}
 
+		// SESSION SUPERSESSION: a client has exactly one active NAT mapping
+		// at a time. A new session from the same client IP on a different
+		// port means the client rotated — every older session from that IP
+		// is definitionally orphaned. Close it here: no goodbye packet, no
+		// client cooperation, fully asymmetric. This is what keeps the
+		// orphan's KCP retransmit loop from spamming the wire.
+		if udpNew, ok := conn.RemoteAddr().(*net.UDPAddr); ok && udpNew.IP != nil {
+			s.conns.Range(func(k, v any) bool {
+				existing, ok2 := v.(tnet.Conn)
+				if !ok2 {
+					return true
+				}
+				udpOld, ok3 := existing.RemoteAddr().(*net.UDPAddr)
+				if !ok3 || udpOld.IP == nil || !udpOld.IP.Equal(udpNew.IP) || udpOld.Port == udpNew.Port {
+					return true
+				}
+				flog.Debugf("session superseded: %s -> %s, closing orphaned session", udpOld.String(), udpNew.String())
+				existing.Close()
+				s.conns.Delete(k)
+				return true
+			})
+		}
+
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), localInfo)
 
 		s.conns.Store(conn.RemoteAddr().String(), conn)

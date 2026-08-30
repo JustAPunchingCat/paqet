@@ -296,18 +296,23 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 		flog.Debugf("hop: rotate_client_port disabled — keeping local port %d", tc.lastPort)
 		return
 	}
-	// Capture the pre-rotation identity so the orphaned server session can
-	// be torn down: the server keys sessions by client ip:port, so after the
-	// source port changes the old session sits there retransmitting for the
-	// whole reaper timeout (2 min) — the field-proven spam source.
-	// oldPort MUST be the client's LOCAL SOURCE port (what the server keys
-	// the session by), NOT the hopped destination port. tc.lastPort tracks
-	// the dest port — capture the real local src port from the send handle.
-	flog.Debugf("rotate: goroutine entered, capturing pre-rotation ports")
-	oldPort := tc.pConn.LocalSrcPort()
-	oldSrvPort := tc.pConn.GetLastActivePort()
-	flog.Debugf("rotate: entry state oldLocal=%d oldSrv=%d", oldPort, oldSrvPort)
-
+	// Idle tunnel: rotating a conn the idle reaper is about to tear down
+	// races the reaper (field-proven 'bad file descriptor' goodbye) and
+	// buys nothing — the next write rebuilds on a fresh port anyway. Skip.
+	tc.mu.Lock()
+	idle := tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 30*time.Second
+	tc.mu.Unlock()
+	if idle {
+		flog.Debugf("hop: tunnel idle — skipping local-port rotation (next write rotates)")
+		return
+	}
+	// The server keys sessions by client ip:port. After the source port
+	// changes, the OLD server session is orphaned and its own KCP
+	// retransmit timer would spam the wire until the reaper fires. Cleanup
+	// is SERVER-SIDE: session supersession (accept of the new session from
+	// the same IP closes same-IP older sessions) — no goodbye packets, the
+	// tunnel stays fully asymmetric.
+	flog.Debugf("rotate: rotating local source port")
 	newPort, err := tc.pConn.RotateLocalPort()
 	if err != nil {
 		flog.Warnf("client local-port rotation FAILED: %v (continuing with server-port hops only)", err)
@@ -315,26 +320,6 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	}
 	tc.lastPort = newPort
 	flog.Infof("client source port rotated to %d (fresh NAT mapping)", newPort)
-
-	// Kill the orphaned session on the OLD client port. The goodbye is a
-	// single packet whose loss would let the orphan retransmit for the whole
-	// reaper window, so it is repeated a bounded 3 times (300ms apart) —
-	// event-driven, only at rotation, max 2 extra packets per hop. Not
-	// periodic traffic; stops with the rotation itself.
-	if oldSrvPort > 0 && tc.remoteAddr != nil && tc.remoteAddr.IP != nil {
-		go func() {
-			for i := 0; i < 3; i++ {
-				if i > 0 {
-					time.Sleep(300 * time.Millisecond)
-				}
-				if err := tc.pConn.SendRSTFrom(tc.remoteAddr.IP, oldSrvPort, oldPort); err != nil {
-					flog.Debugf("orphan-session goodbye %d/3 from old port %d failed: %v", i+1, oldPort, err)
-					return
-				}
-				flog.Debugf("orphan-session goodbye %d/3 sent from old port %d (server port %d)", i+1, oldPort, oldSrvPort)
-			}
-		}()
-	}
 }
 
 func (tc *timedConn) reconnect() {
