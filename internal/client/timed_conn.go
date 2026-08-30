@@ -10,6 +10,7 @@ import (
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
 	"paqet/internal/transport"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -334,7 +335,7 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	// client-side (SOCKS clients retry) — inherent to a server restart.
 	deadConn := tc.conn
 	deadPConn := tc.pConn
-	tc.mu.Lock()
+	tc.lockDiag()
 	if tc.conn != nil {
 		tc.conn.Close()
 	}
@@ -371,7 +372,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	// the tunnel went idle). Holding the lock serializes rotation against
 	// reaping; RotateLocalPort only touches the eBPF manager and the send
 	// handle's port field, so the extra hold time is negligible.
-	tc.mu.Lock()
+	tc.lockDiag()
 	defer tc.mu.Unlock()
 
 	if tc.pConn == nil {
@@ -408,7 +409,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 }
 
 func (tc *timedConn) reconnect() {
-	tc.mu.Lock()
+	tc.lockDiag()
 	defer tc.mu.Unlock()
 	// Never tear down a connection with live streams: a rotation here would
 	// kill active sessions (SSH, etc.) mid-flight.
@@ -442,7 +443,7 @@ func (tc *timedConn) reconnect() {
 }
 
 func (tc *timedConn) markDead() {
-	tc.mu.Lock()
+	tc.lockDiag()
 	defer tc.mu.Unlock()
 	// A connection with live streams is demonstrably alive — a transient
 	// failure on a sibling path (e.g. a UDP probe) must not reap it. If the
@@ -462,9 +463,32 @@ func (tc *timedConn) markDead() {
 	}
 }
 
+// lockDiag acquires tc.mu with contention diagnostics: if the lock is
+// held >2s, log the holder's goroutine dump — field run 17:48 wedged at
+// 'acquiring tc.mu' forever with no visible holder.
+func (tc *timedConn) lockDiag() {
+	if tc.mu.TryLock() {
+		return
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if tc.mu.TryLock() {
+			return
+		}
+		if time.Now().After(deadline) {
+			buf := make([]byte, 1<<16)
+			n := runtime.Stack(buf, true)
+			flog.Errorf("tc.mu contention >2s — holder stack:\n%s", buf[:n])
+			tc.mu.Lock()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	flog.Debugf("openAndSendProto: entry — acquiring tc.mu")
-	tc.mu.Lock()
+	tc.lockDiag()
 	defer tc.mu.Unlock()
 
 	for attempt := 0; attempt < 2; attempt++ {
@@ -562,7 +586,7 @@ func (tc *timedConn) idleCheckLoop() {
 		case <-tc.ctx.Done():
 			return
 		case <-ticker.C:
-			tc.mu.Lock()
+			tc.lockDiag()
 			// --- AutoRotate: return-path liveness self-healing ---
 			// The middlebox on our path kills the RETURN direction of a
 			// tunnel tuple ~15s after creation while the forward direction
@@ -587,7 +611,7 @@ func (tc *timedConn) idleCheckLoop() {
 					if rb := tc.rebuildAt.Load(); rb != 0 && time.Now().UnixNano()-rb < int64(15*time.Second) {
 						// Fresh rebuild — give the new session its footing.
 						tc.mu.Unlock()
-						tc.mu.Lock()
+						tc.lockDiag()
 						continue
 					}
 					// A rotation that is followed by silence again means
@@ -622,7 +646,7 @@ func (tc *timedConn) idleCheckLoop() {
 						if deadPConn != nil {
 							deadPConn.Close()
 						}
-						tc.mu.Lock()
+						tc.lockDiag()
 						continue
 					}
 					flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
@@ -630,7 +654,7 @@ func (tc *timedConn) idleCheckLoop() {
 					// release, rotate, re-take (loop re-locks at top).
 					tc.mu.Unlock()
 					tc.rotateLocalPortIfConfigured()
-					tc.mu.Lock()
+					tc.lockDiag()
 				} else if tc.pConn != nil {
 					// Wire received something — but only count it as
 					// RECOVERY if the inbound arrived AFTER our last
@@ -658,7 +682,7 @@ func (tc *timedConn) idleCheckLoop() {
 				if deadPConn != nil {
 					deadPConn.Close()
 				}
-				tc.mu.Lock()
+				tc.lockDiag()
 			}
 			tc.mu.Unlock()
 		}
@@ -703,7 +727,7 @@ func (t *idleTrackedStrm) armWatchdog() {
 		}
 		flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
 		flog.Infof("watchdog teardown: acquiring tc.mu...")
-		t.tc.mu.Lock()
+		t.tc.lockDiag()
 		flog.Infof("watchdog teardown: tc.mu acquired, closing conn")
 		if t.tc.conn != nil {
 			t.tc.conn.Close()
@@ -737,7 +761,7 @@ func (t *idleTrackedStrm) Read(b []byte) (int, error) {
 }
 
 func (t *idleTrackedStrm) Close() error {
-	t.tc.mu.Lock()
+	t.tc.lockDiag()
 	if t.tc.activeStreams > 0 {
 		t.tc.activeStreams--
 	}
