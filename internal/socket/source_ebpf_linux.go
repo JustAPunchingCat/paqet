@@ -57,6 +57,7 @@ type ebpfManager struct {
 	ip6Map       *ebpf.Map
 	clientIP4Map *ebpf.Map
 	clientIP6Map *ebpf.Map
+	statsMap     *ebpf.Map
 
 	// Dispatcher
 	listeners map[uint16]chan []byte
@@ -317,7 +318,7 @@ func newManager(cfg *conf.Network) (*ebpfManager, error) {
 }
 
 // Helper to initialize common manager fields
-func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketReader, ports, ip4, ip6, clientIP4, clientIP6, configMap *ebpf.Map) *ebpfManager {
+func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketReader, ports, ip4, ip6, clientIP4, clientIP6, configMap, statsMap *ebpf.Map) *ebpfManager {
 	if configMap != nil {
 		zero := uint32(0)
 		val := uint8(0)
@@ -338,6 +339,7 @@ func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketR
 		ip6Map:       ip6,
 		clientIP4Map: clientIP4,
 		clientIP6Map: clientIP6,
+		statsMap:     statsMap,
 		listeners:    make(map[uint16]chan []byte),
 		done:         make(chan struct{}),
 	}
@@ -353,25 +355,13 @@ func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketR
 // showed return-path packets vanishing after client port rotation; these
 // counters prove whether frames reach the NIC and which XDP branch takes
 // them: 0=pass-not-ours 1=consumed(ringbuf) 2=ringbuf-full-passed
-// 3=dropped 4=parse-fail. Access by name so it works regardless of when
-// the generated object structs were last regenerated.
+// 3=dropped 4=parse-fail.
 func (m *ebpfManager) dumpXDPStats() {
-	t := time.NewTicker(15 * time.Second)
-	defer t.Stop()
-
-	var stats *ebpf.Map
-	// bpf2go typed structs embed ebpf.Collection; Maps is accessed via the
-	// embedded collection's map store, by name — no regen dependency.
-	switch o := m.objs.(type) {
-	case *ebpf_gen.BpfRingbufCompatObjects:
-		stats = o.Maps["xdp_stats"]
-	case *ebpf_gen.BpfRingbufObjects:
-		stats = o.Maps["xdp_stats"]
-	}
-	if stats == nil {
-		flog.Debugf("[trace] xdp stats map unavailable")
+	if m.statsMap == nil {
 		return
 	}
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
 	names := []string{"pass-not-ours", "consumed", "ringbuf-full", "dropped", "parse-fail"}
 	prev := make([]uint64, len(names))
 	for {
@@ -382,7 +372,7 @@ func (m *ebpfManager) dumpXDPStats() {
 			total := make([]uint64, len(names))
 			var key uint32
 			var perCPU []uint64
-			iter := stats.Iterate()
+			iter := m.statsMap.Iterate()
 			for iter.Next(&key, &perCPU) {
 				if int(key) < len(total) {
 					for _, v := range perCPU {
@@ -496,7 +486,7 @@ func loadRingbuf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &ringbufReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap), nil
+	return initManager(cfg, &objs, l, &ringbufReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap, nil), nil
 }
 
 func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
@@ -528,7 +518,7 @@ func loadRingbufCompat(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &ringbufCompatReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap), nil
+	return initManager(cfg, &objs, l, &ringbufCompatReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap, objs.XdpStats), nil
 }
 
 func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
@@ -559,7 +549,7 @@ func loadPerf(cfg *conf.Network) (*ebpfManager, error) {
 		return nil, err
 	}
 
-	return initManager(cfg, &objs, l, &perfReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap), nil
+	return initManager(cfg, &objs, l, &perfReader{rd}, objs.AllowedPorts, objs.AllowedIpsV4, objs.AllowedIpsV6, objs.AllowedClientIpsV4, objs.AllowedClientIpsV6, objs.ConfigMap, nil), nil
 }
 
 func (m *ebpfManager) registerPorts(ports []uint16, ch chan []byte) error {
