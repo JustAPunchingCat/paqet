@@ -553,6 +553,18 @@ func (c *PacketConn) PrewarmFlow(dstIP net.IP, dstPort uint16) {
 // SendRST emits a goodbye RST on this connection's source port so the remote
 // tears down the associated flow immediately. Safe no-op when no send handle
 // is configured.
+// SendRSTFrom sends the goodbye from an explicit client source port —
+// used to tear down the server session orphaned by a local-port rotation.
+func (c *PacketConn) SendRSTFrom(remoteIP net.IP, remotePort int, srcPort int) error {
+	if c.sendHandle != nil {
+		if remotePort <= 0 {
+			return fmt.Errorf("no active server port for goodbye")
+		}
+		return c.sendHandle.SendRSTFrom(remoteIP, remotePort, srcPort)
+	}
+	return fmt.Errorf("no send handle")
+}
+
 func (c *PacketConn) SendRST(remoteIP net.IP, remotePort int) error {
 	if c.sendHandle != nil {
 		port := remotePort

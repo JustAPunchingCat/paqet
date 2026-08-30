@@ -296,6 +296,13 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 		flog.Debugf("hop: rotate_client_port disabled — keeping local port %d", tc.lastPort)
 		return
 	}
+	// Capture the pre-rotation identity so the orphaned server session can
+	// be torn down: the server keys sessions by client ip:port, so after the
+	// source port changes the old session sits there retransmitting for the
+	// whole reaper timeout (2 min) — the field-proven spam source.
+	oldPort := tc.lastPort
+	oldSrvPort := tc.pConn.GetLastActivePort()
+
 	newPort, err := tc.pConn.RotateLocalPort()
 	if err != nil {
 		flog.Warnf("client local-port rotation FAILED: %v (continuing with server-port hops only)", err)
@@ -303,6 +310,15 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	}
 	tc.lastPort = newPort
 	flog.Infof("client source port rotated to %d (fresh NAT mapping)", newPort)
+
+	// Kill the orphaned session on the OLD client port immediately.
+	if oldSrvPort > 0 && tc.remoteAddr != nil && tc.remoteAddr.IP != nil {
+		if err := tc.pConn.SendRSTFrom(tc.remoteAddr.IP, oldSrvPort, oldPort); err != nil {
+			flog.Debugf("orphan-session goodbye from old port %d failed: %v", oldPort, err)
+		} else {
+			flog.Debugf("orphan-session goodbye sent from old port %d (server port %d)", oldPort, oldSrvPort)
+		}
+	}
 }
 
 func (tc *timedConn) reconnect() {

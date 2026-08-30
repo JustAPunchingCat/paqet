@@ -970,6 +970,28 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 // source IP is ephemeral there, so the RST can't reliably match the server's
 // session key and would risk leaking the real IP — the server falls back to
 // DeadLink teardown.
+// SendRSTFrom sends the goodbye FIN/RST from an EXPLICIT source port.
+// Used by client local-port rotation: the orphaned server session is keyed
+// by the OLD client port, so the goodbye must originate from that port —
+// a goodbye from the NEW port would kill the live migrated session instead.
+func (h *SendHandle) SendRSTFrom(remoteIP net.IP, remotePort int, srcPort int) error {
+	if h.hasSpoofing() {
+		return nil
+	}
+	isIPv4 := remoteIP.To4() != nil
+	var srcIP net.IP
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	} else {
+		srcIP = h.srcIPv6
+	}
+
+	rstF := conf.TCPF{FIN: true, ACK: true}
+	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
+	state := h.getFlowState(srcIP, srcPort, remoteIP, uint16(remotePort))
+	return h.writeRaw(nil, addr, srcPort, rstF, srcIP, isIPv4, false, state)
+}
+
 func (h *SendHandle) SendRST(remoteIP net.IP, remotePort int) error {
 	if h.hasSpoofing() {
 		return nil
