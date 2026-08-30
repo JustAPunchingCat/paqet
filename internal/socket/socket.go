@@ -414,6 +414,10 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 			latest := val.(*net.UDPAddr)
 			flog.Tracef("echo reply: to client latest addr %s (session key %s)", latest, daddr)
 			daddr = latest
+			// Also update `addr`: the plugins' return value is reassigned
+			// into daddr right after this block and would otherwise
+			// clobber the latest-addr rewrite (field-proven).
+			addr = latest
 		} else {
 			flog.Tracef("echo reply: no latest addr for %s, using session key", daddr.IP)
 		}
