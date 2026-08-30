@@ -591,11 +591,17 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	if tc.conn != nil {
 		// Fast path: conn exists. openStreamOnConn expects tc.mu HELD
 		// by the caller (it unlocks internally) — do NOT let it
-		// re-lock (self-deadlock, field run 18:42: holder
-		// timed_conn.go:580 = this call site holding the mutex while
-		// the callee waited on it).
+		// re-lock (self-deadlock, field run 18:42).
 		return tc.openStreamOnConn(p)
 	}
+	// RELEASE before the rebuild path: the lock from the entry
+	// lockDiag() is NOT owned by the install closure. Holding it
+	// across newConn() (eBPF init) was the long-hold, and the install
+	// closure's own lockDiag() re-locking a mutex this goroutine
+	// already held was the 19:19 self-deadlock (waiter
+	// openAndSendProto.func1:616, tag :590 = the un-released entry
+	// acquire). Release here; the closure acquires fresh below.
+	tc.unlockDiag()
 
 	flog.Infof("openAndSendProto: rebuilding conn — outside tc.mu")
 	conn, err := tc.newConn()
@@ -631,7 +637,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		flog.Warnf("stream open timed out after rebuild — session desynced, deferring teardown to watchdog")
 		return nil, err
 	}
-	tc.unlockDiag()
+	// tc.mu is NOT held here (released by the install closure's defer).
 	// p.Write OUTSIDE tc.mu: the proto header write traverses the whole
 	// tunnel stack; with the server offline (KCP send window jammed
 	// with unacked retransmits) it can block for 10s+ — holding tc.mu

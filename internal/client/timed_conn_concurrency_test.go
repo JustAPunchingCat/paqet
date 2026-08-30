@@ -317,3 +317,41 @@ func TestFastPathOpenFailureReleasesLock(t *testing.T) {
 		tc.mu.Unlock()
 	}
 }
+
+// TestRebuildPathNoSelfDeadlock: the 19:19 wedge — openAndSendProto's
+// REBUILD branch (tc.conn == nil) held tc.mu from the entry lockDiag
+// and the install closure re-locked the same mutex on the same
+// goroutine (non-reentrant) → permanent self-deadlock. Prior tests set
+// tc.conn non-nil and only ever hit the fast path, so the rebuild
+// branch's re-lock was never exercised. This test nils tc.conn and
+// asserts openAndSendProto returns (success) within a hard deadline.
+func TestRebuildPathNoSelfDeadlock(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		// Build the harness, then force the rebuild path.
+		tc := newTestTimedConn(t, 0)
+		tc.lockDiag()
+		conn := tc.conn
+		tc.conn = nil
+		tc.pConn = nil
+		tc.unlockDiag()
+		// The old conn is orphaned; fake createConn will produce a new
+		// one. Install the seam to return a fresh healthy conn.
+		tc.createConnFn = func() (tnet.Conn, error) {
+			return &fakeConn{openDelay: 0}, nil
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := tc.openAndSendProto(testProto())
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("iter %d: rebuild-path open errored: %v", i, err)
+			}
+		case <-time.After(8 * time.Second):
+			t.Fatalf("iter %d: rebuild path SELF-DEADLOCKED (openAndSendProto.func1 re-locked entry tc.mu)", i)
+		}
+		_ = conn
+	}
+}
