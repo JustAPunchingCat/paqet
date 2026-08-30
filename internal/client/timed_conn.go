@@ -46,6 +46,8 @@ type timedConn struct {
 	// the RST path) produced ABBA deadlocks — field runs 17:48/17:59/
 	// 18:04. Enqueue here; never block the caller.
 	closeJobs chan func()
+	// rebuildMu single-flights createConn across concurrent requesters.
+	rebuildMu sync.Mutex
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -528,8 +530,41 @@ func (tc *timedConn) lockDiag() {
 func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	flog.Debugf("openAndSendProto: entry — acquiring tc.mu")
 	tc.lockDiag()
+	if tc.conn == nil {
+		// Rebuild WITHOUT holding tc.mu: createConn runs the full eBPF
+		// load/verify fallback (seconds-scale) and contends managerMu
+		// with hopping rebinds. Holding tc.mu across it starved the
+		// idle loop and every concurrent request for the whole duration
+		// (field run 18:08: >2s contention on the FIRST request after
+		// client start). Single-flight via rebuilding flag; losers wait
+		// for the winner to install the conn.
+		tc.mu.Unlock()
+		tc.rebuildMu.Lock()
+		defer tc.rebuildMu.Unlock()
+		tc.lockDiag()
+		if tc.conn != nil {
+			// Another goroutine rebuilt while we were waiting.
+			return tc.openStreamWithDeadline(p)
+		}
+		flog.Infof("openAndSendProto: rebuilding conn (attempt 1) — outside tc.mu")
+		conn, err := tc.createConn()
+		if err != nil {
+			flog.Errorf("openAndSendProto: rebuild attempt failed: %v", err)
+			return nil, err
+		}
+		// createConn wired OnRST on the new PacketConn.
+		tc.conn = conn
+		tc.lastPort = tc.pConn.GetCurrentPort()
+		return tc.openStreamWithDeadline(p)
+	}
 	defer tc.mu.Unlock()
 
+	return tc.openStreamWithDeadline(p)
+}
+
+// openStreamWithDeadline opens the proto stream on tc.conn with the
+// bounded OpenStrm deadline. Caller holds tc.mu.
+func (tc *timedConn) openStreamWithDeadline(p *protocol.Proto) (tnet.Strm, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		// 1. If connection is nil, create it
 		if tc.conn == nil {
