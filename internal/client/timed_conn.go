@@ -40,15 +40,31 @@ type timedConn struct {
 	// during TLS handshakes — field-proven mid-curl kills).
 	rebuildAt        atomic.Int64
 	lastAutoRotateAt atomic.Int64
+	// closeJobs: teardown closes are executed on a dedicated goroutine.
+	// conn/pConn Close() contends the eBPF managerMu with hopping
+	// rebinds; doing that inline (on the idle loop, under tc.mu, or on
+	// the RST path) produced ABBA deadlocks — field runs 17:48/17:59/
+	// 18:04. Enqueue here; never block the caller.
+	closeJobs chan func()
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
 	tc := timedConn{
-		ctx:      ctx,
-		rootCfg:  rootCfg,
-		srvCfg:   srvCfg,
-		lastIdle: time.Now(),
+		ctx:       ctx,
+		rootCfg:   rootCfg,
+		srvCfg:    srvCfg,
+		lastIdle:  time.Now(),
+		closeJobs: make(chan func(), 64),
 	}
+	// Dedicated closer: all conn/pConn Close() calls run here, never
+	// under tc.mu, never on the idle loop, never on the RST path. The
+	// eBPF close path can block on managerMu contention with hopping
+	// rebinds — isolating it here makes caller-side deadlock impossible.
+	go func() {
+		for job := range tc.closeJobs {
+			job()
+		}
+	}()
 
 	var err error
 	tc.conn, err = tc.createConn()
@@ -298,6 +314,28 @@ func (tc *timedConn) close() {
 // forced port hop produces (KCP session preserved, fake-TCP seq continues).
 // Rate-limited to one forced hop per RST_TIMEOUT_INTERVAL so a storm of RSTs
 // (one per retransmit) cannot churn ports.
+
+// deferClose enqueues a teardown close on the dedicated closer
+// goroutine — never blocks the caller, never takes tc.mu.
+func (tc *timedConn) deferClose(conn tnet.Conn, pConn *socket.PacketConn) {
+	if conn == nil && pConn == nil {
+		return
+	}
+	job := func() {
+		if conn != nil {
+			conn.Close()
+		}
+		if pConn != nil {
+			pConn.Close()
+		}
+	}
+	select {
+	case tc.closeJobs <- job:
+	default:
+		go job()
+	}
+}
+
 func (tc *timedConn) OnRST(addr net.Addr) {
 	const RST_TIMEOUT_INTERVAL = 3 * time.Second
 	// Field rule: an RST that triggers NO reaction is invisible — the
@@ -641,12 +679,7 @@ func (tc *timedConn) idleCheckLoop() {
 						tc.pConn = nil
 						tc.rebuildAt.Store(time.Now().UnixNano())
 						tc.mu.Unlock()
-						if deadConn != nil {
-							deadConn.Close()
-						}
-						if deadPConn != nil {
-							deadPConn.Close()
-						}
+						tc.deferClose(deadConn, deadPConn)
 						tc.lockDiag()
 						continue
 					}
@@ -677,12 +710,7 @@ func (tc *timedConn) idleCheckLoop() {
 				tc.pConn = nil
 				tc.lastIdle = time.Time{}
 				tc.mu.Unlock()
-				if deadConn != nil {
-					deadConn.Close()
-				}
-				if deadPConn != nil {
-					deadPConn.Close()
-				}
+				tc.deferClose(deadConn, deadPConn)
 				tc.lockDiag()
 			}
 			tc.mu.Unlock()
@@ -736,12 +764,7 @@ func (t *idleTrackedStrm) armWatchdog() {
 		t.tc.rebuildAt.Store(time.Now().UnixNano())
 		flog.Infof("watchdog teardown: complete — closing outside lock, next stream open rebuilds")
 		t.tc.mu.Unlock()
-		if deadConn != nil {
-			deadConn.Close()
-		}
-		if deadPConn != nil {
-			deadPConn.Close()
-		}
+		t.tc.deferClose(deadConn, deadPConn)
 	}()
 }
 
