@@ -274,9 +274,21 @@ func (tc *timedConn) sendGoodbyeRST() {
 	}
 }
 
+// sendGoodbyeAllPorts announces the goodbye from every port this conn
+// has ever captured on. The server keys orphan sessions by accept-time
+// port; a single-port goodbye cannot reach sessions accepted on older
+// ports after a rotation, and those orphans echo-flood the dead port
+// until the reaper fires (field runs 17:09/17:18 — 4+ minutes of spam).
+func (tc *timedConn) sendGoodbyeAllPorts() {
+	if tc.pConn == nil || tc.remoteAddr == nil || tc.remoteAddr.IP == nil {
+		return
+	}
+	tc.pConn.SendGoodbyeAllPorts(tc.remoteAddr.IP, tc.remoteAddr.Port)
+}
+
 func (tc *timedConn) close() {
 	if tc.conn != nil {
-		tc.sendGoodbyeRST()
+		tc.sendGoodbyeAllPorts()
 		tc.conn.Close()
 		if tc.pConn != nil {
 			tc.pConn.Close()
@@ -427,7 +439,7 @@ func (tc *timedConn) reconnect() {
 
 	oldPort := tc.lastPort
 	if tc.conn != nil {
-		tc.sendGoodbyeRST()
+		tc.sendGoodbyeAllPorts()
 		tc.conn.Close()
 		if tc.pConn != nil {
 			tc.pConn.Close()
@@ -452,7 +464,7 @@ func (tc *timedConn) markDead() {
 		return
 	}
 	if tc.conn != nil {
-		tc.sendGoodbyeRST()
+		tc.sendGoodbyeAllPorts()
 		tc.conn.Close()
 		if tc.pConn != nil {
 			tc.pConn.Close()
@@ -645,7 +657,7 @@ func (tc *timedConn) idleCheckLoop() {
 				}
 			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
-				tc.sendGoodbyeRST()
+				tc.sendGoodbyeAllPorts()
 				deadConn := tc.conn
 				deadPConn := tc.pConn
 				tc.conn = nil

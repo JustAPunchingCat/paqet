@@ -688,7 +688,46 @@ func (c *PacketConn) SendRST(remoteIP net.IP, remotePort int) error {
 // wrote to, or 0 if nothing has been sent yet. Client role only.
 // LocalSrcPort returns the client's current local source port (the port
 // KCP writes go out from). Distinct from GetCurrentPort, which is the
-// hopped DESTINATION port.
+// hopped DESTINATION port
+// SendGoodbyeAllPorts announces the goodbye FIN from EVERY local port
+// this conn has ever captured on. The server keys orphan KCP sessions
+// by the port they were ACCEPTED on (kcp-go migrates the session's
+// RemoteAddr when the client rotates, so the accept-time key and the
+// live address diverge) — a goodbye sent only from the latest port
+// cannot reach sessions accepted on older ones, and those orphans
+// echo-flood the dead port until the reaper fires (field run 17:18:
+// 4+ minutes of spam). One tiny FIN per historical port, only on
+// teardown — never on hops.
+func (c *PacketConn) SendGoodbyeAllPorts(remoteIP net.IP, remotePort int) {
+	if c.sendHandle == nil {
+		return
+	}
+	ports := c.SrcPorts()
+	for _, p := range ports {
+		if p == 0 {
+			continue
+		}
+		if err := c.sendHandle.SendRSTFrom(remoteIP, remotePort, int(p)); err != nil {
+			flog.Debugf("goodbye FIN from port %d failed: %v", p, err)
+		}
+	}
+	if len(ports) > 1 {
+		flog.Debugf("goodbye FIN sent from %d ports", len(ports))
+	}
+}
+
+// SrcPorts returns every local source port this conn has used.
+func (c *PacketConn) SrcPorts() []uint16 {
+	if c.recvHandle == nil || c.recvHandle.source == nil {
+		return nil
+	}
+	type portser interface{ Ports() []uint16 }
+	if ps, ok := c.recvHandle.source.(portser); ok {
+		return ps.Ports()
+	}
+	return nil
+}
+
 func (c *PacketConn) LocalSrcPort() int {
 	if c.sendHandle != nil {
 		return c.sendHandle.SrcPort()
