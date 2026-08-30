@@ -34,6 +34,10 @@ type timedConn struct {
 	// — the SESSION is desynced (e.g. server restarted and never RST'd us);
 	// only a full conn rebuild (fresh smux handshake) recovers then.
 	autoRotateRun atomic.Int64
+	// rebuildAt: when the conn was last torn down for a rebuild. auto_rotate
+	// must not judge a newborn session (streams may be silent for seconds
+	// during TLS handshakes — field-proven mid-curl kills).
+	rebuildAt atomic.Int64
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -307,6 +311,7 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	}
 	tc.conn = nil
 	tc.pConn = nil
+	tc.rebuildAt.Store(time.Now().UnixNano())
 	tc.mu.Unlock()
 }
 
@@ -527,7 +532,7 @@ func (tc *timedConn) idleCheckLoop() {
 			if tc.srvCfg.Hopping.AutoRotate && tc.pConn != nil && tc.conn != nil {
 				after := tc.srvCfg.Hopping.AutoRotateAfter
 				if after <= 0 {
-					after = 5
+					after = 15
 				}
 				sendN := tc.pConn.LastSendNano()
 				recvN := tc.pConn.LastRecvNano()
@@ -535,6 +540,12 @@ func (tc *timedConn) idleCheckLoop() {
 				sending := sendN > 0 && now-sendN < int64(after)*int64(time.Second)
 				deaf := recvN == 0 || now-recvN > int64(after)*int64(time.Second)
 				if sending && deaf {
+					if rb := tc.rebuildAt.Load(); rb != 0 && time.Now().UnixNano()-rb < int64(15*time.Second) {
+						// Fresh rebuild — give the new session its footing.
+						tc.mu.Unlock()
+						tc.mu.Lock()
+						continue
+					}
 					// A rotation that is followed by silence again means
 					// the problem is NOT the tuple: the session itself is
 					// desynced (field-proven: server restarted, never sent
@@ -555,6 +566,7 @@ func (tc *timedConn) idleCheckLoop() {
 						}
 						tc.conn = nil
 						tc.pConn = nil
+						tc.rebuildAt.Store(time.Now().UnixNano())
 						tc.mu.Unlock()
 						tc.mu.Lock()
 						continue
