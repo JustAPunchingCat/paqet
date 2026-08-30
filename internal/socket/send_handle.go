@@ -1241,7 +1241,11 @@ func (h *SendHandle) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
 		srcIP = h.srcIPv6
 	}
 	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
-	return atomic.LoadUint32(&state.hasRemote) == 1
+	// Warm = handshake completed (synSent latched) AND peer synced. A hop
+	// re-arms the latches (ReArmHandshake) while leaving hasRemote intact
+	// (KCP stream continuity), so this returns false after a hop and the
+	// lazy warm-up re-fires the 3WHS against the fresh destination port.
+	return atomic.LoadUint32(&state.hasRemote) == 1 && atomic.LoadUint32(&state.synSent) == 1
 }
 
 // WaitFlowWarm blocks until the SYN-ACK for the given flow has been received
