@@ -526,7 +526,14 @@ func (tc *timedConn) lockDiag() {
 	if tc.mu.TryLock() {
 		return
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// 10s: an offline-server rebuild storm (kernel RSTs every ~200ms →
+	// rebuild → eBPF close+rebind per cycle) legitimately holds tc.mu
+	// for seconds at a time through the managerMu contention — bounded
+	// work, not a deadlock (field runs 18:14/18:18/18:29: all complete
+	// and recover when the server returns). The dump fires once per
+	// stuck acquisition beyond 10s; a TRUE deadlock shows a holder
+	// stack that never changes across dumps.
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if tc.mu.TryLock() {
 			return
@@ -534,7 +541,7 @@ func (tc *timedConn) lockDiag() {
 		if time.Now().After(deadline) {
 			buf := make([]byte, 1<<16)
 			n := runtime.Stack(buf, true)
-			flog.Errorf("tc.mu contention >2s — holder stack:\n%s", buf[:n])
+			flog.Errorf("tc.mu contention >10s — holder stack:\n%s", buf[:n])
 			tc.mu.Lock()
 			return
 		}
