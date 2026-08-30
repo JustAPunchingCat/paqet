@@ -358,6 +358,14 @@ func (c *PacketConn) ClearRemoteSync() {
 	}
 }
 
+// ReArmHandshake re-fires the fake 3WHS on the next write after a hop
+// (handshake-enabled builds only; no-op otherwise).
+func (c *PacketConn) ReArmHandshake() {
+	if c.sendHandle != nil {
+		c.sendHandle.ReArmHandshake()
+	}
+}
+
 func (c *PacketConn) ForceHop() {
 	if c.plugins != nil {
 		for _, pl := range c.plugins.plugins {

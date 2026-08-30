@@ -53,6 +53,19 @@ type flowState struct {
 	remoteLen   uint32
 	remoteTSval uint32
 	hasRemote   uint32
+	warmCh      chan struct{} // closed once hasRemote becomes 1 (WaitFlowWarm signal)
+}
+
+// markWarm closes warmCh exactly once when the flow first becomes warm.
+func (st *flowState) markWarm() {
+	if atomic.CompareAndSwapUint32(&st.hasRemote, 0, 1) {
+		close(st.warmCh)
+	}
+}
+
+// isWarm reports whether the flow has synced with its peer.
+func (st *flowState) isWarm() bool {
+	return atomic.LoadUint32(&st.hasRemote) == 1
 }
 
 type targetSpoofRule struct {
@@ -981,6 +994,7 @@ func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPo
 		ipId:   randUint32(),
 		baseTS: randUint32(),
 		seq:    randUint32(),
+		warmCh: make(chan struct{}),
 	}
 	h.spoofStates[key] = state
 	return state
@@ -1081,7 +1095,7 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 			isForward = true
 		}
 	}
-	atomic.StoreUint32(&state.hasRemote, 1)
+	state.markWarm()
 
 	return isReset, isForward
 }
@@ -1110,7 +1124,7 @@ func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, 
 	if clientTSval > 0 {
 		state.remoteTSval = clientTSval
 	}
-	atomic.StoreUint32(&state.hasRemote, 1)
+	state.markWarm()
 	state.mu.Unlock()
 
 	synAckF := conf.TCPF{SYN: true, ACK: true}
@@ -1137,11 +1151,23 @@ func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, ser
 	if serverTSval > 0 {
 		state.remoteTSval = serverTSval
 	}
-	atomic.StoreUint32(&state.hasRemote, 1)
+	state.markWarm()
 	state.mu.Unlock()
 
 	ackF := conf.TCPF{ACK: true}
-	return h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
+	// The final ACK completes the visible 3WHS for the middlebox; if it is
+	// lost (cold tuple), the flow never looks established and DPI may drop
+	// all subsequent data. Retry it like the SYN: 3 extra sends, 200ms apart.
+	if err := h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state); err != nil {
+		return err
+	}
+	go func() {
+		for i := 0; i < 3; i++ {
+			time.Sleep(200 * time.Millisecond)
+			_ = h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
+		}
+	}()
+	return nil
 }
 
 // SendRST emits a bare fake-TCP RST from this handle's source port to the
@@ -1234,12 +1260,11 @@ func (h *SendHandle) WaitFlowWarm(dstIP net.IP, dstPort uint16, timeout time.Dur
 		srcIP = h.srcIPv6
 	}
 	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
-	deadline := time.Now().Add(timeout)
-	for atomic.LoadUint32(&state.hasRemote) == 0 {
-		if time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	// Channel signal: warmCh closes exactly once when the handshake
+	// completes (hasRemote -> 1). No polling.
+	select {
+	case <-state.warmCh:
+	case <-time.After(timeout):
 	}
 }
 
@@ -1267,6 +1292,25 @@ func (h *SendHandle) ResetFlow() {
 		atomic.StoreUint32(&h.globalState.baseTS, randUint32())
 		atomic.StoreUint32(&h.globalState.tsCounter, 0)
 		h.globalState.ipId = randUint32()
+	}
+}
+
+// ReArmHandshake re-fires the fake 3WHS on the next write after a port hop
+// (handshake-enabled builds only). It clears ONLY the handshake latch bits —
+// seq/ts/remote bookkeeping is deliberately untouched so the KCP stream stays
+// continuous. The next lazy warm-up then re-runs SYN/SYN-ACK/ACK against the
+// fresh destination port, so the middlebox sees a proper handshake for the
+// new tuple instead of established-flow data appearing on a cold 4-tuple.
+func (h *SendHandle) ReArmHandshake() {
+	if !h.handshake || h.role != "client" {
+		return
+	}
+	h.statesMu.Lock()
+	defer h.statesMu.Unlock()
+	for _, st := range h.spoofStates {
+		atomic.StoreUint32(&st.synSent, 0)
+		atomic.StoreUint32(&st.synAckSent, 0)
+		atomic.StoreUint32(&st.ackSent, 0)
 	}
 }
 

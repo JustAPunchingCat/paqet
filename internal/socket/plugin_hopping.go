@@ -114,13 +114,14 @@ func (p *HoppingPlugin) loop() {
 			case <-time.After(leadTime):
 				if nextPort > 0 {
 					p.currentPort.Store(nextPort)
-					// NOTE: no flow-state reset here. The flow key
-					// (clientIP:clientPort -> serverIP) already excludes the
-					// server port, so a hop is just a routing change: seq/ack/
-					// TSval stay continuous and the packet lost in the
-					// switchover second is ordinary KCP loss (RTO retransmit).
-					// Clearing remote state mid-hop used to tear the KCP byte
-					// stream (zombie sessions, double timeouts).
+					// Re-fire the fake 3WHS against the fresh destination
+					// port so the middlebox sees a handshake for the new
+					// tuple (no-op when handshake is disabled). Flow state
+					// (seq/ack/TS) deliberately untouched — the KCP stream
+					// stays continuous.
+					if p.isClient && p.sendHandle != nil {
+						p.sendHandle.ReArmHandshake()
+					}
 					if p.label != "" {
 						flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
 					} else {
