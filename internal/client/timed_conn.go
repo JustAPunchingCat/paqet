@@ -97,14 +97,19 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 
 	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg, tc.srvCfg.Server.Addr.String())
 	if err != nil {
-		// LOUD: a failed rebuild after escalation/OnRST teardown leaves
-		// the SOCKS retry loop hammering createConn with no visible
-		// signal (field run 15:27: consumed frozen 60s+, no 'KCP
-		// connection created' line, SOCKS retrying every 4s). Whoever
-		// debugs the box must SEE this.
-		flog.Errorf("createConn FAILED: %v", err)
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
+	// WIRE OnRST ON EVERY REBUILD: createConn can run at any time
+	// (initial dial, auto_rotate escalation, OnRST teardown, idle
+	// reaper). The initial newTimedConn wiring only covered the FIRST
+	// PacketConn — every rebuilt conn came up with OnRST=nil, so all
+	// subsequent server RSTs were dispatched into a nil handler and
+	// silently dropped (field run 17:55: 'handler set: false' on every
+	// RST, tunnel wedged in a kernel-RST loop until manual restart).
+	if tc.pConn != nil {
+		tc.pConn.OnRST = nil
+	}
+	pConn.OnRST = tc.OnRST
 	tc.pConn = pConn
 	tc.lastPort = pConn.GetCurrentPort()
 
