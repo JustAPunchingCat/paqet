@@ -404,7 +404,7 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	tc.conn = nil
 	tc.pConn = nil
 	tc.rebuildAt.Store(time.Now().UnixNano())
-	tc.mu.Unlock()
+	tc.unlockDiag()
 	// Close OUTSIDE tc.mu ONLY — no under-lock closes anywhere. The
 	// close path contends managerMu with the hopping plugin's rebinds;
 	// holding tc.mu across it wedged every subsequent request (field
@@ -434,7 +434,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	// reaping; RotateLocalPort only touches the eBPF manager and the send
 	// handle's port field, so the extra hold time is negligible.
 	tc.lockDiag()
-	defer tc.mu.Unlock()
+	defer tc.unlockDiag()
 
 	if tc.pConn == nil {
 		return
@@ -471,7 +471,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 
 func (tc *timedConn) reconnect() {
 	tc.lockDiag()
-	defer tc.mu.Unlock()
+	defer tc.unlockDiag()
 	// Never tear down a connection with live streams: a rotation here would
 	// kill active sessions (SSH, etc.) mid-flight.
 	if tc.activeStreams > 0 {
@@ -505,7 +505,7 @@ func (tc *timedConn) reconnect() {
 
 func (tc *timedConn) markDead() {
 	tc.lockDiag()
-	defer tc.mu.Unlock()
+	defer tc.unlockDiag()
 	// A connection with live streams is demonstrably alive — a transient
 	// failure on a sibling path (e.g. a UDP probe) must not reap it. If the
 	// peer is truly dead, the streams themselves will error and close, which
@@ -547,6 +547,14 @@ func (tc *timedConn) lockDiag() {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// unlockDiag releases tc.mu and clears the holder tag so contention
+// reports never show a stale holder (field run 18:51: tag pointed at
+// a comment line — the previous holder had already released).
+func (tc *timedConn) unlockDiag() {
+	tc.muHolder.Store("")
+	tc.unlockDiag()
 }
 
 // callerTag identifies the lock acquisition site: the first frame
@@ -597,7 +605,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	tc.lockDiag()
 	tc.conn = conn
 	tc.lastPort = tc.pConn.GetCurrentPort()
-	tc.mu.Unlock()
+	tc.unlockDiag()
 
 	// Open the first stream OUTSIDE tc.mu (up to 5s on a dead server).
 	strm, err := tc.boundedOpenStrm(conn)
@@ -605,7 +613,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		flog.Warnf("stream open timed out after rebuild — session desynced, deferring teardown to watchdog")
 		return nil, err
 	}
-	tc.mu.Unlock()
+	tc.unlockDiag()
 	// p.Write OUTSIDE tc.mu: the proto header write traverses the whole
 	// tunnel stack; with the server offline (KCP send window jammed
 	// with unacked retransmits) it can block for 10s+ — holding tc.mu
@@ -622,7 +630,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	tc.lockDiag()
 	tc.activeStreams++
 	tc.lastIdle = time.Time{}
-	tc.mu.Unlock()
+	tc.unlockDiag()
 	return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 }
 
@@ -640,11 +648,11 @@ func (tc *timedConn) openStreamOnConn(p *protocol.Proto) (tnet.Strm, error) {
 	// Caller holds tc.mu (openAndSendProto fast path). Do NOT re-lock.
 	if tc.conn != conn {
 		// Conn was rebuilt while we opened — discard.
-		tc.mu.Unlock()
+		tc.unlockDiag()
 		strm.Close()
 		return nil, fmt.Errorf("conn rebuilt during stream open — retry")
 	}
-	tc.mu.Unlock()
+	tc.unlockDiag()
 	// Same rule: proto write outside tc.mu (can block 10s+ on a dead
 	// server's jammed KCP window).
 	strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
@@ -657,7 +665,7 @@ func (tc *timedConn) openStreamOnConn(p *protocol.Proto) (tnet.Strm, error) {
 	tc.lockDiag()
 	tc.activeStreams++
 	tc.lastIdle = time.Time{}
-	tc.mu.Unlock()
+	tc.unlockDiag()
 	return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 }
 
@@ -716,7 +724,7 @@ func (tc *timedConn) idleCheckLoop() {
 				if sending && deaf {
 					if rb := tc.rebuildAt.Load(); rb != 0 && time.Now().UnixNano()-rb < int64(15*time.Second) {
 						// Fresh rebuild — give the new session its footing.
-						tc.mu.Unlock()
+						tc.unlockDiag()
 						tc.lockDiag()
 						continue
 					}
@@ -745,7 +753,7 @@ func (tc *timedConn) idleCheckLoop() {
 						tc.conn = nil
 						tc.pConn = nil
 						tc.rebuildAt.Store(time.Now().UnixNano())
-						tc.mu.Unlock()
+						tc.unlockDiag()
 						tc.deferClose(deadConn, deadPConn)
 						tc.lockDiag()
 						continue
@@ -753,7 +761,7 @@ func (tc *timedConn) idleCheckLoop() {
 					flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
 					// rotateLocalPortIfConfigured takes tc.mu itself —
 					// release, rotate, re-take (loop re-locks at top).
-					tc.mu.Unlock()
+					tc.unlockDiag()
 					tc.rotateLocalPortIfConfigured()
 					tc.lockDiag()
 				} else if tc.pConn != nil {
@@ -776,11 +784,11 @@ func (tc *timedConn) idleCheckLoop() {
 				tc.conn = nil
 				tc.pConn = nil
 				tc.lastIdle = time.Time{}
-				tc.mu.Unlock()
+				tc.unlockDiag()
 				tc.deferClose(deadConn, deadPConn)
 				tc.lockDiag()
 			}
-			tc.mu.Unlock()
+			tc.unlockDiag()
 		}
 	}
 }
@@ -830,7 +838,7 @@ func (t *idleTrackedStrm) armWatchdog() {
 		t.tc.pConn = nil
 		t.tc.rebuildAt.Store(time.Now().UnixNano())
 		flog.Infof("watchdog teardown: complete — closing outside lock, next stream open rebuilds")
-		t.tc.mu.Unlock()
+		t.tc.unlockDiag()
 		t.tc.deferClose(deadConn, deadPConn)
 	}()
 }
@@ -860,6 +868,6 @@ func (t *idleTrackedStrm) Close() error {
 	if t.tc.activeStreams == 0 {
 		t.tc.lastIdle = time.Now()
 	}
-	t.tc.mu.Unlock()
+	t.tc.unlockDiag()
 	return t.Strm.Close()
 }
