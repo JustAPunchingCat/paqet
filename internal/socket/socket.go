@@ -426,9 +426,11 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 	// itself failed: SYN went out on the new port while data kept using the
 	// old one, and the rollback's key-rewrite minted a fresh random seq
 	// universe mid-stream (the split-brain seq jump seen in the field).
+	flog.Debugf("rotate: step 1 — capture rebind to %d starting", newPort)
 	if err := c.recvHandle.source.RebindPort(newPort, 2*time.Second); err != nil {
 		return 0, fmt.Errorf("capture rebind to port %d failed: %w", newPort, err)
 	}
+	flog.Debugf("rotate: step 2 — capture on %d, rebinding send handle", newPort)
 	if err := c.sendHandle.RebindSource(newPort); err != nil {
 		// Capture already listens on newPort; roll ONLY the capture back and
 		// report loudly. Never leave the halves split.

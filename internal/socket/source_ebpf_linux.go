@@ -109,12 +109,13 @@ func (r *perfReader) Read() (PacketRecord, error) {
 }
 
 type sharedEBPFSource struct {
-	mgr   *ebpfManager
-	ch    chan []byte
-	done  chan struct{}
-	ports []uint16 // Track registered ports to remove on close
-	ipv4  net.IP
-	ipv6  net.IP
+	mgr     *ebpfManager
+	ch      chan []byte
+	done    chan struct{}
+	portsMu sync.Mutex
+	ports   []uint16 // Track registered ports to remove on close
+	ipv4    net.IP
+	ipv6    net.IP
 }
 
 func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, error) {
@@ -251,14 +252,14 @@ func (s *sharedEBPFSource) RebindPort(newPort int, gracePeriod time.Duration) er
 		return fmt.Errorf("failed to register port %d: %w", newPort, err)
 	}
 
+	s.portsMu.Lock()
 	s.ports = append(s.ports, uint16(newPort))
+	s.portsMu.Unlock()
 
 	// Release the old registration after the grace period. The lock copy
 	// avoids racing with a second rebind or Close.
 	go func(old []uint16) {
 		time.Sleep(gracePeriod)
-		s.mgr.mu.Lock()
-		defer s.mgr.mu.Unlock()
 		s.mgr.unregisterPorts(old)
 	}(oldPorts)
 
