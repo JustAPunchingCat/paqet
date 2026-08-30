@@ -528,127 +528,113 @@ func (tc *timedConn) lockDiag() {
 }
 
 func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
-	flog.Debugf("openAndSendProto: entry — acquiring tc.mu")
-	tc.lockDiag()
-	if tc.conn == nil {
-		// Rebuild WITHOUT holding tc.mu: createConn runs the full eBPF
-		// load/verify fallback (seconds-scale) and contends managerMu
-		// with hopping rebinds. Holding tc.mu across it starved the
-		// idle loop and every concurrent request for the whole duration
-		// (field run 18:08: >2s contention on the FIRST request after
-		// client start). Single-flight via rebuilding flag; losers wait
-		// for the winner to install the conn.
-		tc.mu.Unlock()
-		tc.rebuildMu.Lock()
-		defer tc.rebuildMu.Unlock()
-		tc.lockDiag()
-		if tc.conn != nil {
-			// Another goroutine rebuilt while we were waiting.
-			return tc.openStreamWithDeadline(p)
-		}
-		flog.Infof("openAndSendProto: rebuilding conn (attempt 1) — outside tc.mu")
-		conn, err := tc.createConn()
-		if err != nil {
-			flog.Errorf("openAndSendProto: rebuild attempt failed: %v", err)
-			return nil, err
-		}
-		// createConn wired OnRST on the new PacketConn.
-		tc.conn = conn
-		tc.lastPort = tc.pConn.GetCurrentPort()
-		return tc.openStreamWithDeadline(p)
-	}
-	defer tc.mu.Unlock()
+	// Slow path single-flight: createConn (eBPF init, seconds) AND the
+	// bounded OpenStrm wait (up to 5s when the server is offline) run
+	// under rebuildMu — NEVER under tc.mu. tc.mu is only taken for
+	// brief field reads/writes; holding it across either slow operation
+	// starved the idle loop and every concurrent request (field runs
+	// 18:08/18:14: >2s contention alarms from idleCheckLoop).
+	tc.rebuildMu.Lock()
+	defer tc.rebuildMu.Unlock()
 
-	return tc.openStreamWithDeadline(p)
+	tc.lockDiag()
+	if tc.conn != nil {
+		// Fast path: conn exists — open a stream on it under tc.mu
+		// (OpenStrm may wait up to the 5s deadline, but only when the
+		// session is desynced; on the healthy path it returns in ms
+		// and the brief hold is benign).
+		return tc.openStreamOnConn(p)
+	}
+
+	flog.Infof("openAndSendProto: rebuilding conn — outside tc.mu")
+	conn, err := tc.createConn()
+	if err != nil {
+		flog.Errorf("openAndSendProto: rebuild failed: %v", err)
+		return nil, err
+	}
+	// Install under tc.mu (brief).
+	tc.lockDiag()
+	tc.conn = conn
+	tc.lastPort = tc.pConn.GetCurrentPort()
+	tc.mu.Unlock()
+
+	// Open the first stream OUTSIDE tc.mu (up to 5s on a dead server).
+	strm, err := tc.boundedOpenStrm(conn)
+	if err != nil {
+		flog.Warnf("stream open timed out after rebuild — session desynced, deferring teardown to watchdog")
+		return nil, err
+	}
+	tc.lockDiag()
+	tc.activeStreams++
+	tc.lastIdle = time.Time{}
+	strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
+	werr := p.Write(strm)
+	strm.SetWriteDeadline(time.Time{})
+	if werr != nil {
+		tc.mu.Unlock()
+		strm.Close()
+		tc.deferClose(conn, tc.pConn)
+		tc.lockDiag()
+		tc.conn = nil
+		tc.pConn = nil
+		tc.rebuildAt.Store(time.Now().UnixNano())
+		tc.mu.Unlock()
+		return nil, werr
+	}
+	return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 }
 
-// openStreamWithDeadline opens the proto stream on tc.conn with the
-// bounded OpenStrm deadline. Caller holds tc.mu.
-func (tc *timedConn) openStreamWithDeadline(p *protocol.Proto) (tnet.Strm, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		// 1. If connection is nil, create it
-		if tc.conn == nil {
-			flog.Infof("openAndSendProto: rebuilding conn (attempt %d)", attempt+1)
-			var err error
-			tc.conn, err = tc.createConn()
-			if err != nil {
-				flog.Errorf("openAndSendProto: rebuild attempt %d failed: %v", attempt+1, err)
-				return nil, err
-			}
-		}
-
-		// 2. Open stream — with a deadline. A half-dead smux session (the
-		// field-proven server-restart case: the new server process accepts
-		// our KCP packets into a fresh session, wire stays fully alive,
-		// but its smux never negotiated with ours) makes OpenStrm block
-		// FOREVER while KCP happily exchanges ACKs. Without the deadline
-		// the client wedges: healthy wire, dead session, streams never
-		// recover. On timeout: tear down and rebuild from scratch — the
-		// fresh conn re-runs the smux handshake with the new server.
-		type openResult struct {
-			strm tnet.Strm
-			err  error
-		}
-		done := make(chan openResult, 1)
-		go func() {
-			strm, err := tc.conn.OpenStrm()
-			done <- openResult{strm, err}
-		}()
-		var strm tnet.Strm
-		select {
-		case res := <-done:
-			if res.err != nil {
-				strm = nil
-			} else {
-				strm = res.strm
-			}
-		case <-time.After(5 * time.Second):
-			flog.Warnf("stream open timed out after 5s — smux session desynced (server restart?), rebuilding conn")
-			tc.conn.Close()
-			if tc.pConn != nil {
-				tc.pConn.Close()
-			}
-			tc.conn = nil
-			tc.pConn = nil
-			continue
-		}
-		if strm == nil {
-			// smux session is dead (server restarted or KCP DeadLink)
-			tc.conn.Close()
-			if tc.pConn != nil {
-				tc.pConn.Close()
-			}
-			tc.conn = nil
-			tc.pConn = nil
-			continue
-		}
-
-		// 3. Send protocol header
-		strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
-		err := p.Write(strm)
-		strm.SetWriteDeadline(time.Time{})
-		if err != nil {
-			strm.Close()
-			tc.conn.Close()
-			if tc.pConn != nil {
-				tc.pConn.Close()
-			}
-			tc.conn = nil
-			tc.pConn = nil
-			continue
-		}
-
-		// Stream is ready. KCP ARQ guarantees delivery; DPI warm-up is handled by
-		// PrewarmFlow (sends SYN). If the DPI drops early KCP packets, KCP retransmits
-		// naturally within ~400ms. Server restart is detected via RST in recv_handle.go.
-		// NOTE: tc.mu is already held (locked at function entry, deferred unlock) — do not re-lock.
-		tc.activeStreams++
-		tc.lastIdle = time.Time{}
-
-		return &idleTrackedStrm{Strm: strm, tc: tc}, nil
+// openStreamOnConn opens a stream on the EXISTING tc.conn with the
+// bounded deadline. The OpenStrm wait (up to 5s on a desynced session)
+// runs OUTSIDE tc.mu; teardown during the wait is handled by the
+// watchdog/escalation paths (they nil tc.conn, and the returned stream
+// simply errors). Caller must NOT hold tc.mu.
+func (tc *timedConn) openStreamOnConn(p *protocol.Proto) (tnet.Strm, error) {
+	conn := tc.conn
+	strm, err := tc.boundedOpenStrm(conn)
+	if err != nil {
+		return nil, err
 	}
+	tc.lockDiag()
+	if tc.conn != conn {
+		// Conn was rebuilt while we opened — discard.
+		tc.mu.Unlock()
+		strm.Close()
+		return nil, fmt.Errorf("conn rebuilt during stream open — retry")
+	}
+	tc.activeStreams++
+	tc.lastIdle = time.Time{}
+	strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
+	werr := p.Write(strm)
+	strm.SetWriteDeadline(time.Time{})
+	if werr != nil {
+		tc.mu.Unlock()
+		strm.Close()
+		return nil, werr
+	}
+	return &idleTrackedStrm{Strm: strm, tc: tc}, nil
+}
 
-	return nil, fmt.Errorf("failed to open stream after reconnection attempts")
+// boundedOpenStrm wraps OpenStrm with the 5s deadline — no tc.mu held.
+func (tc *timedConn) boundedOpenStrm(conn tnet.Conn) (tnet.Strm, error) {
+	type openResult struct {
+		strm tnet.Strm
+		err  error
+	}
+	done := make(chan openResult, 1)
+	go func() {
+		s, e := conn.OpenStrm()
+		done <- openResult{s, e}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil {
+			return nil, res.err
+		}
+		return res.strm, nil
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("stream open timed out after 5s — smux session desynced (server restart?)")
+	}
 }
 
 func (tc *timedConn) idleCheckLoop() {
