@@ -193,9 +193,14 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 			return 0, nil, pkt.err
 		}
 
-		// Store client port for Server NAT routing
+		// Store client port for Server NAT routing. updateClientPort must
+		// be keyed by the CANONICAL addr (what kcp-go and the echo path
+		// use) while carrying the REAL wire port — otherwise each rotation
+		// mints a new clientPorts entry and the echo keeps replying to the
+		// stale pre-rotation port the client no longer listens on
+		// (field-proven: 'dispatch DROP: port=41894 not registered').
 		udpAddr := pkt.addr.(*net.UDPAddr)
-		c.updateClientPort(udpAddr, pkt.port)
+		c.updateClientPort(&net.UDPAddr{IP: udpAddr.IP, Port: c.canonicalPortFor(udpAddr)}, pkt.port)
 
 		// SERVER ROLE: report a STABLE canonical client addr to the
 		// transport above (kcp-go keys sessions by addr.String()). Without
@@ -628,6 +633,20 @@ func (c *PacketConn) LocalSrcPort() int {
 		return c.sendHandle.SrcPort()
 	}
 	return 0
+}
+
+// canonicalPortFor returns the canonical port recorded for this client
+// addr's IP (the addr itself if unknown). Used to key updateClientPort by
+// the canonical client identity so the echo path always resolves to the
+// client's LATEST wire port.
+func (c *PacketConn) canonicalPortFor(addr *net.UDPAddr) int {
+	if addr == nil || addr.IP == nil {
+		return addr.Port
+	}
+	if val, ok := c.clientCanonical.Load(addr.IP.String()); ok {
+		return val.(int)
+	}
+	return addr.Port
 }
 
 // ClearClientCanonical drops the stable-addr mapping for a client IP —
