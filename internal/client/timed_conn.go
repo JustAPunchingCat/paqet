@@ -753,8 +753,12 @@ func (tc *timedConn) idleCheckLoop() {
 				if sending && deaf {
 					if rb := tc.rebuildAt.Load(); rb != 0 && time.Now().UnixNano()-rb < int64(15*time.Second) {
 						// Fresh rebuild — give the new session its footing.
+						// Release and skip this tick; the loop re-locks at the
+						// top of the NEXT tick. The prior re-lock here held
+						// tc.mu into the next tick, where the loop's own
+						// lockDiag() self-deadlocked on a mutex it already
+						// owned (field run 19:32, tag :757 = this re-lock).
 						tc.unlockDiag()
-						tc.lockDiag()
 						continue
 					}
 					// A rotation that is followed by silence again means
@@ -784,7 +788,6 @@ func (tc *timedConn) idleCheckLoop() {
 						tc.rebuildAt.Store(time.Now().UnixNano())
 						tc.unlockDiag()
 						tc.deferClose(deadConn, deadPConn)
-						tc.lockDiag()
 						continue
 					}
 					flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)

@@ -759,6 +759,14 @@ func (c *PacketConn) LastSendNano() int64 {
 	return c.lastSend.Load()
 }
 
+// SetActivityForTest is a test seam: forces lastSend/lastRecv so the
+// client's idle/auto-rotate loop can be exercised deterministically in
+// unit tests (which cannot open a real capture socket).
+func (c *PacketConn) SetActivityForTest(sendNano, recvNano int64) {
+	c.lastSend.Store(sendNano)
+	c.lastRecv.Store(recvNano)
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

@@ -16,6 +16,7 @@ import (
 
 	"paqet/internal/conf"
 	"paqet/internal/protocol"
+	"paqet/internal/socket"
 	"paqet/internal/tnet"
 )
 
@@ -353,5 +354,56 @@ func TestRebuildPathNoSelfDeadlock(t *testing.T) {
 			t.Fatalf("iter %d: rebuild path SELF-DEADLOCKED (openAndSendProto.func1 re-locked entry tc.mu)", i)
 		}
 		_ = conn
+	}
+}
+
+// TestIdleLoopAutoRotateNoSelfDeadlock: the 19:32 wedge — idleCheckLoop's
+// tick body re-locked tc.mu immediately before `continue`, so the lock
+// stayed held into the NEXT tick, where the loop's own lockDiag()
+// self-deadlocked on a mutex it already owned (field dump: waiters
+// everywhere, no holder, tag :757 = the re-lock site). This test drives
+// the auto_rotate fresh-rebuild path (sending && deaf && recent rebuild)
+// across several ticks and asserts tc.mu is never wedged.
+func TestIdleLoopAutoRotateNoSelfDeadlock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tc := &timedConn{
+		ctx:       ctx,
+		rootCfg:   &conf.Conf{},
+		srvCfg:    &conf.ServerConfig{Hopping: conf.Hopping{AutoRotate: true, AutoRotateAfter: 15}},
+		conn:      &fakeConn{},
+		pConn:     &socket.PacketConn{},
+		lastIdle:  time.Now(),
+		closeJobs: make(chan func(), 64),
+	}
+	go func() {
+		for job := range tc.closeJobs {
+			job()
+		}
+	}()
+
+	// sending (recent lastSend) && deaf (no recv) && fresh rebuild —
+	// the exact field condition for the fresh-rebuild skip path.
+	now := time.Now().UnixNano()
+	tc.pConn.SetActivityForTest(now, 0)
+	tc.rebuildAt.Store(now)
+
+	go tc.idleCheckLoop()
+
+	// Wait for several 1s ticks to elapse. The old code self-deadlocked
+	// on the 2nd tick (held the lock from tick 1 into tick 2), so after
+	// 3+ ticks the mutex must still be free on the fixed code.
+	time.Sleep(3500 * time.Millisecond)
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		if tc.mu.TryLock() {
+			tc.mu.Unlock()
+			return // free — no self-deadlock
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("idle loop self-deadlocked on tc.mu (re-lock before continue)")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
