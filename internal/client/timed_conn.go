@@ -290,7 +290,13 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 // handshake latch re-arm inside RebindSource. Failures are non-fatal: the
 // tunnel keeps hopping server ports without client rotation.
 func (tc *timedConn) rotateLocalPortIfConfigured() {
-	if !tc.srvCfg.Hopping.RotateClientPort || tc.pConn == nil {
+	if tc.pConn == nil {
+		return
+	}
+	if !tc.srvCfg.Hopping.RotateClientPort {
+		// DIAGNOSTIC: rotation configured-off — say so once per hop so a
+		// silently-dead rotation config is visible in field logs.
+		flog.Debugf("hop: rotate_client_port disabled — keeping local port %d", tc.lastPort)
 		return
 	}
 	newPort, err := tc.pConn.RotateLocalPort()

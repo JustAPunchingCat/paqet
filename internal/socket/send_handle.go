@@ -1320,6 +1320,9 @@ func (h *SendHandle) ResetFlow() {
 // continuous. The next lazy warm-up then re-runs SYN/SYN-ACK/ACK against the
 // fresh destination port, so the middlebox sees a proper handshake for the
 // new tuple instead of established-flow data appearing on a cold 4-tuple.
+// The warm channel is re-armed too: without it, WaitFlowWarm returns
+// instantly on the stale closed channel from the pre-hop handshake and data
+// leaves before the fresh SYN-ACK completes (the dead post-hop tunnel).
 func (h *SendHandle) ReArmHandshake() {
 	if !h.handshake || h.role != "client" {
 		return
@@ -1330,6 +1333,7 @@ func (h *SendHandle) ReArmHandshake() {
 		atomic.StoreUint32(&st.synSent, 0)
 		atomic.StoreUint32(&st.synAckSent, 0)
 		atomic.StoreUint32(&st.ackSent, 0)
+		st.rearmWarm()
 	}
 }
 
