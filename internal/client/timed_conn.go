@@ -332,6 +332,8 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	// every stream hangs after a server restart). Rebuild the whole conn:
 	// smux re-negotiates on the new session; open streams error out
 	// client-side (SOCKS clients retry) — inherent to a server restart.
+	deadConn := tc.conn
+	deadPConn := tc.pConn
 	tc.mu.Lock()
 	if tc.conn != nil {
 		tc.conn.Close()
@@ -343,6 +345,15 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	tc.pConn = nil
 	tc.rebuildAt.Store(time.Now().UnixNano())
 	tc.mu.Unlock()
+	// Close OUTSIDE tc.mu — the close path contends managerMu with the
+	// hopping plugin's rebinds; holding tc.mu across it wedged every
+	// subsequent request (field run 16:40).
+	if deadConn != nil {
+		deadConn.Close()
+	}
+	if deadPConn != nil {
+		deadPConn.Close()
+	}
 }
 
 // rotateLocalPortIfConfigured rebinds the client's local source port when
@@ -592,16 +603,25 @@ func (tc *timedConn) idleCheckLoop() {
 					if run >= 2 {
 						flog.Infof("auto_rotate: deaf again after rotation (%d consecutive) — session desynced, rebuilding conn", run)
 						tc.autoRotateRun.Store(0)
-						if tc.conn != nil {
-							tc.conn.Close()
-						}
-						if tc.pConn != nil {
-							tc.pConn.Close()
-						}
+						// Grab what needs closing, release tc.mu, THEN
+						// close. Field run 16:40: conn.Close()/pConn.Close()
+						// executed while holding tc.mu blocked FOREVER
+						// (eBPF close path contends managerMu with the
+						// hopping plugin's concurrent rebind) — every
+						// openAndSendProto then wedged at 'acquiring
+						// tc.mu' and the SOCKS proxy died with it.
+						deadConn := tc.conn
+						deadPConn := tc.pConn
 						tc.conn = nil
 						tc.pConn = nil
 						tc.rebuildAt.Store(time.Now().UnixNano())
 						tc.mu.Unlock()
+						if deadConn != nil {
+							deadConn.Close()
+						}
+						if deadPConn != nil {
+							deadPConn.Close()
+						}
 						tc.mu.Lock()
 						continue
 					}
@@ -626,13 +646,19 @@ func (tc *timedConn) idleCheckLoop() {
 			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
 				tc.sendGoodbyeRST()
-				tc.conn.Close()
-				if tc.pConn != nil {
-					tc.pConn.Close()
-				}
+				deadConn := tc.conn
+				deadPConn := tc.pConn
 				tc.conn = nil
 				tc.pConn = nil
 				tc.lastIdle = time.Time{}
+				tc.mu.Unlock()
+				if deadConn != nil {
+					deadConn.Close()
+				}
+				if deadPConn != nil {
+					deadPConn.Close()
+				}
+				tc.mu.Lock()
 			}
 			tc.mu.Unlock()
 		}
