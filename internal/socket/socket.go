@@ -61,6 +61,11 @@ type PacketConn struct {
 	// replies still follow the client's latest port via clientPorts.
 	clientCanonical sync.Map
 
+	// clientLatestAddr maps client IP string -> the client's latest REAL
+	// wire *net.UDPAddr. The echo path sends here; the canonical port is
+	// only a kcp session key.
+	clientLatestAddr sync.Map
+
 	lastRecv atomic.Int64
 	lastSend atomic.Int64
 	lastHop  atomic.Int64
@@ -193,14 +198,14 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 			return 0, nil, pkt.err
 		}
 
-		// Store client port for Server NAT routing. updateClientPort must
-		// be keyed by the CANONICAL addr (what kcp-go and the echo path
-		// use) while carrying the REAL wire port — otherwise each rotation
-		// mints a new clientPorts entry and the echo keeps replying to the
-		// stale pre-rotation port the client no longer listens on
-		// (field-proven: 'dispatch DROP: port=41894 not registered').
+		// Record the client's REAL wire addr under its canonical identity —
+		// the echo path sends here. One source of truth: the last place the
+		// client actually spoke from. (The kcp session's remote is the
+		// stable canonical addr; the client's wire port rotates.)
 		udpAddr := pkt.addr.(*net.UDPAddr)
-		c.updateClientPort(&net.UDPAddr{IP: udpAddr.IP, Port: c.canonicalPortFor(udpAddr)}, pkt.port)
+		if c.cfg.Role == "server" && udpAddr.IP != nil {
+			c.clientLatestAddr.Store(udpAddr.IP.String(), udpAddr)
+		}
 
 		// SERVER ROLE: report a STABLE canonical client addr to the
 		// transport above (kcp-go keys sessions by addr.String()). Without
@@ -401,12 +406,16 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	// port after a local-port rotation — the exact port rotation is meant to
 	// retire — so it must never apply client-side.
 	if c.cfg.Role == "server" {
-		key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
-		if val, ok := c.clientPorts.Load(key); ok {
-			srcPort = val.(*clientPortEntry).port
-			flog.Tracef("echo reply: to client %s:%d via client port %d", daddr.IP, daddr.Port, srcPort)
+		// The kcp session's remote is the CANONICAL client addr (stable
+		// across the client's port rotations). Resolve the client's LATEST
+		// real wire addr and send there — the canonical port is a session
+		// key, not a mailbox.
+		if val, ok := c.clientLatestAddr.Load(daddr.IP.String()); ok {
+			latest := val.(*net.UDPAddr)
+			flog.Tracef("echo reply: to client latest addr %s (session key %s)", latest, daddr)
+			daddr = latest
 		} else {
-			flog.Tracef("echo reply: no clientPorts entry for %s:%d, using local %d", daddr.IP, daddr.Port, srcPort)
+			flog.Tracef("echo reply: no latest addr for %s, using session key", daddr.IP)
 		}
 	} else if c.cfg.Role == "client" && len(data) > 0 {
 		// DIAGNOSTIC: prove which local port every client write actually
@@ -655,6 +664,7 @@ func (c *PacketConn) canonicalPortFor(addr *net.UDPAddr) int {
 func (c *PacketConn) ClearClientCanonical(ip net.IP) {
 	if ip != nil {
 		c.clientCanonical.Delete(ip.String())
+		c.clientLatestAddr.Delete(ip.String())
 	}
 }
 
