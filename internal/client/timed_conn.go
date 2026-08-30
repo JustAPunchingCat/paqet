@@ -452,6 +452,7 @@ func (tc *timedConn) markDead() {
 }
 
 func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
+	flog.Debugf("openAndSendProto: entry — acquiring tc.mu")
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -675,7 +676,9 @@ func (t *idleTrackedStrm) armWatchdog() {
 			return
 		}
 		flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
+		flog.Infof("watchdog teardown: acquiring tc.mu...")
 		t.tc.mu.Lock()
+		flog.Infof("watchdog teardown: tc.mu acquired, closing conn")
 		if t.tc.conn != nil {
 			t.tc.conn.Close()
 		}
@@ -685,6 +688,7 @@ func (t *idleTrackedStrm) armWatchdog() {
 		t.tc.conn = nil
 		t.tc.pConn = nil
 		t.tc.rebuildAt.Store(time.Now().UnixNano())
+		flog.Infof("watchdog teardown: complete — next stream open rebuilds")
 		t.tc.mu.Unlock()
 	}()
 }
