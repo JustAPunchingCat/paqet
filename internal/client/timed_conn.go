@@ -224,10 +224,35 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 }
 
 func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
-	strm, err := conn.OpenStrm()
-	if err != nil {
-		return err
+	// DEADLINE REQUIRED: this runs inside createConn while tc.mu is
+	// held. smux OpenStrm sends a SYN and blocks for the server's ACK —
+	// with the server offline it blocks FOREVER (kcp-go v5 has no
+	// deadlink timer), wedging tc.mu permanently: tc.conn stays nil so
+	// auto_rotate skips the wedged state, and every SOCKS retry blocks
+	// on the mutex. Field-proven total wedge requiring manual client
+	// restart. Bound it — on timeout createConn returns an error, the
+	// mutex is released, SOCKS fails fast, and the next attempt runs
+	// when the server is actually up.
+	type openRes struct {
+		strm tnet.Strm
+		err  error
 	}
+	done := make(chan openRes, 1)
+	go func() {
+		s, e := conn.OpenStrm()
+		done <- openRes{s, e}
+	}()
+	var strm tnet.Strm
+	select {
+	case res := <-done:
+		if res.err != nil {
+			return res.err
+		}
+		strm = res.strm
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("smux stream open timed out after 5s (server offline?)")
+	}
+	defer strm.Close()
 	defer strm.Close()
 
 	p := protocol.Proto{Type: protocol.PTCPF, TCPF: tc.rootCfg.Network.TCP.RF}

@@ -157,6 +157,28 @@ func (c *Client) udpIdleSweeper(ctx context.Context) {
 	}
 }
 
+// openStrmBounded bounds smux OpenStrm: without a deadline it blocks
+// forever when the server is offline or the session is desynced — and
+// newStrm holds tc.mu across the call, wedging every other SOCKS request
+// (field-proven total wedge requiring manual client restart).
+func openStrmBounded(conn tnet.Conn) (tnet.Strm, error) {
+	type res struct {
+		strm tnet.Strm
+		err  error
+	}
+	done := make(chan res, 1)
+	go func() {
+		s, e := conn.OpenStrm()
+		done <- res{s, e}
+	}()
+	select {
+	case r := <-done:
+		return r.strm, r.err
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("smux stream open timed out after 5s")
+	}
+}
+
 func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 	iter := c.iters[serverIdx]
 	// Try all connections in round-robin
@@ -174,7 +196,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 			}
 		}
 
-		strm, err := tc.conn.OpenStrm()
+		strm, err := openStrmBounded(tc.conn)
 		if err == nil {
 			tc.mu.Unlock()
 			return strm, tc, nil
@@ -195,7 +217,7 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 		}
 
 		// Retry opening stream on new connection
-		strm, err = tc.conn.OpenStrm()
+		strm, err = openStrmBounded(tc.conn)
 		if err == nil {
 			flog.Infof("reconnected to server %d", serverIdx+1)
 			tc.mu.Unlock()
