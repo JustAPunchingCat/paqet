@@ -11,8 +11,6 @@ import (
 type HoppingPlugin struct {
 	ranges         []conf.PortRange
 	interval       time.Duration
-	warmup         time.Duration
-	lazyWarmup     bool
 	stop           chan struct{}
 	currentPort    atomic.Uint32
 	lastActivePort atomic.Uint32
@@ -28,7 +26,7 @@ type HoppingPlugin struct {
 	OnHop func(hopCount uint32)
 }
 
-func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.Handshake) (*HoppingPlugin, error) {
+func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
 	ranges, err := cfg.GetRanges()
 	if err != nil {
 		return nil, err
@@ -49,19 +47,9 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.H
 		}
 	}
 
-	if hs == nil {
-		hs = &conf.Handshake{}
-	}
-	warmup := time.Duration(hs.EagerTime) * time.Second
-	if warmup <= 0 {
-		warmup = 3 * time.Second
-	}
-
 	hp := &HoppingPlugin{
 		ranges:     ranges,
 		interval:   time.Duration(cfg.Interval) * time.Second,
-		warmup:     warmup,
-		lazyWarmup: hs.IsLazy(),
 		stop:       make(chan struct{}),
 		minPort:    minPort,
 		isClient:   isClient,
@@ -77,10 +65,6 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.H
 
 func (p *HoppingPlugin) SetSendHandle(sh *SendHandle) {
 	p.sendHandle = sh
-	if !p.lazyWarmup && p.targetIP != nil && sh != nil {
-		if port := p.currentPort.Load(); port > 0 {
-		}
-	}
 }
 
 func (p *HoppingPlugin) pickNextPort() uint32 {
@@ -101,21 +85,12 @@ func (p *HoppingPlugin) pickNextPort() uint32 {
 }
 
 func (p *HoppingPlugin) loop() {
-	leadTime := p.warmup
-	if p.interval <= 2*p.warmup {
-		leadTime = p.interval / 2
-	}
-
 	for {
 		select {
-		case <-time.After(p.interval - leadTime):
+		case <-time.After(p.interval):
 			nextPort := p.pickNextPort()
-			if !p.lazyWarmup && nextPort > 0 && p.sendHandle != nil && p.targetIP != nil {
-				p.sendHandle.PrewarmFlow(p.targetIP, uint16(nextPort))
-			}
-
 			select {
-			case <-time.After(leadTime):
+			case <-time.After(p.interval):
 				if nextPort > 0 {
 					p.currentPort.Store(nextPort)
 					// Re-fire the fake 3WHS against the fresh destination

@@ -63,15 +63,6 @@ servers:
                                 # NOTE: If hopping is enabled, this port is ignored for transport
                                 # and the hopping range is used instead.
     
-    # Fake TCP Handshake Configuration (Optional)
-    # Satisfies strict DPI/Netfilter middleboxes that drop flows without a
-    # proper SYN exchange. Server-dependent: each remote server below enables
-    # it independently. Works with or without port hopping.
-    handshake:
-      enabled: false   # Enable the fake 3-way handshake (default: false)
-      mode: lazy       # "lazy" (default): handshake on first data; "eager": pre-warm ahead of hop
-      eager_time: 3    # Eager-mode lead time in seconds (default: 3, only used when mode: eager)
-
     # Port Hopping Configuration (Optional)
     # Periodically changes the destination port to evade detection on fixed ports.
     # The server must be configured with the same range.
@@ -92,8 +83,8 @@ servers:
                                 # hopping only. Recommended: true when hopping
                                 # is enabled.
       rotate_every: 1           # Client-port rotation cadence in hops (default 1).
-                                # 1 = rotate every hop (strongest, 1 extra
-                                # SYN per hop); 3 = rotate every 3rd hop.
+                                # 1 = rotate on every hop (strongest); 3 =
+                                # rotate every 3rd hop.
       ports:                    # List of single ports or ranges
         - "80"
         - "20000-45000"   # Recommended: 20000-45000

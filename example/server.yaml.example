@@ -24,15 +24,6 @@ hopping:
     - "80"
     - "10000-20000"   # Recommended: 10000-20000 (Avoids OS ephemeral ports 32768+)
 
-# Fake TCP Handshake Configuration (Optional)
-# The server responds to a client's fake SYN with a SYN-ACK, so this must be
-# enabled here to match clients that enable it. "mode" and "eager_time" affect
-# the client side only (the server never initiates a handshake).
-handshake:
-  enabled: false   # Enable the fake 3-way handshake (default: false)
-  mode: lazy       # "lazy" (default) or "eager" (client-side timing)
-  eager_time: 3    # Eager-mode lead time in seconds (default: 3)
-
 # Obfuscation Configuration (Optional)
 obfuscation:
   use_tls: true       # Wraps traffic in TLS Application Data (0x17)
