@@ -44,6 +44,12 @@ type PacketConn struct {
 	plugins     *PluginManager
 	clientPorts sync.Map
 
+	// clientIPSeen tracks the last inbound-packet time per client IP (unix
+	// nano). Updated unconditionally on every received client packet — used
+	// by the server's RST gate to distinguish a live session from a stale
+	// goodbye-RST straggler after client local-port rotation.
+	clientIPSeen sync.Map
+
 	lastRecv atomic.Int64
 	lastSend atomic.Int64
 	lastHop  atomic.Int64
@@ -249,6 +255,26 @@ func (c *PacketConn) GetClientLastSeen(addr net.Addr) time.Time {
 	return time.Time{}
 }
 
+// GetClientLastSeenByIP returns the last time ANY packet was received from
+// the given client IP, regardless of which client port it came from. Used by
+// the server's RST gate: a straggler goodbye-RST from an old client port must
+// not tear down a session that is alive on the client's current port.
+func (c *PacketConn) GetClientLastSeenByIP(ip net.IP) time.Time {
+	if v, ok := c.clientIPSeen.Load(ip.String()); ok {
+		return time.Unix(0, v.(int64))
+	}
+	return time.Time{}
+}
+
+// markClientSeen records an inbound packet from a client IP unconditionally
+// (all packet types, all ports) for the RST gate.
+func (c *PacketConn) markClientSeen(udpAddr *net.UDPAddr) {
+	if udpAddr == nil || udpAddr.IP == nil {
+		return
+	}
+	c.clientIPSeen.Store(udpAddr.IP.String(), time.Now().UnixNano())
+}
+
 func (c *PacketConn) backgroundReader() {
 	for {
 		select {
@@ -277,6 +303,11 @@ func (c *PacketConn) backgroundReader() {
 			if udpAddr, ok := addr.(*net.UDPAddr); ok {
 				c.updateClientPort(udpAddr, dstPort)
 			}
+		}
+		// Record client liveness for every inbound packet (RST gate uses
+		// this to ignore stale goodbye-RSTs from old client ports).
+		if udpAddr, ok := addr.(*net.UDPAddr); ok {
+			c.markClientSeen(udpAddr)
 		}
 
 		if payload == nil {

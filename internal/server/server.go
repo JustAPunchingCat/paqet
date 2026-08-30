@@ -214,6 +214,19 @@ func (s *Server) handleRST(addr net.Addr) {
 	if addr == nil {
 		return
 	}
+	// Guard against stale goodbye-RSTs: with client local-port rotation the
+	// client's goodbye FIN/RST can arrive late on an OLD mapping while the
+	// session has already migrated and is alive on the new one. Tearing down
+	// on sight kills a healthy tunnel. Only honor the RST if this client has
+	// actually gone quiet — a truly closing client stops sending entirely,
+	// so silence >= 10s means the RST is genuine and not a straggler.
+	const RST_GRACE = 10 * time.Second
+	if s.pConn != nil {
+		if last := s.pConn.GetClientLastSeen(addr); !last.IsZero() && time.Since(last) < RST_GRACE {
+			flog.Debugf("Received RST from client %s but client is still active (last seen %v ago) — ignoring stale RST", addr, time.Since(last).Round(time.Second))
+			return
+		}
+	}
 	if v, ok := s.conns.Load(addr.String()); ok {
 		if conn, ok := v.(tnet.Conn); ok {
 			flog.Debugf("Received RST from client %s, forcibly closing KCP session", addr)
