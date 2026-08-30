@@ -10,6 +10,7 @@ import (
 	"paqet/internal/flog"
 	ebpf_gen "paqet/internal/socket/ebpf"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
