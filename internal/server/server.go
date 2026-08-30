@@ -126,6 +126,19 @@ func (s *Server) Start() error {
 			s.reapStale(ctx, time.Duration(deadlink)*time.Second)
 		})
 	}
+	// STALE-ROTATION REAPER: with client local-port rotation, a hop orphans
+	// the previous session. The orphan's client-port lastSeen freezes at the
+	// rotation instant (the client now writes from the new port), while its
+	// own KCP output queue keeps retransmitting pending data — the field-
+	// proven wire spam. This reaper closes any session whose CLIENT-PORT
+	// lastSeen is older than the threshold, INDEPENDENT of the tunnel-wide
+	// deadlink and with NO keepalive traffic: it reads the lastSeen map the
+	// recv path already maintains. Supersession (same-IP accept) remains the
+	// fast path when the tunnel is active; this bounds the idle case.
+	stale := 45 * time.Second
+	s.wg.Go(func() {
+		s.reapStale(ctx, stale)
+	})
 
 	s.wg.Wait()
 	flog.Infof("Server shutdown completed")
