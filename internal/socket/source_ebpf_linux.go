@@ -272,19 +272,6 @@ func (s *sharedEBPFSource) RebindPort(newPort int, gracePeriod time.Duration) er
 	return nil
 }
 
-// Ports returns a snapshot of every local port this source has captured
-// on (current + previously rotated, grace period aside). Used by the
-// goodbye path: the server keys orphan sessions by the port they were
-// ACCEPTED on, so a shutdown must announce FIN from every port we ever
-// used, not just the latest.
-func (s *sharedEBPFSource) Ports() []uint16 {
-	s.portsMu.Lock()
-	defer s.portsMu.Unlock()
-	out := make([]uint16, len(s.ports))
-	copy(out, s.ports)
-	return out
-}
-
 func (s *sharedEBPFSource) Close() {
 	managerMu.Lock()
 	defer managerMu.Unlock()
