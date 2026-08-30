@@ -341,19 +341,15 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	deadConn := tc.conn
 	deadPConn := tc.pConn
 	tc.lockDiag()
-	if tc.conn != nil {
-		tc.conn.Close()
-	}
-	if tc.pConn != nil {
-		tc.pConn.Close()
-	}
 	tc.conn = nil
 	tc.pConn = nil
 	tc.rebuildAt.Store(time.Now().UnixNano())
 	tc.mu.Unlock()
-	// Close OUTSIDE tc.mu — the close path contends managerMu with the
-	// hopping plugin's rebinds; holding tc.mu across it wedged every
-	// subsequent request (field run 16:40).
+	// Close OUTSIDE tc.mu ONLY — no under-lock closes anywhere. The
+	// close path contends managerMu with the hopping plugin's rebinds;
+	// holding tc.mu across it wedged every subsequent request (field
+	// run 16:40) and the double-close under lock deadlocked the rebuild
+	// (field run 17:59: idleCheckLoop stuck >2s in lockDiag).
 	if deadConn != nil {
 		deadConn.Close()
 	}
@@ -733,18 +729,19 @@ func (t *idleTrackedStrm) armWatchdog() {
 		flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
 		flog.Infof("watchdog teardown: acquiring tc.mu...")
 		t.tc.lockDiag()
-		flog.Infof("watchdog teardown: tc.mu acquired, closing conn")
-		if t.tc.conn != nil {
-			t.tc.conn.Close()
-		}
-		if t.tc.pConn != nil {
-			t.tc.pConn.Close()
-		}
+		deadConn := t.tc.conn
+		deadPConn := t.tc.pConn
 		t.tc.conn = nil
 		t.tc.pConn = nil
 		t.tc.rebuildAt.Store(time.Now().UnixNano())
-		flog.Infof("watchdog teardown: complete — next stream open rebuilds")
+		flog.Infof("watchdog teardown: complete — closing outside lock, next stream open rebuilds")
 		t.tc.mu.Unlock()
+		if deadConn != nil {
+			deadConn.Close()
+		}
+		if deadPConn != nil {
+			deadPConn.Close()
+		}
 	}()
 }
 
