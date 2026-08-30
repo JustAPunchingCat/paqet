@@ -11,6 +11,8 @@ import (
 	"paqet/internal/tnet"
 	"paqet/internal/transport"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,6 +48,9 @@ type timedConn struct {
 	// the RST path) produced ABBA deadlocks — field runs 17:48/17:59/
 	// 18:04. Enqueue here; never block the caller.
 	closeJobs chan func()
+	// muHolder: site tag of whoever currently owns tc.mu — a contention
+	// dump names the holder directly instead of a full-stack hunt.
+	muHolder atomic.Value
 	// createConnFn: test seam — overrides createConn when set.
 	createConnFn func() (tnet.Conn, error)
 	// rebuildMu single-flights createConn across concurrent requesters.
@@ -524,29 +529,38 @@ func (tc *timedConn) markDead() {
 // 'acquiring tc.mu' forever with no visible holder.
 func (tc *timedConn) lockDiag() {
 	if tc.mu.TryLock() {
+		tc.muHolder.Store(callerTag())
 		return
 	}
-	// 10s: an offline-server rebuild storm (kernel RSTs every ~200ms →
-	// rebuild → eBPF close+rebind per cycle) legitimately holds tc.mu
-	// for seconds at a time through the managerMu contention — bounded
-	// work, not a deadlock (field runs 18:14/18:18/18:29: all complete
-	// and recover when the server returns). The dump fires once per
-	// stuck acquisition beyond 10s; a TRUE deadlock shows a holder
-	// stack that never changes across dumps.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if tc.mu.TryLock() {
+			tc.muHolder.Store(callerTag())
 			return
 		}
 		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			n := runtime.Stack(buf, true)
-			flog.Errorf("tc.mu contention >10s — holder stack:\n%s", buf[:n])
+			holder, _ := tc.muHolder.Load().(string)
+			flog.Errorf("tc.mu contention >10s — CURRENT HOLDER: %s", holder)
 			tc.mu.Lock()
+			tc.muHolder.Store(callerTag())
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// callerTag identifies the lock acquisition site for holder tracking.
+func callerTag() string {
+	for i := 2; i < 10; i++ {
+		_, file, line, ok := runtime.Caller(i)
+		if !ok {
+			break
+		}
+		if !strings.Contains(file, "timed_conn.go") {
+			return file[strings.LastIndex(file, "/")+1:] + ":" + strconv.Itoa(line)
+		}
+	}
+	return "timed_conn.go"
 }
 
 func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
