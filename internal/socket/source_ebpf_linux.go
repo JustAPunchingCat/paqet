@@ -258,10 +258,6 @@ func (s *sharedEBPFSource) RebindPort(newPort int, gracePeriod time.Duration) er
 		time.Sleep(gracePeriod)
 		s.mgr.mu.Lock()
 		defer s.mgr.mu.Unlock()
-		// Only unregister if this is still the active generation.
-		if len(s.ports) > 0 && len(old) > 0 && s.ports[0] == old[0] {
-			return // superseded by another rebind; Close will clean up
-		}
 		s.mgr.unregisterPorts(old)
 	}(oldPorts)
 

@@ -17,6 +17,9 @@ listen:
 hopping:
   enabled: false      # Enable port hopping support
   # interval: 15      # Interval (unused on server)
+  # rotate_client_port is client-side only; no server setting needed. The
+  # server automatically replies to each client's CURRENT port and ignores
+  # stale goodbye-RSTs from retired client ports.
   ports:              # List of single ports or ranges to capture
     - "80"
     - "10000-20000"   # Recommended: 10000-20000 (Avoids OS ephemeral ports 32768+)

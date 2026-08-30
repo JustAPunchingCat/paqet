@@ -64,6 +64,14 @@ func (st *flowState) markWarm() {
 	}
 }
 
+// rearmWarm resets the warm signal for a re-handshake after a hop/rotation:
+// hasRemote stays 1 (ack/TS bookkeeping continuity) but the channel is
+// replaced so the next WaitFlowWarm genuinely waits for the fresh SYN-ACK.
+// Callers must hold st.mu (RebindSource does).
+func (st *flowState) rearmWarm() {
+	st.warmCh = make(chan struct{})
+}
+
 // isWarm reports whether the flow has synced with its peer.
 func (st *flowState) isWarm() bool {
 	return atomic.LoadUint32(&st.hasRemote) == 1
@@ -1347,12 +1355,16 @@ func (h *SendHandle) RebindSource(newPort int) error {
 				// flowState (seq/ack/TS continuity across the rebind) under
 				// the new key. Clear the handshake latches so the lazy 3WHS
 				// re-fires on the new tuple; hasRemote is left intact so the
-				// ack/TS bookkeeping survives the port switch.
+				// ack/TS bookkeeping survives the port switch. The warm
+				// channel is re-armed so WaitFlowWarm genuinely waits for
+				// the fresh SYN-ACK instead of returning instantly on the
+				// stale signal from the pre-rotation handshake.
 				dstPart := strings.TrimPrefix(k, oldKeyPrefix+"->")
 				rewritten[newKeyPrefix+"->"+dstPart] = v
 				atomic.StoreUint32(&v.synSent, 0)
 				atomic.StoreUint32(&v.synAckSent, 0)
 				atomic.StoreUint32(&v.ackSent, 0)
+				v.rearmWarm()
 			} else {
 				rewritten[k] = v
 			}

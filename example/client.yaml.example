@@ -76,13 +76,25 @@ servers:
     # Periodically changes the destination port to evade detection on fixed ports.
     # The server must be configured with the same range.
     hopping:
-      enabled: false      # Enable port hopping
-      auto_rotate: true   # On stream failure, rotate the connection to a fresh
-                           # port (rate-limited, skips live streams) instead of
-                           # tearing down every connection. Helps recover from
-                           # dead/blocked ports on the next request.
-      interval: 180       # Interval in seconds to change ports (default: 180-300)
-      ports:              # List of single ports or ranges
+      enabled: false            # Enable port hopping
+      interval: 180             # Interval in seconds to change ports (default: 180-300).
+                                # NOTE: middleboxes throttle the server->client
+                                # return path of a fresh NAT mapping for the
+                                # first ~10s; hop intervals well above that
+                                # (>=60) keep each hop's blackout brief.
+      rotate_client_port: false # Rebind the CLIENT's local source port on every
+                                # hop (see rotate_every). Creates a fresh NAT
+                                # mapping with a fresh return-path quota —
+                                # defeats middleboxes that blackhole the
+                                # return path of a matured mapping. Requires
+                                # an eBPF capture source; pcap/afpacket builds
+                                # log once and continue with server-port
+                                # hopping only. Recommended: true when hopping
+                                # is enabled.
+      rotate_every: 1           # Client-port rotation cadence in hops (default 1).
+                                # 1 = rotate every hop (strongest, 1 extra
+                                # SYN per hop); 3 = rotate every 3rd hop.
+      ports:                    # List of single ports or ranges
         - "80"
         - "20000-45000"   # Recommended: 20000-45000
 

@@ -364,10 +364,15 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		return 0, err
 	}
 
-	// Server Echo logic: try to reply from the port the client last contacted.
-	key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
-	if val, ok := c.clientPorts.Load(key); ok {
-		srcPort = val.(*clientPortEntry).port
+	// Server Echo logic (SERVER ROLE ONLY): reply from the port the client
+	// last contacted. On the client this map would pin sends to a STALE local
+	// port after a local-port rotation — the exact port rotation is meant to
+	// retire — so it must never apply client-side.
+	if c.cfg.Role == "server" {
+		key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
+		if val, ok := c.clientPorts.Load(key); ok {
+			srcPort = val.(*clientPortEntry).port
+		}
 	}
 
 	// Cast again because plugins might return a generic net.Addr
