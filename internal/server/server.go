@@ -261,6 +261,29 @@ func (s *Server) handleRST(addr net.Addr) {
 		}
 		return
 	}
+	// The conns MAP is keyed by the addr the session was ACCEPTED on.
+	// kcp-go updates the session's RemoteAddr when the client migrates
+	// ports (local-port rotation), so a session accepted as :36010 may
+	// now be speaking from :49801 — the map key is stale, the CONN's
+	// RemoteAddr is fresh. Field run 17:09: a goodbye from the client's
+	// current port missed the map, got parked, and the orphaned session
+	// echo-flooded the dead port for minutes. Scan by the conn's LIVE
+	// RemoteAddr instead.
+	var killConns []tnet.Conn
+	s.conns.Range(func(k, v any) bool {
+		if c, ok := v.(tnet.Conn); ok && c.RemoteAddr().String() == addr.String() {
+			killConns = append(killConns, c)
+			s.conns.Delete(k)
+		}
+		return true
+	})
+	for _, c := range killConns {
+		flog.Debugf("Received RST from client %s — closing migrated KCP session (stale map key)", addr)
+		c.Close()
+		if len(killConns) > 0 {
+			return
+		}
+	}
 	// Goodbye for a port with no live session — the accept of the migrated
 	// session may not have landed yet. Park it briefly.
 	flog.Debugf("Goodbye from unknown client %s — parking (session may be mid-accept)", addr)
