@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"paqet/internal/conf"
+	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 )
 
@@ -24,6 +25,21 @@ import (
 type fakeStrm struct{ net.Conn }
 
 func (f *fakeStrm) SID() int { return 1 }
+
+func (f *fakeStrm) Read(b []byte) (int, error)  { return 0, nil }
+func (f *fakeStrm) Write(b []byte) (int, error) { return len(b), nil }
+func (f *fakeStrm) Close() error                { return nil }
+func (f *fakeStrm) LocalAddr() net.Addr         { return &net.TCPAddr{} }
+func (f *fakeStrm) RemoteAddr() net.Addr        { return &net.TCPAddr{} }
+func (f *fakeStrm) SetDeadline(t time.Time) error {
+	return nil
+}
+func (f *fakeStrm) SetReadDeadline(t time.Time) error {
+	return nil
+}
+func (f *fakeStrm) SetWriteDeadline(t time.Time) error {
+	return nil
+}
 
 type fakeConn struct {
 	openDelay time.Duration
@@ -47,6 +63,14 @@ func (f *fakeConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 func (f *fakeConn) SetWriteDeadline(t time.Time) error { return nil }
+
+func testProto() *protocol.Proto {
+	a, err := tnet.NewAddr("1.2.3.4:443")
+	if err != nil {
+		panic(err)
+	}
+	return &protocol.Proto{Type: protocol.PTCP, Addr: a}
+}
 
 func newTestTimedConn(t *testing.T, openDelay time.Duration) *timedConn {
 	t.Helper()
@@ -149,4 +173,79 @@ func TestNoLongTcMuHold(t *testing.T) {
 		t.Fatalf("tc.mu held for %v (>2s) under concurrent teardown — deadlock shape regressed", time.Duration(h))
 	}
 	t.Logf("max observed tc.mu hold: %v", time.Duration(atomic.LoadInt64(&maxHold)))
+}
+
+// TestFastPathNoSelfDeadlock: the fast path (conn exists) previously
+// self-deadlocked — openAndSendProto locked tc.mu then called
+// openStreamOnConn which locked it again (non-reentrant). Field run
+// 18:42: holder timed_conn.go:580, tunnel dead after server restart.
+func TestFastPathNoSelfDeadlock(t *testing.T) {
+	// Healthy conn: OpenStrm returns instantly.
+	tc := newTestTimedConn(t, 0)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := tc.openAndSendProto(testProto())
+		if err != nil {
+			t.Errorf("fast-path stream open failed: %v", err)
+		}
+	}()
+	select {
+	case <-done:
+		// success — no self-deadlock
+	case <-time.After(8 * time.Second):
+		t.Fatal("fast path deadlocked — openStreamOnConn re-locked tc.mu")
+	}
+}
+
+// TestFastPathUnderFire: healthy conn + concurrent OnRST teardowns +
+// idle loop — the fast path must not wedge tc.mu either.
+func TestFastPathUnderFire(t *testing.T) {
+	tc := newTestTimedConn(t, 0)
+	stop := make(chan struct{})
+	var maxHold int64
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			start := time.Now()
+			if tc.mu.TryLock() {
+				tc.mu.Unlock()
+				h := int64(time.Since(start))
+				for {
+					old := atomic.LoadInt64(&maxHold)
+					if h <= old || atomic.CompareAndSwapInt64(&maxHold, old, h) {
+						break
+					}
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tc.openAndSendProto(testProto())
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(20 * time.Millisecond)
+			tc.OnRST(&net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 1})
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	if h := atomic.LoadInt64(&maxHold); h > int64(2*time.Second) {
+		t.Fatalf("tc.mu held %v under fast-path fire", time.Duration(h))
+	}
 }

@@ -579,10 +579,11 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 
 	tc.lockDiag()
 	if tc.conn != nil {
-		// Fast path: conn exists — open a stream on it under tc.mu
-		// (OpenStrm may wait up to the 5s deadline, but only when the
-		// session is desynced; on the healthy path it returns in ms
-		// and the brief hold is benign).
+		// Fast path: conn exists. openStreamOnConn expects tc.mu HELD
+		// by the caller (it unlocks internally) — do NOT let it
+		// re-lock (self-deadlock, field run 18:42: holder
+		// timed_conn.go:580 = this call site holding the mutex while
+		// the callee waited on it).
 		return tc.openStreamOnConn(p)
 	}
 
@@ -636,7 +637,7 @@ func (tc *timedConn) openStreamOnConn(p *protocol.Proto) (tnet.Strm, error) {
 	if err != nil {
 		return nil, err
 	}
-	tc.lockDiag()
+	// Caller holds tc.mu (openAndSendProto fast path). Do NOT re-lock.
 	if tc.conn != conn {
 		// Conn was rebuilt while we opened — discard.
 		tc.mu.Unlock()
