@@ -89,28 +89,22 @@ func (p *HoppingPlugin) loop() {
 		select {
 		case <-time.After(p.interval):
 			nextPort := p.pickNextPort()
-			select {
-			case <-time.After(p.interval):
-				if nextPort > 0 {
-					p.currentPort.Store(nextPort)
-					// Re-fire the fake 3WHS against the fresh destination
-					// port so the middlebox sees a handshake for the new
-					// tuple (no-op when handshake is disabled). Flow state
-					// (seq/ack/TS) deliberately untouched — the KCP stream
-					// stays continuous.
-					if p.isClient {
-						n := p.hopCount.Add(1)
-						if p.OnHop != nil {
-							flog.Infof("hop %d dispatched to rotation hook", n)
-							go p.OnHop(n)
-						} else {
-							flog.Warnf("hop %d: OnHop hook is NIL — rotate_client_port cannot fire", n)
-						}
-					}
-					if p.label != "" {
-						flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
+			if nextPort > 0 {
+				p.currentPort.Store(nextPort)
+				// Log the hop BEFORE dispatching the rotation goroutine so
+				// the label line always precedes the hook's output.
+				if p.label != "" {
+					flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
+				} else {
+					flog.Debugf("Hopping: interval hopped to port :%d", nextPort)
+				}
+				if p.isClient {
+					n := p.hopCount.Add(1)
+					if p.OnHop != nil {
+						flog.Infof("hop %d dispatched to rotation hook", n)
+						go p.OnHop(n)
 					} else {
-						flog.Debugf("Hopping: interval hopped to port :%d", nextPort)
+						flog.Warnf("hop %d: OnHop hook is NIL — rotate_client_port cannot fire", n)
 					}
 				}
 			}
