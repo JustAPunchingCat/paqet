@@ -39,8 +39,8 @@ func (m *mockConn) Close() error {
 	}
 	return nil
 }
-func (m *mockConn) LocalAddr() net.Addr  { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234} }
-func (m *mockConn) RemoteAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5678} }
+func (m *mockConn) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1234} }
+func (m *mockConn) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5678} }
 func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
 func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
@@ -75,8 +75,8 @@ func (s *mockStrm) Close() error {
 }
 
 func (s *mockStrm) SID() int                           { return s.sid }
-func (s *mockStrm) LocalAddr() net.Addr               { return &net.TCPAddr{} }
-func (s *mockStrm) RemoteAddr() net.Addr              { return &net.TCPAddr{} }
+func (s *mockStrm) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (s *mockStrm) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
 func (s *mockStrm) SetDeadline(t time.Time) error      { return nil }
 func (s *mockStrm) SetReadDeadline(t time.Time) error  { return nil }
 func (s *mockStrm) SetWriteDeadline(t time.Time) error { return nil }

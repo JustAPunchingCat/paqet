@@ -233,11 +233,11 @@ type PortRange struct {
 }
 
 type Hopping struct {
-	Enabled    *bool    `yaml:"enabled"`
-	Interval   int      `yaml:"interval"`  // Hopping interval in seconds
-	Min        int      `yaml:"min"`       // Legacy: single range min
-	Max        int      `yaml:"max"`       // Legacy: single range max
-	Ports      []string `yaml:"ports"`     // New: list of ports or ranges ("80", "1000-2000")
+	Enabled  *bool    `yaml:"enabled"`
+	Interval int      `yaml:"interval"` // Hopping interval in seconds
+	Min      int      `yaml:"min"`      // Legacy: single range min
+	Max      int      `yaml:"max"`      // Legacy: single range max
+	Ports    []string `yaml:"ports"`    // New: list of ports or ranges ("80", "1000-2000")
 	// RotateClientPort: on the client, rebind the local source port every
 	// RotateEvery hops (0 = never). Combats middleboxes that throttle the
 	// server->client return path per-NAT-mapping: a new client port creates

@@ -500,7 +500,7 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 		if frag, ok := s.reorderBuf[s.nextReadSeq]; ok {
 			delete(s.reorderBuf, s.nextReadSeq)
 			s.nextReadSeq++
-			
+
 			// If it's a single fragment and we haven't started reassembly yet:
 			if !frag.more && len(s.reassembly) == 0 {
 				n = copy(b, frag.data)
@@ -565,7 +565,7 @@ func (s *muxStream) Read(b []byte) (n int, err error) {
 
 			// Found expected fragment
 			s.nextReadSeq++
-			
+
 			// If it's a single fragment and we haven't started reassembly yet:
 			if !frag.more && len(s.reassembly) == 0 {
 				n = copy(b, frag.data)

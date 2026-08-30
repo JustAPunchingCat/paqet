@@ -1,5 +1,13 @@
 package buffer
-import ("context"; "io"; "net"; "testing"; "bytes")
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net"
+	"testing"
+)
+
 func TestRelayTCP(t *testing.T) {
 	client, server := net.Pipe()
 	remoteClient, remoteServer := net.Pipe()
@@ -13,5 +21,7 @@ func TestRelayTCP(t *testing.T) {
 	}()
 	buf := new(bytes.Buffer)
 	io.Copy(buf, client)
-	if !bytes.Equal(buf.Bytes(), payload) { t.Fatalf("failed") }
+	if !bytes.Equal(buf.Bytes(), payload) {
+		t.Fatalf("failed")
+	}
 }

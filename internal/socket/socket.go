@@ -66,6 +66,11 @@ type PacketConn struct {
 	// only a kcp session key.
 	clientLatestAddr sync.Map
 
+	// clientLatestSrvPort maps client IP string -> the SERVER-side port
+	// (hopped dst) the client last wrote to. Echo replies originate from
+	// it; the client drops inbound from any other server port.
+	clientLatestSrvPort sync.Map
+
 	lastRecv atomic.Int64
 	lastSend atomic.Int64
 	lastHop  atomic.Int64
@@ -205,6 +210,10 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		udpAddr := pkt.addr.(*net.UDPAddr)
 		if c.cfg.Role == "server" && udpAddr.IP != nil {
 			c.clientLatestAddr.Store(udpAddr.IP.String(), udpAddr)
+			// Record the SERVER port the client is currently writing to
+			// (its current hop target) — echo replies must originate from
+			// it or the client's receive path drops them.
+			c.clientLatestSrvPort.Store(udpAddr.IP.String(), pkt.port)
 		}
 
 		// SERVER ROLE: report a STABLE canonical client addr to the
@@ -422,8 +431,10 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		// accepts inbound from the server port it is actively writing to.
 		// The previous clientPorts-based srcPort logic carried exactly this
 		// and must survive the latest-addr rewrite.
-		if last := c.GetLastActivePort(); last > 0 {
-			srcPort = last
+		if val, ok := c.clientLatestSrvPort.Load(daddr.IP.String()); ok {
+			if sp, ok2 := val.(int); ok2 && sp > 0 {
+				srcPort = sp
+			}
 		}
 		flog.Tracef("echo reply: to client %s from server port %d", daddr, srcPort)
 	} else if c.cfg.Role == "client" && len(data) > 0 {
@@ -675,6 +686,7 @@ func (c *PacketConn) ClearClientCanonical(ip net.IP) {
 	if ip != nil {
 		c.clientCanonical.Delete(ip.String())
 		c.clientLatestAddr.Delete(ip.String())
+		c.clientLatestSrvPort.Delete(ip.String())
 	}
 }
 

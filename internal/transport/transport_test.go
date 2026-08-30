@@ -962,11 +962,11 @@ func (m *multiPortServerConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // hoppingClientConn applies port hopping on outgoing packets and normalizes incoming packets
 type hoppingClientConn struct {
-	base     net.PacketConn
-	ports    []int
-	current  int
-	minPort  int
-	mu       sync.Mutex
+	base    net.PacketConn
+	ports   []int
+	current int
+	minPort int
+	mu      sync.Mutex
 }
 
 func (h *hoppingClientConn) ReadFrom(p []byte) (int, net.Addr, error) {
