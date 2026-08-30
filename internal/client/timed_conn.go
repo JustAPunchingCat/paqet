@@ -287,6 +287,16 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 // handshake latch re-arm inside RebindSource. Failures are non-fatal: the
 // tunnel keeps hopping server ports without client rotation.
 func (tc *timedConn) rotateLocalPortIfConfigured() {
+	// tc.mu is held for the WHOLE rotation: the idle reaper (idleCheckLoop)
+	// nulls tc.conn/tc.pConn under the same lock, and a rotation running
+	// concurrently dereferenced a nulled pConn — field-proven SIGSEGV
+	// ('panic: nil pointer dereference ... RotateLocalPort' at hop N after
+	// the tunnel went idle). Holding the lock serializes rotation against
+	// reaping; RotateLocalPort only touches the eBPF manager and the send
+	// handle's port field, so the extra hold time is negligible.
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
 	if tc.pConn == nil {
 		return
 	}
@@ -299,9 +309,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	// Idle tunnel: rotating a conn the idle reaper is about to tear down
 	// races the reaper (field-proven 'bad file descriptor' goodbye) and
 	// buys nothing — the next write rebuilds on a fresh port anyway. Skip.
-	tc.mu.Lock()
 	idle := tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 30*time.Second
-	tc.mu.Unlock()
 	if idle {
 		flog.Debugf("hop: tunnel idle — skipping local-port rotation (next write rotates)")
 		return
