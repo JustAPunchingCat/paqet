@@ -48,13 +48,13 @@ func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingP
 	}
 
 	hp := &HoppingPlugin{
-		ranges:     ranges,
-		interval:   time.Duration(cfg.Interval) * time.Second,
-		stop:       make(chan struct{}),
-		minPort:    minPort,
-		isClient:   isClient,
-		label:      label,
-		targetIP:   targetIP,
+		ranges:   ranges,
+		interval: time.Duration(cfg.Interval) * time.Second,
+		stop:     make(chan struct{}),
+		minPort:  minPort,
+		isClient: isClient,
+		label:    label,
+		targetIP: targetIP,
 	}
 	if isClient {
 		hp.updateCurrentPort()
@@ -113,8 +113,6 @@ func (p *HoppingPlugin) loop() {
 						flog.Debugf("Hopping: interval hopped to port :%d", nextPort)
 					}
 				}
-			case <-p.stop:
-				return
 			}
 		case <-p.stop:
 			return

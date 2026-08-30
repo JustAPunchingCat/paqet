@@ -23,6 +23,13 @@ type Server struct {
 	pConn *socket.PacketConn
 	wg    sync.WaitGroup
 	conns sync.Map
+
+	// pendingGoodbyes: goodbye FIN/RSTs that arrived for a client port with
+	// no live session yet — a rotation can deliver the goodbye and the first
+	// packet of the NEW mapping in the same batch, and the goodbye may beat
+	// the accept. Without this, the orphaned old-port session survives the
+	// reaper window and retransmits (field-proven wire spam).
+	pendingGoodbyes sync.Map // addr string -> time.Time
 }
 
 func New(cfg *conf.Conf) (*Server, error) {
@@ -188,6 +195,15 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			}
 		}
 
+		if t, ok := s.pendingGoodbyes.Load(conn.RemoteAddr().String()); ok {
+			if ts, ok2 := t.(time.Time); ok2 && time.Since(ts) < 5*time.Second {
+				flog.Debugf("connection from %s matches a parked goodbye — closing immediately", conn.RemoteAddr())
+				conn.Close()
+				s.pendingGoodbyes.Delete(conn.RemoteAddr().String())
+				continue
+			}
+		}
+
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), localInfo)
 
 		s.conns.Store(conn.RemoteAddr().String(), conn)
@@ -227,5 +243,10 @@ func (s *Server) handleRST(addr net.Addr) {
 			conn.Close()
 			s.conns.Delete(addr.String())
 		}
+		return
 	}
+	// Goodbye for a port with no live session — the accept of the migrated
+	// session may not have landed yet. Park it briefly.
+	flog.Debugf("Goodbye from unknown client %s — parking (session may be mid-accept)", addr)
+	s.pendingGoodbyes.Store(addr.String(), time.Now())
 }
