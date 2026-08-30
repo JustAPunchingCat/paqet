@@ -60,13 +60,70 @@ static __always_inline int parse_tcp(void *data, void *data_end,
                                      struct in6_addr *dst_ipv6,
                                      __u16 *l3_proto)
 {
+    *l3_proto = 0;
+
+    // Point-to-point links (ppp0, TUN) deliver raw IP frames with NO
+    // Ethernet header. Detect by the IP version nibble: byte 0 high nibble
+    // is 4 (IPv4) or 6 (IPv6) only for raw-IP frames; an Ethernet header's
+    // first byte is the dst MAC's high nibble, which collides with 4/6 only
+    // for locally-administered MACs — disambiguated by checking that the
+    // putative EtherType at offset 12-14 is NOT a valid IP ethertype... too
+    // fragile. Instead: caller context — treat byte0>>4 as version directly
+    // when it is 4 or 6 AND byte 12-14 is not 0x0800/0x86DD. Ethernet
+    // frames whose dst MAC starts 0x40/0x60 are rare; verify h_proto first.
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) return 0;
 
-    *l3_proto = 0;
-    
-    __u16 h_proto = eth->h_proto;
-    void *cursor = (void *)(eth + 1);
+    __u16 h_proto;
+    void *cursor;
+
+    if (eth->h_proto == bpf_htons(ETH_P_IP) ||
+        eth->h_proto == bpf_htons(ETH_P_IPV6) ||
+        eth->h_proto == bpf_htons(ETH_P_8021Q) ||
+        eth->h_proto == bpf_htons(ETH_P_8021AD)) {
+        // Real Ethernet frame
+        h_proto = eth->h_proto;
+        cursor = (void *)(eth + 1);
+    } else {
+        // No recognizable EtherType: try raw-IP (ppp0/TUN) interpretation.
+        __u8 ver = *((__u8 *)data) >> 4;
+        if (ver == 4) {
+            h_proto = bpf_htons(ETH_P_IP);
+        } else if (ver == 6) {
+            h_proto = bpf_htons(ETH_P_IPV6);
+        } else {
+            return 0;
+        }
+        cursor = data;
+        // Skip the ethernet-less path below by jumping straight into L3.
+        if (h_proto == bpf_htons(ETH_P_IP)) {
+            struct iphdr *ip = cursor;
+            if ((void *)(ip + 1) > data_end) return 0;
+            if (ip->protocol != IPPROTO_TCP) return 0;
+            __u8 ver_ihl = *((__u8 *)ip);
+            __u32 ip_len = (ver_ihl & 0x0F) << 2;
+            if (ip_len < 20) return 0;
+            if ((void *)((unsigned char *)ip + ip_len) > data_end) return 0;
+            struct tcphdr *t = (void *)((unsigned char *)ip + ip_len);
+            if ((void *)(t + 1) > data_end) return 0;
+            *tcp = t;
+            *l3_proto = ETH_P_IP;
+            *src_ipv4 = ip->saddr;
+            *dst_ipv4 = ip->daddr;
+            return 1;
+        } else {
+            struct ipv6hdr *ip6 = cursor;
+            if ((void *)(ip6 + 1) > data_end) return 0;
+            if (ip6->nexthdr != IPPROTO_TCP) return 0;
+            struct tcphdr *t = (void *)(ip6 + 1);
+            if ((void *)(t + 1) > data_end) return 0;
+            *tcp = t;
+            *l3_proto = ETH_P_IPV6;
+            *src_ipv6 = ip6->saddr;
+            *dst_ipv6 = ip6->daddr;
+            return 1;
+        }
+    }
 
     // Handle VLANs (802.1Q and 802.1ad) - Manual unroll for verifier safety
     // Level 1
