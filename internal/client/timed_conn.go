@@ -271,12 +271,31 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 		// RST from some other server (multi-server config) — ignore.
 		return
 	}
-	flog.Warnf("RST from server %s — forcing port hop to escape the blocked tuple", udpAddr.String())
+	flog.Warnf("RST from server %s — forcing port hop + full conn rebuild (server session state is gone)", udpAddr.String())
 	if tc.pConn != nil {
 		// ForceHop fires the OnHop callback, which already performs the
 		// client local-port rotation when rotate_client_port is enabled.
 		tc.pConn.ForceHop()
 	}
+	// A server RST on our current tuple means the server does not know
+	// this session: either a middlebox reset the flow or the SERVER
+	// PROCESS RESTARTED and its KCP/smux state is fresh. Hopping the port
+	// alone is not enough — the new server session never negotiated smux
+	// with our existing session, so stream frames are misread and SOCKS
+	// streams never recover (field-proven: wire alive, pings flow, but
+	// every stream hangs after a server restart). Rebuild the whole conn:
+	// smux re-negotiates on the new session; open streams error out
+	// client-side (SOCKS clients retry) — inherent to a server restart.
+	tc.mu.Lock()
+	if tc.conn != nil {
+		tc.conn.Close()
+	}
+	if tc.pConn != nil {
+		tc.pConn.Close()
+	}
+	tc.conn = nil
+	tc.pConn = nil
+	tc.mu.Unlock()
 }
 
 // rotateLocalPortIfConfigured rebinds the client's local source port when
