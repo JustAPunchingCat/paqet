@@ -1029,13 +1029,12 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 	isReset := false
 	isForward := false
 
-	// Sync our sequence number to the remote's ACK.
-	if remoteAck > 0 {
-		if isFirstPacket && h.role == "server" {
-			// On the first packet received by the server, jump to the client's initial ACK.
-			state.seq = remoteAck
-		}
-	}
+	// NOTE: no state.seq = remoteAck seeding here. After a server restart the
+	// client's ACK still points into the DEAD session's universe; anchoring our
+	// seq to it makes both sides agree on numbers from a dead conversation and
+	// deadlocks until KCP deadlink reconnect (~30s). A fresh server keeps its
+	// own fresh random seq; the client adopts it via the out-of-window/TSval
+	// reset paths below (first-packet adoption covers genuinely new flows).
 
 	newAck := remoteSeq + payloadLen
 	currentAck := state.remoteSeq + state.remoteLen
@@ -1064,6 +1063,16 @@ func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, d
 	if isFirstPacket || int32(newAck-currentAck) > 0 {
 		state.remoteSeq = remoteSeq
 		state.remoteLen = payloadLen
+		isForward = true
+	} else if int32(newAck-currentAck) < 0 {
+		// Small backward regression (retransmission of older data or a packet
+		// reordered by a hop): keep ack tracking on the newest data we have
+		// seen, but DO NOT silently drop the packet — acking it lets the
+		// peer's KCP close its retransmission timer for that segment. Dropping
+		// it silently used to leave a permanent hole in the KCP byte stream
+		// (both sides "acknowledged" data smux never received) — the zombie
+		// session. Small regressions are always safe to ack: the data was
+		// already delivered to KCP earlier.
 		isForward = true
 	}
 	if tsVal > 0 {
