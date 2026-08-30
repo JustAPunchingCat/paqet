@@ -295,3 +295,25 @@ func TestInstallVsTeardownRace(t *testing.T) {
 		tc.mu.Unlock()
 	}
 }
+
+// TestFastPathOpenFailureReleasesLock: the field-proven 19:11 wedge —
+// fast path's boundedOpenStrm error return leaked tc.mu (no unlock on
+// that path); each offline-server OpenStrm timeout leaked the lock and
+// wedged every subsequent waiter forever. After this test the mutex
+// MUST be free despite repeated open failures.
+func TestFastPathOpenFailureReleasesLock(t *testing.T) {
+	// openDelay 6s > 5s deadline → boundedOpenStrm always times out,
+	// exactly like a dead server.
+	tc := newTestTimedConn(t, 6*time.Second)
+	for i := 0; i < 5; i++ {
+		_, err := tc.openAndSendProto(testProto())
+		if err == nil {
+			t.Fatalf("iter %d: expected open failure", i)
+		}
+		// THE assertion: mutex free after each failed open.
+		if !tc.mu.TryLock() {
+			t.Fatalf("iter %d: tc.mu LEAKED by failed open — wedged forever", i)
+		}
+		tc.mu.Unlock()
+	}
+}

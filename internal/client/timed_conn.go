@@ -658,21 +658,26 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 // watchdog/escalation paths (they nil tc.conn, and the returned stream
 // simply errors). Caller must NOT hold tc.mu.
 func (tc *timedConn) openStreamOnConn(p *protocol.Proto) (tnet.Strm, error) {
+	// CONTRACT: caller holds tc.mu; this function ALWAYS releases it
+	// EXACTLY once on every path. No defer pairing with manual unlocks
+	// (that double-unlocked), no early returns without unlock (that
+	// leaked — field run 19:11).
 	conn := tc.conn
 	strm, err := tc.boundedOpenStrm(conn)
 	if err != nil {
+		// 5s OpenStrm timeout (offline server): release and fail.
+		tc.unlockDiag()
 		return nil, err
 	}
-	// Caller holds tc.mu (openAndSendProto fast path). Do NOT re-lock.
 	if tc.conn != conn {
 		// Conn was rebuilt while we opened — discard.
 		tc.unlockDiag()
 		strm.Close()
 		return nil, fmt.Errorf("conn rebuilt during stream open — retry")
 	}
+	// Proto write outside tc.mu (can block 10s+ on a dead server's
+	// jammed KCP window).
 	tc.unlockDiag()
-	// Same rule: proto write outside tc.mu (can block 10s+ on a dead
-	// server's jammed KCP window).
 	strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
 	werr := p.Write(strm)
 	strm.SetWriteDeadline(time.Time{})
