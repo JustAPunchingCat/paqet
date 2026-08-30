@@ -412,15 +412,21 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		// key, not a mailbox.
 		if val, ok := c.clientLatestAddr.Load(daddr.IP.String()); ok {
 			latest := val.(*net.UDPAddr)
-			flog.Tracef("echo reply: to client latest addr %s (session key %s)", latest, daddr)
 			daddr = latest
 			// Also update `addr`: the plugins' return value is reassigned
 			// into daddr right after this block and would otherwise
 			// clobber the latest-addr rewrite (field-proven).
 			addr = latest
-		} else {
-			flog.Tracef("echo reply: no latest addr for %s, using session key", daddr.IP)
 		}
+		// Source port: the server's CURRENT hopped port — the client only
+		// accepts inbound from the server port it is actively writing to.
+		// The previous clientPorts-based srcPort logic carried exactly this
+		// and must survive the latest-addr rewrite.
+		if last := c.GetLastActivePort(); last > 0 {
+			srcPort = last
+		}
+		flog.Tracef("echo reply: to client %s from server port %d", daddr, srcPort)
+	} else if c.cfg.Role == "client" && len(data) > 0 {
 	} else if c.cfg.Role == "client" && len(data) > 0 {
 		// DIAGNOSTIC: prove which local port every client write actually
 		// carries. A post-rotation write still on the old port shows up here
