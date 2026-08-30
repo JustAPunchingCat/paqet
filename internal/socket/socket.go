@@ -423,20 +423,31 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 	if c.sendHandle == nil {
 		return 0, fmt.Errorf("no send handle")
 	}
+	if c.recvHandle == nil || c.recvHandle.source == nil {
+		return 0, fmt.Errorf("no capture source")
+	}
 	newPort := int(RandInRange(32768, 65535))
-	if err := c.sendHandle.RebindSource(newPort); err != nil {
-		return 0, err
-	}
-	flog.Tracef("rotate: WriteTo cfg.Port %d -> %d; sendHandle.srcPort now %d",
-		c.cfg.Port, newPort, c.sendHandle.SrcPort())
-	// Re-target capture BEFORE the first packet goes out on the new port so
-	// the handshake reply isn't missed. 2s grace keeps the old port alive for
-	// in-flight replies from the previous mapping.
+
+	// Re-target capture FIRST: it is the step that can fail (BPF map, source
+	// capabilities). If it fails, nothing has been touched yet — the send
+	// handle stays on the old port and the tunnel keeps its current flow
+	// state. The previous order (send handle first, capture second, silent
+	// rollback on failure) left the two halves split when the rollback
+	// itself failed: SYN went out on the new port while data kept using the
+	// old one, and the rollback's key-rewrite minted a fresh random seq
+	// universe mid-stream (the split-brain seq jump seen in the field).
 	if err := c.recvHandle.source.RebindPort(newPort, 2*time.Second); err != nil {
-		// Roll the send handle back so srcPort stays consistent with capture.
-		_ = c.sendHandle.RebindSource(c.cfg.Port)
-		return 0, err
+		return 0, fmt.Errorf("capture rebind to port %d failed: %w", newPort, err)
 	}
+	if err := c.sendHandle.RebindSource(newPort); err != nil {
+		// Capture already listens on newPort; roll ONLY the capture back and
+		// report loudly. Never leave the halves split.
+		if rbErr := c.recvHandle.source.RebindPort(int(c.cfg.Port), 2*time.Second); rbErr != nil {
+			flog.Errorf("rotation capture rollback failed: %v (capture on %d, send handle on %d — MISMATCHED)", rbErr, newPort, c.cfg.Port)
+		}
+		return 0, fmt.Errorf("capture rebind to port %d failed: %w", newPort, err)
+	}
+	flog.Tracef("rotate: local port %d -> %d (cfg.Port and sendHandle in sync)", c.cfg.Port, newPort)
 	c.cfg.Port = newPort
 	return newPort, nil
 }

@@ -295,7 +295,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	}
 	newPort, err := tc.pConn.RotateLocalPort()
 	if err != nil {
-		flog.Debugf("client local-port rotation unavailable: %v (continuing with server-port hops only)", err)
+		flog.Warnf("client local-port rotation FAILED: %v (continuing with server-port hops only)", err)
 		return
 	}
 	tc.lastPort = newPort
