@@ -9,6 +9,8 @@ import (
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	ebpf_gen "paqet/internal/socket/ebpf"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -343,7 +345,65 @@ func initManager(cfg *conf.Network, objs interface{}, link link.Link, rd PacketR
 	mgr.configureClientAllowlist(cfg, configMap)
 
 	go mgr.dispatch()
+	go mgr.dumpXDPStats()
 	return mgr
+}
+
+// dumpXDPStats logs the XDP per-branch counters every 15s. Field runs
+// showed return-path packets vanishing after client port rotation; these
+// counters prove whether frames reach the NIC and which XDP branch takes
+// them: 0=pass-not-ours 1=consumed(ringbuf) 2=ringbuf-full-passed
+// 3=dropped 4=parse-fail. Access by name so it works regardless of when
+// the generated object structs were last regenerated.
+func (m *ebpfManager) dumpXDPStats() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+
+	var stats *ebpf.Map
+	// bpf2go typed structs embed ebpf.Collection; Maps is accessed via the
+	// embedded collection's map store, by name — no regen dependency.
+	switch o := m.objs.(type) {
+	case *ebpf_gen.BpfRingbufCompatObjects:
+		stats = o.Maps["xdp_stats"]
+	case *ebpf_gen.BpfRingbufObjects:
+		stats = o.Maps["xdp_stats"]
+	}
+	if stats == nil {
+		flog.Debugf("[trace] xdp stats map unavailable")
+		return
+	}
+	names := []string{"pass-not-ours", "consumed", "ringbuf-full", "dropped", "parse-fail"}
+	prev := make([]uint64, len(names))
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-t.C:
+			total := make([]uint64, len(names))
+			var key uint32
+			var perCPU []uint64
+			iter := stats.Iterate()
+			for iter.Next(&key, &perCPU) {
+				if int(key) < len(total) {
+					for _, v := range perCPU {
+						total[key] += v
+					}
+				}
+			}
+			parts := make([]string, len(names))
+			delta := make([]string, len(names))
+			for i, n := range names {
+				parts[i] = n + "=" + strconv.FormatUint(total[i], 10)
+				d := total[i] - prev[i]
+				if d > 0 {
+					delta[i] = n + "=+" + strconv.FormatUint(d, 10)
+				}
+				prev[i] = total[i]
+			}
+			flog.Debugf("[trace] xdp stats: %s | delta: %s",
+				strings.Join(parts, " "), strings.Join(delta, " "))
+		}
+	}
 }
 
 // configureClientAllowlist populates the eBPF source-IP allowlist (LPM trie)

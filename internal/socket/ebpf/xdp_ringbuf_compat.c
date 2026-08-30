@@ -7,6 +7,21 @@ struct {
     __uint(max_entries, 1 << 26);
 } packets SEC(".maps");
 
+// Per-branch counters for field debugging: 0=passed(not ours), 1=consumed
+// (ringbuf), 2=ringbuf-full passed to kernel, 3=dropped (allowlist),
+// 4=parse fail (passed). Dump with: bpftool map dump name xdp_stats.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 8);
+    __type(key, __u32);
+    __type(value, __u64);
+} xdp_stats SEC(".maps");
+
+static __always_inline void bump(__u32 idx) {
+    __u64 *c = bpf_map_lookup_elem(&xdp_stats, &idx);
+    if (c) (*c)++;
+}
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 65536);
@@ -64,8 +79,10 @@ int xdp_main(struct xdp_md *ctx)
     __u16 l3_proto = 0;
     struct tcphdr *tcp;
 
-    if (!parse_tcp(data, data_end, &tcp, &src_ipv4, &dst_ipv4, &src_ipv6, &dst_ipv6, &l3_proto))
+    if (!parse_tcp(data, data_end, &tcp, &src_ipv4, &dst_ipv4, &src_ipv6, &dst_ipv6, &l3_proto)) {
+        bump(4);
         return XDP_PASS;
+    }
 
     // Re-verify bounds to satisfy verifier on older kernels
     if ((void *)(tcp + 1) > data_end) return XDP_PASS;
@@ -96,7 +113,7 @@ int xdp_main(struct xdp_md *ctx)
             if (map_has(&allowed_ips_v6, &src_ipv6)) ip_match = 1;
             if (map_has(&allowed_ips_v6, &dst_ipv6)) ip_match = 1;
         }
-        if (!ip_match) return XDP_PASS;
+        if (!ip_match) { bump(0); return XDP_PASS; }
 
         // Port-agnostic: consume EVERY packet to/from the server IP and let
         // the Go dispatch layer (listeners map) decide. The old port gate
@@ -139,7 +156,7 @@ int xdp_main(struct xdp_md *ctx)
     }
 
     // Silently drop server traffic that isn't on our current port (no leak, no RST).
-    if (!port_match) return XDP_DROP;
+    if (!port_match) { bump(3); return XDP_DROP; }
 
     __u64 len = data_end - data;
     if (len > CAP_LEN) len = CAP_LEN;
@@ -153,7 +170,7 @@ int xdp_main(struct xdp_md *ctx)
     // and emits an RST — our client OnRST handler reacts with a forced port
     // hop. (XDP_DROP here would silently swallow the packet and the RST would
     // never fire; KCP retransmission alone recovers much slower.)
-    if (!buf) return XDP_PASS;
+    if (!buf) { bump(2); return XDP_PASS; }
 
     // Write the actual length at the start
     __u32 *len_ptr = (__u32 *)buf;
@@ -185,6 +202,7 @@ int xdp_main(struct xdp_md *ctx)
     }
 
     bpf_ringbuf_submit(buf, 0);
+    bump(1);
     return XDP_DROP;
 }
 
