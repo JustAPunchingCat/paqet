@@ -46,6 +46,8 @@ type timedConn struct {
 	// the RST path) produced ABBA deadlocks — field runs 17:48/17:59/
 	// 18:04. Enqueue here; never block the caller.
 	closeJobs chan func()
+	// createConnFn: test seam — overrides createConn when set.
+	createConnFn func() (tnet.Conn, error)
 	// rebuildMu single-flights createConn across concurrent requesters.
 	rebuildMu sync.Mutex
 }
@@ -84,6 +86,14 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 	go tc.idleCheckLoop()
 
 	return &tc, nil
+}
+
+// newConn routes through the test seam when installed.
+func (tc *timedConn) newConn() (tnet.Conn, error) {
+	if tc.createConnFn != nil {
+		return tc.createConnFn()
+	}
+	return tc.createConn()
 }
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
@@ -358,16 +368,21 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 		flog.Debugf("RST ignored: addr is not *net.UDPAddr (%T)", addr)
 		return
 	}
-	if tc.remoteAddr == nil || tc.remoteAddr.IP == nil || !udpAddr.IP.Equal(tc.remoteAddr.IP) {
+	// Snapshot remoteAddr: a concurrent teardown nils it between the
+	// check and any use — the sim gate caught this exact race panic
+	// (TestNoLongTcMuHold, OnRST vs teardown nil'ing remoteAddr).
+	remote := tc.remoteAddr
+	if remote == nil || remote.IP == nil || !udpAddr.IP.Equal(remote.IP) {
 		// RST from some other server (multi-server config) — ignore.
-		flog.Debugf("RST ignored: src %s != remote %s", udpAddr.IP, tc.remoteAddr.IP)
+		flog.Debugf("RST ignored: src %s != remote %v", udpAddr.IP, remote)
 		return
 	}
 	flog.Warnf("RST from server %s — forcing port hop + full conn rebuild (server session state is gone)", udpAddr.String())
-	if tc.pConn != nil {
+	// Snapshot pConn: racing teardown may nil it between check and use.
+	if pConn := tc.pConn; pConn != nil {
 		// ForceHop fires the OnHop callback, which already performs the
 		// client local-port rotation when rotate_client_port is enabled.
-		tc.pConn.ForceHop()
+		pConn.ForceHop()
 	}
 	// A server RST on our current tuple means the server does not know
 	// this session: either a middlebox reset the flow or the SERVER
@@ -547,7 +562,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	}
 
 	flog.Infof("openAndSendProto: rebuilding conn — outside tc.mu")
-	conn, err := tc.createConn()
+	conn, err := tc.newConn()
 	if err != nil {
 		flog.Errorf("openAndSendProto: rebuild failed: %v", err)
 		return nil, err
