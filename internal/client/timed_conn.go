@@ -540,7 +540,9 @@ func (tc *timedConn) lockDiag() {
 		}
 		if time.Now().After(deadline) {
 			holder, _ := tc.muHolder.Load().(string)
-			flog.Errorf("tc.mu contention >10s — CURRENT HOLDER: %s", holder)
+			buf := make([]byte, 1<<17)
+			n := runtime.Stack(buf, true)
+			flog.Errorf("tc.mu contention >10s — tag=%q; full dump:\n%s", holder, buf[:n])
 			tc.mu.Lock()
 			tc.muHolder.Store(callerTag())
 			return
