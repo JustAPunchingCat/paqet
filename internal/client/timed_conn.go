@@ -303,8 +303,10 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	// oldPort MUST be the client's LOCAL SOURCE port (what the server keys
 	// the session by), NOT the hopped destination port. tc.lastPort tracks
 	// the dest port — capture the real local src port from the send handle.
+	flog.Debugf("rotate: goroutine entered, capturing pre-rotation ports")
 	oldPort := tc.pConn.LocalSrcPort()
 	oldSrvPort := tc.pConn.GetLastActivePort()
+	flog.Debugf("rotate: entry state oldLocal=%d oldSrv=%d", oldPort, oldSrvPort)
 
 	newPort, err := tc.pConn.RotateLocalPort()
 	if err != nil {

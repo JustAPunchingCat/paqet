@@ -247,11 +247,13 @@ func (s *sharedEBPFSource) RebindPort(newPort int, gracePeriod time.Duration) er
 	// itself and sync.Mutex is not reentrant. Holding it here self-deadlocks
 	// the rotation goroutine (field-proven: 'hop dispatched' logged, then
 	// nothing; dispatch frozen; subsequent hops stop).
+	flog.Debugf("rebind: entered for port %d (acquiring m.mu)", newPort)
 	oldPorts := s.ports
 	if err := s.mgr.registerPorts([]uint16{uint16(newPort)}, s.ch); err != nil {
 		return fmt.Errorf("failed to register port %d: %w", newPort, err)
 	}
 
+	flog.Debugf("rebind: registerPorts done, updating tracked ports")
 	s.portsMu.Lock()
 	s.ports = append(s.ports, uint16(newPort))
 	s.portsMu.Unlock()
