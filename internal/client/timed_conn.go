@@ -29,6 +29,11 @@ type timedConn struct {
 	activeStreams int
 	lastIdle      time.Time
 	lastRSTHop    atomic.Int64
+	// consecutiveAutoRotates counts auto_rotate firings with no recovery
+	// between them: 2 in a row means port rotation isn't fixing the deafness
+	// — the SESSION is desynced (e.g. server restarted and never RST'd us);
+	// only a full conn rebuild (fresh smux handshake) recovers then.
+	autoRotateRun atomic.Int64
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -425,9 +430,42 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 			}
 		}
 
-		// 2. Open stream
-		strm, err := tc.conn.OpenStrm()
-		if err != nil {
+		// 2. Open stream — with a deadline. A half-dead smux session (the
+		// field-proven server-restart case: the new server process accepts
+		// our KCP packets into a fresh session, wire stays fully alive,
+		// but its smux never negotiated with ours) makes OpenStrm block
+		// FOREVER while KCP happily exchanges ACKs. Without the deadline
+		// the client wedges: healthy wire, dead session, streams never
+		// recover. On timeout: tear down and rebuild from scratch — the
+		// fresh conn re-runs the smux handshake with the new server.
+		type openResult struct {
+			strm tnet.Strm
+			err  error
+		}
+		done := make(chan openResult, 1)
+		go func() {
+			strm, err := tc.conn.OpenStrm()
+			done <- openResult{strm, err}
+		}()
+		var strm tnet.Strm
+		select {
+		case res := <-done:
+			if res.err != nil {
+				strm = nil
+			} else {
+				strm = res.strm
+			}
+		case <-time.After(5 * time.Second):
+			flog.Warnf("stream open timed out after 5s — smux session desynced (server restart?), rebuilding conn")
+			tc.conn.Close()
+			if tc.pConn != nil {
+				tc.pConn.Close()
+			}
+			tc.conn = nil
+			tc.pConn = nil
+			continue
+		}
+		if strm == nil {
 			// smux session is dead (server restarted or KCP DeadLink)
 			tc.conn.Close()
 			if tc.pConn != nil {
@@ -440,7 +478,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 
 		// 3. Send protocol header
 		strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
-		err = p.Write(strm)
+		err := p.Write(strm)
 		strm.SetWriteDeadline(time.Time{})
 		if err != nil {
 			strm.Close()
@@ -497,12 +535,40 @@ func (tc *timedConn) idleCheckLoop() {
 				sending := sendN > 0 && now-sendN < int64(after)*int64(time.Second)
 				deaf := recvN == 0 || now-recvN > int64(after)*int64(time.Second)
 				if sending && deaf {
+					// A rotation that is followed by silence again means
+					// the problem is NOT the tuple: the session itself is
+					// desynced (field-proven: server restarted, never sent
+					// an RST, kept accepting our KCP packets into a fresh
+					// session whose smux never negotiated — wire alive,
+					// streams dead). Escalate: two consecutive deaf
+					// auto-rotates without recovery → full conn teardown;
+					// the next stream open rebuilds KCP+smux from scratch.
+					run := tc.autoRotateRun.Add(1)
+					if run >= 2 {
+						flog.Infof("auto_rotate: deaf again after rotation (%d consecutive) — session desynced, rebuilding conn", run)
+						tc.autoRotateRun.Store(0)
+						if tc.conn != nil {
+							tc.conn.Close()
+						}
+						if tc.pConn != nil {
+							tc.pConn.Close()
+						}
+						tc.conn = nil
+						tc.pConn = nil
+						tc.mu.Unlock()
+						tc.mu.Lock()
+						continue
+					}
 					flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
 					// rotateLocalPortIfConfigured takes tc.mu itself —
 					// release, rotate, re-take (loop re-locks at top).
 					tc.mu.Unlock()
 					tc.rotateLocalPortIfConfigured()
 					tc.mu.Lock()
+				} else if tc.pConn != nil {
+					// Wire is healthy again (recv caught up with sends):
+					// reset the escalation counter.
+					tc.autoRotateRun.Store(0)
 				}
 			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
