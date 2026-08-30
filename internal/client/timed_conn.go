@@ -604,23 +604,24 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		flog.Warnf("stream open timed out after rebuild — session desynced, deferring teardown to watchdog")
 		return nil, err
 	}
-	tc.lockDiag()
-	tc.activeStreams++
-	tc.lastIdle = time.Time{}
+	tc.mu.Unlock()
+	// p.Write OUTSIDE tc.mu: the proto header write traverses the whole
+	// tunnel stack; with the server offline (KCP send window jammed
+	// with unacked retransmits) it can block for 10s+ — holding tc.mu
+	// across it was the >10s holder (field run 18:36, holder
+	// timed_conn.go). The stream is owned by this goroutine; teardown
+	// paths nil tc.conn independently and the write simply errors.
 	strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
 	werr := p.Write(strm)
 	strm.SetWriteDeadline(time.Time{})
 	if werr != nil {
-		tc.mu.Unlock()
-		strm.Close()
-		tc.deferClose(conn, tc.pConn)
-		tc.lockDiag()
-		tc.conn = nil
-		tc.pConn = nil
-		tc.rebuildAt.Store(time.Now().UnixNano())
-		tc.mu.Unlock()
+		flog.Errorf("proto write failed after rebuild: %v — deferring teardown", werr)
 		return nil, werr
 	}
+	tc.lockDiag()
+	tc.activeStreams++
+	tc.lastIdle = time.Time{}
+	tc.mu.Unlock()
 	return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 }
 
@@ -642,16 +643,20 @@ func (tc *timedConn) openStreamOnConn(p *protocol.Proto) (tnet.Strm, error) {
 		strm.Close()
 		return nil, fmt.Errorf("conn rebuilt during stream open — retry")
 	}
-	tc.activeStreams++
-	tc.lastIdle = time.Time{}
+	tc.mu.Unlock()
+	// Same rule: proto write outside tc.mu (can block 10s+ on a dead
+	// server's jammed KCP window).
 	strm.SetWriteDeadline(time.Now().Add(60 * time.Second))
 	werr := p.Write(strm)
 	strm.SetWriteDeadline(time.Time{})
 	if werr != nil {
-		tc.mu.Unlock()
 		strm.Close()
 		return nil, werr
 	}
+	tc.lockDiag()
+	tc.activeStreams++
+	tc.lastIdle = time.Time{}
+	tc.mu.Unlock()
 	return &idleTrackedStrm{Strm: strm, tc: tc}, nil
 }
 
