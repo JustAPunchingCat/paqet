@@ -105,6 +105,11 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 				tc.rotateLocalPortIfConfigured()
 			}
 		})
+	} else {
+		// DIAGNOSTIC: rotation disabled at runtime — make the effective
+		// value visible once at startup. A silent knob is indistinguishable
+		// from a silently dropped config block.
+		flog.Infof("rotate_client_port disabled for %s — client keeps its local port across hops", tc.srvCfg.Server.Addr.String())
 	}
 	// Guard: close pConn on any error path so background goroutines and file
 	// descriptors are never orphaned when the server is offline or unreachable.
