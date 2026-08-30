@@ -98,9 +98,14 @@ func (p *HoppingPlugin) loop() {
 					// tuple (no-op when handshake is disabled). Flow state
 					// (seq/ack/TS) deliberately untouched — the KCP stream
 					// stays continuous.
-					if p.isClient && p.OnHop != nil {
+					if p.isClient {
 						n := p.hopCount.Add(1)
-						go p.OnHop(n)
+						if p.OnHop != nil {
+							flog.Infof("hop %d dispatched to rotation hook", n)
+							go p.OnHop(n)
+						} else {
+							flog.Warnf("hop %d: OnHop hook is NIL — rotate_client_port cannot fire", n)
+						}
 					}
 					if p.label != "" {
 						flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
@@ -141,9 +146,12 @@ func (p *HoppingPlugin) ForceHop() {
 	// No ClearRemoteSync here either: same rationale as the interval hop —
 	// the flow key excludes the server port, state must survive hops.
 	p.currentPort.Store(newPort)
+	n := p.hopCount.Add(1)
 	if p.OnHop != nil {
-		n := p.hopCount.Add(1)
+		flog.Infof("hop %d dispatched to rotation hook", n)
 		go p.OnHop(n)
+	} else {
+		flog.Warnf("hop %d: OnHop hook is NIL — rotate_client_port cannot fire", n)
 	}
 }
 
