@@ -32,13 +32,8 @@ type RecvHandle struct {
 	mappings    []ipMapping
 	allowedIPs  []net.IP
 	allowedNets []*net.IPNet
-	flowUpdater FlowUpdater
 	handshake   bool
 	role        string
-}
-
-func (h *RecvHandle) SetFlowUpdater(u FlowUpdater) {
-	h.flowUpdater = u
 }
 
 // isAllowed reports whether ip is permitted by the client allowlist.
@@ -342,49 +337,8 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, bool, error) {
 			return nil, addr, dstPort, false, ErrRST
 		}
 
-		if h.flowUpdater != nil {
-			var tsVal uint32
-			if tcpLen > 20 {
-				optStart := transStart + 20
-				optEnd := transStart + tcpLen
-				for i := optStart; i < optEnd; {
-					kind := data[i]
-					if kind == 0 {
-						break
-					}
-					if kind == 1 {
-						i++
-						continue
-					}
-					if i+1 >= optEnd {
-						break
-					}
-					length := int(data[i+1])
-					if length < 2 || i+length > optEnd {
-						break
-					}
-					if kind == 8 && length == 10 && i+6 <= optEnd {
-						tsVal = binary.BigEndian.Uint32(data[i+2 : i+6])
-					}
-					i += length
-				}
-			}
-			isReset, fwd := h.flowUpdater.UpdateRemoteFlow(srcIP, srcPort, dstIP, dstPort, remoteSeq, remoteAck, uint32(len(payload)), tsVal)
-			isForward = fwd
-			if isReset && h.role == "server" {
-				return nil, nil, 0, false, ErrRST
-			}
-
-			if h.handshake {
-				if isSYN && !isACK && len(payload) == 0 {
-					// Server received Client SYN -> Send SYN-ACK
-					_ = h.flowUpdater.SendSYNACK(srcIP, srcPort, dstPort, remoteSeq, tsVal)
-				} else if isSYN && isACK && len(payload) == 0 {
-					// Client received Server SYN-ACK -> Send ACK
-					_ = h.flowUpdater.SendACK(srcIP, srcPort, dstPort, remoteSeq, tsVal)
-				}
-			}
-		}
+		_ = remoteSeq
+		_ = remoteAck
 	} else { // UDP
 		if len(data) < transStart+8 {
 			return nil, nil, 0, false, nil

@@ -95,7 +95,6 @@ func NewWithHopping(ctx context.Context, cfg *conf.Network, hopping *conf.Hoppin
 	if err != nil {
 		return nil, fmt.Errorf("failed to create receive handle on %s: %v", connCfg.Interface.Name, err)
 	}
-	recvHandle.SetFlowUpdater(sendHandle)
 
 	ctx, cancel := context.WithCancel(ctx)
 	numWorkers := runtime.NumCPU()
@@ -393,23 +392,14 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	return len(data), nil
 }
 
-// ClearRemoteSync clears remote-sync bookkeeping on this connection's send
-// handle (see SendHandle.ClearRemoteSync) so the client re-syncs its fake-TCP
-// seq to the peer's possibly-fresh universe after a forced recovery hop.
+// ClearRemoteSync is retained for API compatibility. The fake-TCP
+// layer is stateless (synthetic seq/ack); there is nothing to clear.
 func (c *PacketConn) ClearRemoteSync() {
-	if c.sendHandle != nil {
-		c.sendHandle.ClearRemoteSync()
-	}
 }
-
-// ReArmHandshake re-fires the fake 3WHS on the next write after a hop
-// (handshake-enabled builds only; no-op otherwise).
+// ReArmHandshake is retained for API compatibility. The fake-TCP
+// layer is stateless; no handshake state to re-arm.
 func (c *PacketConn) ReArmHandshake() {
-	if c.sendHandle != nil {
-		c.sendHandle.ReArmHandshake()
-	}
 }
-
 // RotateLocalPort rebinds the client's local source port to a fresh random
 // ephemeral port (same port family as NewWithHopping's initial bind). This
 // creates a brand-new NAT mapping on the path — used to escape middleboxes
@@ -549,13 +539,11 @@ func (c *PacketConn) SetClientTCPF(addr net.Addr, f []conf.TCPF) {
 	c.sendHandle.setClientTCPF(addr, f)
 }
 
+// IsFlowWarmed is retained for API compatibility. With the stateless
+// synthetic seq/ack every flow is always "warm".
 func (c *PacketConn) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
-	if c.sendHandle != nil {
-		return c.sendHandle.IsFlowWarmed(dstIP, dstPort)
-	}
 	return true
 }
-
 func (c *PacketConn) PrewarmFlow(dstIP net.IP, dstPort uint16) {
 	if c.sendHandle != nil {
 		c.sendHandle.PrewarmFlow(dstIP, dstPort)

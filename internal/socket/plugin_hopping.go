@@ -79,7 +79,6 @@ func (p *HoppingPlugin) SetSendHandle(sh *SendHandle) {
 	p.sendHandle = sh
 	if !p.lazyWarmup && p.targetIP != nil && sh != nil {
 		if port := p.currentPort.Load(); port > 0 {
-			sh.PrewarmFlow(p.targetIP, uint16(port))
 		}
 	}
 }
@@ -124,9 +123,6 @@ func (p *HoppingPlugin) loop() {
 					// tuple (no-op when handshake is disabled). Flow state
 					// (seq/ack/TS) deliberately untouched — the KCP stream
 					// stays continuous.
-					if p.isClient && p.sendHandle != nil {
-						p.sendHandle.ReArmHandshake()
-					}
 					if p.isClient && p.OnHop != nil {
 						n := p.hopCount.Add(1)
 						go p.OnHop(n)
@@ -169,12 +165,6 @@ func (p *HoppingPlugin) ForceHop() {
 	}
 	// No ClearRemoteSync here either: same rationale as the interval hop —
 	// the flow key excludes the server port, state must survive hops.
-	if p.sendHandle != nil {
-		p.sendHandle.ReArmHandshake()
-		if !p.lazyWarmup && p.targetIP != nil {
-			p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
-		}
-	}
 	p.currentPort.Store(newPort)
 	if p.OnHop != nil {
 		n := p.hopCount.Add(1)

@@ -142,14 +142,6 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
 
-	// Fire the raw socket TCP SYN to warm the connection state for DPI/Netfilter.
-	// Eager mode only: the SYN is fired now (non-blocking 0-RTT) so the flow is
-	// established before the first data. In lazy mode the SYN is fired on first
-	// data instead (see SendHandle.Write).
-	if tc.srvCfg.Handshake.IsEnabled() && !tc.srvCfg.Handshake.IsLazy() {
-		pConn.PrewarmFlow(remoteAddr.IP, uint16(remoteAddr.Port))
-	}
-
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":
 		// Adjust MTU to account for obfuscation overhead

@@ -25,56 +25,17 @@ type PacketInjector interface {
 	Close()
 }
 
-// lazyWarmupTimeout bounds how long a lazy-mode write blocks waiting for the
-// fake handshake's SYN-ACK before falling back to 0-RTT.
-const lazyWarmupTimeout = time.Second
-
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
 	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
 	mu         sync.Mutex
 }
 
-type FlowUpdater interface {
-	UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) (bool, bool)
-	SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error
-	SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error
-}
-
 type flowState struct {
-	mu          sync.Mutex
-	ipId        uint32
-	baseTS      uint32
-	seq         uint32
-	tsCounter   uint32
-	synSent     uint32
-	synAckSent  uint32
-	ackSent     uint32
-	remoteSeq   uint32
-	remoteLen   uint32
-	remoteTSval uint32
-	hasRemote   uint32
-	warmCh      chan struct{} // closed once hasRemote becomes 1 (WaitFlowWarm signal)
-}
-
-// markWarm closes warmCh exactly once when the flow first becomes warm.
-func (st *flowState) markWarm() {
-	if atomic.CompareAndSwapUint32(&st.hasRemote, 0, 1) {
-		close(st.warmCh)
-	}
-}
-
-// rearmWarm resets the warm signal for a re-handshake after a hop/rotation:
-// hasRemote stays 1 (ack/TS bookkeeping continuity) but the channel is
-// replaced so the next WaitFlowWarm genuinely waits for the fresh SYN-ACK.
-// Callers must hold st.mu (RebindSource does).
-func (st *flowState) rearmWarm() {
-	st.warmCh = make(chan struct{})
-}
-
-// isWarm reports whether the flow has synced with its peer.
-func (st *flowState) isWarm() bool {
-	return atomic.LoadUint32(&st.hasRemote) == 1
+	mu        sync.Mutex
+	ipId      uint32
+	seq       uint32
+	tsCounter uint32
 }
 
 type targetSpoofRule struct {
@@ -108,8 +69,6 @@ type SendHandle struct {
 	startTime time.Time
 
 	tcpF          TCPF
-	handshake     bool
-	handshakeLazy bool
 	role          string
 	ethPool       sync.Pool
 	ipv4Pool      sync.Pool
@@ -172,11 +131,6 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	tos := tosChoices[randRange(0, len(tosChoices)-1)]
 	ttl := uint8(randRange(60, 68))
 
-	hs := cfg.Handshake
-	if hs == nil {
-		hs = &conf.Handshake{}
-	}
-
 	sh := &SendHandle{
 		injector:      injector,
 		cfg:           cfg,
@@ -186,13 +140,11 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		synOptions:    synOptions,
 		ackOptions:    ackOptions,
 		tcpF:          TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
-		handshake:     hs.IsEnabled(),
-		handshakeLazy: hs.IsLazy(),
 		time:          uint32(time.Now().UnixNano() / int64(time.Millisecond)),
 		tos:           tos,
 		ttl:           ttl,
 		startTime:     time.Now(),
-		globalState:   &flowState{ipId: randUint32(), baseTS: randUint32(), seq: randUint32()},
+		globalState:   &flowState{ipId: randUint32(), seq: randUint32()},
 		spoofStates:   make(map[string]*flowState),
 		nameMapping:   make(map[string]string),
 		ethPool: sync.Pool{
@@ -426,7 +378,7 @@ func (h *SendHandle) buildTCPHeader(srcPort, dstPort uint16, f conf.TCPF, state 
 
 	// Compute realistic TCP timestamp from real elapsed time + random base + jitter
 	elapsed := time.Since(h.startTime)
-	tsVal := state.baseTS + uint32(elapsed.Milliseconds()) + uint32(randRange(0, 9))
+	tsVal := h.time + uint32(elapsed.Milliseconds()) + uint32(randRange(0, 9))
 
 	// Unified Sequence Number Generation
 	// Use the same formula for SYN and Data so they appear to be in the same window.
@@ -527,15 +479,6 @@ func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr, srcPort int) error
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
-	// Lazy warm-up: fire the fake SYN and block for the SYN-ACK before the
-	// first data packet goes out, so strict DPI/Netfilter sees an established
-	// flow. Client-side only; the server responds to SYNs instead of sending
-	// them. Bounded by lazyWarmupTimeout, after which we fall back to 0-RTT.
-	if h.role == "client" && h.handshake && h.handshakeLazy && !h.IsFlowWarmed(dstIP, dstPort) {
-		h.PrewarmFlow(dstIP, dstPort)
-		h.WaitFlowWarm(dstIP, dstPort, lazyWarmupTimeout)
-	}
-
 	isIPv4 := dstIP.To4() != nil
 	srcIP, isSpoofed := h.resolveSrcIP(isIPv4, dstIP)
 
@@ -588,7 +531,7 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	state.ipId++
 
 	elapsed := time.Since(h.startTime)
-	tsVal := state.baseTS + uint32(elapsed.Milliseconds())
+	tsVal := h.time + uint32(elapsed.Milliseconds())
 
 	payloadLen := uint32(len(payload))
 	advanceLen := payloadLen
@@ -597,23 +540,11 @@ func (h *SendHandle) writeRaw(payload []byte, addr *net.UDPAddr, srcPort int, f 
 	}
 	seq := state.seq
 
-	var ack uint32
-	var tsEcr uint32
-	if atomic.LoadUint32(&state.hasRemote) == 1 {
-		ack = state.remoteSeq + state.remoteLen
-		tsEcr = state.remoteTSval
-	} else {
-		if f.SYN && !f.ACK {
-			ack = 0
-		} else {
-			// Use the randomized baseTS as a completely arbitrary but CONSTANT
-			// initial ACK number until the server actually replies.
-			ack = atomic.LoadUint32(&state.baseTS)
-		}
-		if !f.SYN {
-			tsEcr = tsVal - uint32(randRange(50, 250))
-		}
-	}
+	// Synthetic seq/ack (upstream-proven): the fake TCP is pure camouflage.
+	// The server never echoes our numbers and the middlebox never validates
+	// them - KCP provides all real reliability. No flow state to corrupt.
+	tsEcr := tsVal - uint32(randRange(50, 250))
+	ack := seq - (uint32(state.tsCounter)&0x3FF)*137 + 1400
 
 	// Calculate header lengths
 	var ethLen int
@@ -1006,10 +937,8 @@ func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPo
 	flog.Tracef("flowstate NEW key=%s total=%d", key, len(h.spoofStates)+1)
 
 	state := &flowState{
-		ipId:   randUint32(),
-		baseTS: randUint32(),
-		seq:    randUint32(),
-		warmCh: make(chan struct{}),
+		ipId: randUint32(),
+		seq:  randUint32(),
 	}
 	h.spoofStates[key] = state
 	return state
@@ -1032,157 +961,6 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 	}
 	h.tcpF.clientTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
 	h.tcpF.mu.Unlock()
-}
-
-func (h *SendHandle) UpdateRemoteFlow(srcIP net.IP, srcPort int, dstIP net.IP, dstPort int, remoteSeq uint32, remoteAck uint32, payloadLen uint32, tsVal uint32) (bool, bool) {
-	// The incoming packet arrived from (srcIP:srcPort) to our local (dstIP:dstPort).
-	// Our corresponding outgoing flow is keyed by the CLIENT identity
-	// (clientIP:clientPort -> serverIP) so the fake-TCP seq/ack state survives
-	// port hops. The server's own (hopped) port must NOT be in the key, or every
-	// hop would restart the reply's sequence numbers mid-conversation.
-	var state *flowState
-	if h.role == "server" {
-		// Incoming from client (src) to server (dst): the outgoing reply flows
-		// from server back to client, but keyed by client identity.
-		state = h.getFlowState(srcIP, srcPort, dstIP, uint16(dstPort))
-	} else {
-		// Incoming from server (src) to client (dst): the outgoing flow is
-		// client -> server, keyed by client identity as in Write.
-		state = h.getFlowState(dstIP, dstPort, srcIP, uint16(srcPort))
-	}
-
-	state.mu.Lock()
-	defer state.mu.Unlock()
-
-	isFirstPacket := atomic.LoadUint32(&state.hasRemote) == 0
-	isReset := false
-	isForward := false
-
-	// NOTE: no state.seq = remoteAck seeding here. After a server restart the
-	// client's ACK still points into the DEAD session's universe; anchoring our
-	// seq to it makes both sides agree on numbers from a dead conversation and
-	// deadlocks until KCP deadlink reconnect (~30s). A fresh server keeps its
-	// own fresh random seq; the client adopts it via the out-of-window/TSval
-	// reset paths below (first-packet adoption covers genuinely new flows).
-
-	newAck := remoteSeq + payloadLen
-	currentAck := state.remoteSeq + state.remoteLen
-
-	// Peer-state-reset detection: the packet was already authenticated by the
-	// obfuscation/decryption layer upstream, so a wildly out-of-window seq
-	// here can only mean the peer lost its flow state (server restart built a
-	// fresh random seq universe). Instead of silently ignoring the packet and
-	// deadlocking (old code kept the stale remoteSeq and dropped everything),
-	// adopt the new baseline — same semantics as a first packet of the flow.
-	// Threshold 1,000,000,000 is far beyond any legitimate int32 window step
-	// (a real regression is at most a few retransmitted payloads) and far
-	// below uint32 wraparound, so it cannot fire on ordinary loss.
-	if !isFirstPacket && int32(newAck-currentAck) < -1000000000 {
-		isFirstPacket = true
-	}
-
-	if !isFirstPacket && tsVal > 0 && state.remoteTSval > 0 {
-		tsDiff := int32(tsVal - state.remoteTSval)
-		if tsDiff > 3600000 || tsDiff < -3600000 {
-			isReset = true
-			isFirstPacket = true
-		}
-	}
-
-	if isFirstPacket || int32(newAck-currentAck) > 0 {
-		state.remoteSeq = remoteSeq
-		state.remoteLen = payloadLen
-		isForward = true
-	} else if int32(newAck-currentAck) < 0 {
-		// Small backward regression (retransmission of older data or a packet
-		// reordered by a hop): keep ack tracking on the newest data we have
-		// seen, but DO NOT silently drop the packet — acking it lets the
-		// peer's KCP close its retransmission timer for that segment. Dropping
-		// it silently used to leave a permanent hole in the KCP byte stream
-		// (both sides "acknowledged" data smux never received) — the zombie
-		// session. Small regressions are always safe to ack: the data was
-		// already delivered to KCP earlier.
-		isForward = true
-	}
-	if tsVal > 0 {
-		if isFirstPacket || int32(tsVal-state.remoteTSval) > 0 {
-			state.remoteTSval = tsVal
-			isForward = true
-		}
-	}
-	state.markWarm()
-
-	return isReset, isForward
-}
-
-func (h *SendHandle) SendSYNACK(remoteIP net.IP, remotePort int, localPort int, clientSeq uint32, clientTSval uint32) error {
-	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
-	isIPv4 := remoteIP.To4() != nil
-	var srcIP net.IP
-	if isIPv4 {
-		srcIP = h.srcIPv4
-	} else {
-		srcIP = h.srcIPv6
-	}
-
-	var state *flowState
-	if h.role == "server" {
-		state = h.getFlowState(remoteIP, remotePort, srcIP, uint16(localPort))
-	} else {
-		state = h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
-	}
-
-	atomic.StoreUint32(&state.synAckSent, 1)
-	state.mu.Lock()
-	state.remoteSeq = clientSeq + 1
-	state.remoteLen = 0
-	if clientTSval > 0 {
-		state.remoteTSval = clientTSval
-	}
-	state.markWarm()
-	state.mu.Unlock()
-
-	synAckF := conf.TCPF{SYN: true, ACK: true}
-	return h.writeRaw(nil, addr, localPort, synAckF, srcIP, isIPv4, false, state)
-}
-
-func (h *SendHandle) SendACK(remoteIP net.IP, remotePort int, localPort int, serverSeq uint32, serverTSval uint32) error {
-	addr := &net.UDPAddr{IP: remoteIP, Port: remotePort}
-	isIPv4 := remoteIP.To4() != nil
-	var srcIP net.IP
-	if isIPv4 {
-		srcIP = h.srcIPv4
-	} else {
-		srcIP = h.srcIPv6
-	}
-
-	state := h.getFlowState(srcIP, localPort, remoteIP, uint16(remotePort))
-	if !atomic.CompareAndSwapUint32(&state.ackSent, 0, 1) {
-		return nil
-	}
-	state.mu.Lock()
-	state.remoteSeq = serverSeq + 1
-	state.remoteLen = 0
-	if serverTSval > 0 {
-		state.remoteTSval = serverTSval
-	}
-	state.markWarm()
-	state.mu.Unlock()
-
-	ackF := conf.TCPF{ACK: true}
-	// The final ACK completes the visible 3WHS for the middlebox; if it is
-	// lost (cold tuple), the flow never looks established and DPI may drop
-	// all subsequent data. Retry it like the SYN: 3 extra sends, 200ms apart.
-	if err := h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state); err != nil {
-		return err
-	}
-	go func() {
-		for i := 0; i < 3; i++ {
-			time.Sleep(200 * time.Millisecond)
-			_ = h.writeRaw(nil, addr, localPort, ackF, srcIP, isIPv4, false, state)
-		}
-	}()
-	return nil
 }
 
 // SendRST emits a bare fake-TCP RST from this handle's source port to the
@@ -1210,83 +988,12 @@ func (h *SendHandle) SendRST(remoteIP net.IP, remotePort int) error {
 	return h.writeRaw(nil, addr, int(h.srcPort), rstF, srcIP, isIPv4, false, state)
 }
 
+// PrewarmFlow is retained for config compatibility. The fake handshake
+// was retired: the synthetic seq/ack needs no warm-up and no state.
 func (h *SendHandle) PrewarmFlow(dstIP net.IP, dstPort uint16) {
-	if !h.handshake || dstIP == nil {
-		return
-	}
-	isIPv4 := dstIP.To4() != nil
-	var srcIP net.IP
-	if isIPv4 {
-		srcIP = h.srcIPv4
-	} else {
-		srcIP = h.srcIPv6
-	}
-
-	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
-	if atomic.CompareAndSwapUint32(&state.synSent, 0, 1) {
-		addr := &net.UDPAddr{IP: dstIP, Port: int(dstPort)}
-		synF := conf.TCPF{SYN: true}
-		_ = h.writeRaw(nil, addr, int(h.srcPort), synF, srcIP, isIPv4, false, state)
-
-		// Background retry if SYN is dropped by network jitter
-		go func() {
-			for i := 0; i < 3; i++ {
-				time.Sleep(300 * time.Millisecond)
-				if atomic.LoadUint32(&state.hasRemote) == 1 {
-					return
-				}
-				state.mu.Lock()
-				state.seq--
-				state.mu.Unlock()
-				_ = h.writeRaw(nil, addr, int(h.srcPort), synF, srcIP, isIPv4, false, state)
-			}
-		}()
-	}
+	_ = dstIP
+	_ = dstPort
 }
-
-func (h *SendHandle) IsFlowWarmed(dstIP net.IP, dstPort uint16) bool {
-	if !h.handshake || dstIP == nil {
-		return true
-	}
-	isIPv4 := dstIP.To4() != nil
-	var srcIP net.IP
-	if isIPv4 {
-		srcIP = h.srcIPv4
-	} else {
-		srcIP = h.srcIPv6
-	}
-	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
-	// Warm = handshake completed (synSent latched) AND peer synced. A hop
-	// re-arms the latches (ReArmHandshake) while leaving hasRemote intact
-	// (KCP stream continuity), so this returns false after a hop and the
-	// lazy warm-up re-fires the 3WHS against the fresh destination port.
-	return atomic.LoadUint32(&state.hasRemote) == 1 && atomic.LoadUint32(&state.synSent) == 1
-}
-
-// WaitFlowWarm blocks until the SYN-ACK for the given flow has been received
-// (handshake complete) or timeout elapses. Used by lazy warm-up mode so the
-// fake handshake finishes before the first data packet is sent. Returns early
-// when the handshake is disabled or the flow is already warmed.
-func (h *SendHandle) WaitFlowWarm(dstIP net.IP, dstPort uint16, timeout time.Duration) {
-	if !h.handshake || dstIP == nil {
-		return
-	}
-	isIPv4 := dstIP.To4() != nil
-	var srcIP net.IP
-	if isIPv4 {
-		srcIP = h.srcIPv4
-	} else {
-		srcIP = h.srcIPv6
-	}
-	state := h.getFlowState(srcIP, int(h.srcPort), dstIP, dstPort)
-	// Channel signal: warmCh closes exactly once when the handshake
-	// completes (hasRemote -> 1). No polling.
-	select {
-	case <-state.warmCh:
-	case <-time.After(timeout):
-	}
-}
-
 func (h *SendHandle) SetObfuscation(obfs *conf.Obfuscation) {
 	h.obfuscation = obfs
 }
@@ -1303,37 +1010,7 @@ func (h *SendHandle) ResetFlow() {
 	if h.role == "client" && h.globalState != nil {
 		h.globalState.mu.Lock()
 		defer h.globalState.mu.Unlock()
-		atomic.StoreUint32(&h.globalState.hasRemote, 0)
-		atomic.StoreUint32(&h.globalState.synSent, 0)
-		atomic.StoreUint32(&h.globalState.synAckSent, 0)
-		atomic.StoreUint32(&h.globalState.ackSent, 0)
 		h.globalState.seq = randUint32()
-		atomic.StoreUint32(&h.globalState.baseTS, randUint32())
-		atomic.StoreUint32(&h.globalState.tsCounter, 0)
-		h.globalState.ipId = randUint32()
-	}
-}
-
-// ReArmHandshake re-fires the fake 3WHS on the next write after a port hop
-// (handshake-enabled builds only). It clears ONLY the handshake latch bits —
-// seq/ts/remote bookkeeping is deliberately untouched so the KCP stream stays
-// continuous. The next lazy warm-up then re-runs SYN/SYN-ACK/ACK against the
-// fresh destination port, so the middlebox sees a proper handshake for the
-// new tuple instead of established-flow data appearing on a cold 4-tuple.
-// The warm channel is re-armed too: without it, WaitFlowWarm returns
-// instantly on the stale closed channel from the pre-hop handshake and data
-// leaves before the fresh SYN-ACK completes (the dead post-hop tunnel).
-func (h *SendHandle) ReArmHandshake() {
-	if !h.handshake || h.role != "client" {
-		return
-	}
-	h.statesMu.Lock()
-	defer h.statesMu.Unlock()
-	for _, st := range h.spoofStates {
-		atomic.StoreUint32(&st.synSent, 0)
-		atomic.StoreUint32(&st.synAckSent, 0)
-		atomic.StoreUint32(&st.ackSent, 0)
-		st.rearmWarm()
 	}
 }
 
@@ -1342,71 +1019,22 @@ func (h *SendHandle) SrcPort() int {
 	return int(h.srcPort)
 }
 
-// RebindSource switches this handle's local source port to newPort. All
-// per-port state is migrated: spoofStates keys are rewritten (client role:
-// old local port -> new), globalState (client role) keeps its seq/ts so the
-// fake-TCP conversation stays continuous, and the handshake latch bits are
-// cleared so the lazy 3WHS re-fires on the new tuple. Subsequent writes use
-// the new port immediately; inbound packets from the old port are still
-// accepted by the flow key rewrite below only until the peer migrates.
+// RebindSource switches the handle's local source port. With the
+// stateless synthetic seq/ack there is no flow state to migrate - the
+// port swap is atomic and the next packet simply uses the new port.
 func (h *SendHandle) RebindSource(newPort int) error {
 	if newPort <= 0 || newPort > 65535 {
 		return fmt.Errorf("invalid source port %d", newPort)
 	}
-	oldPort := h.srcPort
-	if uint16(newPort) == oldPort {
+	if uint16(newPort) == h.srcPort {
 		return nil
 	}
-
 	h.statesMu.Lock()
-	oldKeyPrefix := h.srcIPKey(int(oldPort))
 	h.srcPort = uint16(newPort)
-	newKeyPrefix := h.srcIPKey(newPort)
-	if h.role == "client" {
-		rewritten := make(map[string]*flowState, len(h.spoofStates))
-		for k, v := range h.spoofStates {
-			if strings.HasPrefix(k, oldKeyPrefix+"->") {
-				// Flow keyed by (oldLocalPort -> dstIP): keep the SAME
-				// flowState (seq/ack/TS continuity across the rebind) under
-				// the new key. Clear the handshake latches so the lazy 3WHS
-				// re-fires on the new tuple; hasRemote is left intact so the
-				// ack/TS bookkeeping survives the port switch. The warm
-				// channel is re-armed so WaitFlowWarm genuinely waits for
-				// the fresh SYN-ACK instead of returning instantly on the
-				// stale signal from the pre-rotation handshake.
-				dstPart := strings.TrimPrefix(k, oldKeyPrefix+"->")
-				rewritten[newKeyPrefix+"->"+dstPart] = v
-				atomic.StoreUint32(&v.synSent, 0)
-				atomic.StoreUint32(&v.synAckSent, 0)
-				atomic.StoreUint32(&v.ackSent, 0)
-				v.rearmWarm()
-			} else {
-				rewritten[k] = v
-			}
-		}
-		h.spoofStates = rewritten
-	} else {
-		// Server flows are keyed by client identity and unaffected.
-		for _, v := range h.spoofStates {
-			atomic.StoreUint32(&v.synSent, 0)
-			atomic.StoreUint32(&v.synAckSent, 0)
-			atomic.StoreUint32(&v.ackSent, 0)
-		}
-	}
 	h.statesMu.Unlock()
-
-	if h.role == "client" && h.globalState != nil {
-		h.globalState.mu.Lock()
-		atomic.StoreUint32(&h.globalState.synSent, 0)
-		atomic.StoreUint32(&h.globalState.synAckSent, 0)
-		atomic.StoreUint32(&h.globalState.ackSent, 0)
-		h.globalState.mu.Unlock()
-	}
-
-	flog.Debugf("send handle rebound: local port %d -> %d (handshake latches re-armed)", oldPort, newPort)
+	flog.Debugf("send handle source port set to %d", newPort)
 	return nil
 }
-
 // srcIPKey is the IP half of a flow key for this handle's source address.
 func (h *SendHandle) srcIPKey(port int) string {
 	isIPv4 := h.srcIPv4 != nil
@@ -1420,26 +1048,3 @@ func (h *SendHandle) srcIPKey(port int) string {
 	return srcIP.String() + ":" + strconv.Itoa(port)
 }
 
-// ClearRemoteSync clears only the remote-sync bookkeeping (hasRemote + latch
-// bits) for the current flow, keeping our own seq/ts universe intact. The next
-// inbound packet from the peer re-syncs the client to whatever seq universe the
-// peer is running (e.g. after a server restart built a fresh one).
-func (h *SendHandle) ClearRemoteSync() {
-	if h.role != "client" {
-		return
-	}
-	if h.globalState != nil {
-		atomic.StoreUint32(&h.globalState.hasRemote, 0)
-		atomic.StoreUint32(&h.globalState.synSent, 0)
-		atomic.StoreUint32(&h.globalState.synAckSent, 0)
-		atomic.StoreUint32(&h.globalState.ackSent, 0)
-	}
-	h.statesMu.Lock()
-	defer h.statesMu.Unlock()
-	for _, st := range h.spoofStates {
-		atomic.StoreUint32(&st.hasRemote, 0)
-		atomic.StoreUint32(&st.synSent, 0)
-		atomic.StoreUint32(&st.synAckSent, 0)
-		atomic.StoreUint32(&st.ackSent, 0)
-	}
-}
