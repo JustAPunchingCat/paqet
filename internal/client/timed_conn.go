@@ -95,6 +95,12 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 
 	pConn, err := socket.NewWithHopping(tc.ctx, &netCfg, &tc.srvCfg.Hopping, true, obfsCfg, tc.srvCfg.Server.Addr.String())
 	if err != nil {
+		// LOUD: a failed rebuild after escalation/OnRST teardown leaves
+		// the SOCKS retry loop hammering createConn with no visible
+		// signal (field run 15:27: consumed frozen 60s+, no 'KCP
+		// connection created' line, SOCKS retrying every 4s). Whoever
+		// debugs the box must SEE this.
+		flog.Errorf("createConn FAILED: %v", err)
 		return nil, fmt.Errorf("could not create packet conn: %w", err)
 	}
 	tc.pConn = pConn
@@ -428,9 +434,11 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		// 1. If connection is nil, create it
 		if tc.conn == nil {
+			flog.Infof("openAndSendProto: rebuilding conn (attempt %d)", attempt+1)
 			var err error
 			tc.conn, err = tc.createConn()
 			if err != nil {
+				flog.Errorf("openAndSendProto: rebuild attempt %d failed: %v", attempt+1, err)
 				return nil, err
 			}
 		}

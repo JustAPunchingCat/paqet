@@ -46,19 +46,20 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 					strm = nil
 				}
 			case <-time.After(20 * time.Second):
-				flog.Warnf("no stream within 20s from %s — stale/desynced session, RSTing client", conn.RemoteAddr())
+				flog.Warnf("no stream within 20s from %s — stale/desynced session, closing", conn.RemoteAddr())
 				if s.pConn != nil {
 					if udp, ok := conn.RemoteAddr().(*net.UDPAddr); ok && udp.IP != nil {
-						// RST must arrive at the client's CURRENT wire addr
-						// from the server port it currently targets — stale
-						// ports are dead ends (auto_rotate may have moved
-						// the client since this session was keyed).
-						dst := udp
-						if latest := s.pConn.GetClientLatestAddr(udp.IP); latest != nil {
-							dst = latest
-						}
-						srcPort := s.pConn.GetClientLatestSrvPort(udp.IP)
-						s.pConn.SendRSTFrom(dst.IP, dst.Port, srcPort)
+						// RST THE ZOMBIE'S OWN TUPLE ONLY. Field-proven
+						// (runs 19:23-19:26): sending the RST to the
+						// client's latest addr lands it on the client's
+						// HEALTHY rebuilt session and kills it — the
+						// client sat desynced for 2.5 minutes because the
+						// guard kept RST-bombing the live tuple every
+						// 20s. The zombie's own tuple still gets through:
+						// the client's compat XDP consumes all server-IP
+						// traffic regardless of port, and OnRST checks
+						// only the source IP.
+						s.pConn.SendRSTFrom(udp.IP, udp.Port, s.pConn.GetClientLatestSrvPort(udp.IP))
 					}
 				}
 				conn.Close()
