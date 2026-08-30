@@ -357,6 +357,7 @@ func (c *PacketConn) backgroundReader() {
 		payload, addr, dstPort, isForward, err := c.recvHandle.Read()
 		if err != nil {
 			if err == ErrRST {
+				flog.Debugf("[trace] ErrRST surfaced — dispatching OnRST from %s (handler set: %v)", addr, c.OnRST != nil)
 				if c.OnRST != nil && addr != nil {
 					c.OnRST(addr)
 				}

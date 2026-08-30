@@ -330,6 +330,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, bool, error) {
 			}
 		}
 		if isGoodbye {
+			flog.Debugf("[trace] GOODBYE/RST frame from %s:%d (client role=%s) — returning ErrRST", srcIP, srcPort, h.role)
 			addr := &net.UDPAddr{
 				IP:   srcIP,
 				Port: srcPort,
