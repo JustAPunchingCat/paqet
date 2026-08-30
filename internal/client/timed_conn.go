@@ -37,7 +37,8 @@ type timedConn struct {
 	// rebuildAt: when the conn was last torn down for a rebuild. auto_rotate
 	// must not judge a newborn session (streams may be silent for seconds
 	// during TLS handshakes — field-proven mid-curl kills).
-	rebuildAt atomic.Int64
+	rebuildAt        atomic.Int64
+	lastAutoRotateAt atomic.Int64
 }
 
 func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerConfig) (*timedConn, error) {
@@ -562,6 +563,7 @@ func (tc *timedConn) idleCheckLoop() {
 					// streams dead). Escalate: two consecutive deaf
 					// auto-rotates without recovery → full conn teardown;
 					// the next stream open rebuilds KCP+smux from scratch.
+					tc.lastAutoRotateAt.Store(time.Now().UnixNano())
 					run := tc.autoRotateRun.Add(1)
 					if run >= 2 {
 						flog.Infof("auto_rotate: deaf again after rotation (%d consecutive) — session desynced, rebuilding conn", run)
@@ -586,9 +588,16 @@ func (tc *timedConn) idleCheckLoop() {
 					tc.rotateLocalPortIfConfigured()
 					tc.mu.Lock()
 				} else if tc.pConn != nil {
-					// Wire is healthy again (recv caught up with sends):
-					// reset the escalation counter.
-					tc.autoRotateRun.Store(0)
+					// Wire received something — but only count it as
+					// RECOVERY if the inbound arrived AFTER our last
+					// auto-rotate. The desynced-session zombie echoes
+					// KCP ACKs constantly (field run 19:42: 63B replies
+					// kept resetting the escalation counter, so the
+					// rebuild never fired); those arrive at the OLD
+					// rotate timestamp and must not clear the run.
+					if r := tc.pConn.LastRecvNano(); r != 0 && r > tc.lastAutoRotateAt.Load() {
+						tc.autoRotateRun.Store(0)
+					}
 				}
 			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
@@ -609,6 +618,69 @@ func (tc *timedConn) idleCheckLoop() {
 type idleTrackedStrm struct {
 	tnet.Strm
 	tc *timedConn
+	// asymmetric liveness: a stream that has data WRITTEN to it but
+	// produces NO read within firstReadWindow means the smux session is
+	// desynced server-side (field-proven: the fresh server accepts our
+	// KCP packets, wire looks alive, but the stream frames vanish into
+	// a session whose smux never negotiated). No server packet is
+	// needed to detect this — the client decides alone. On trigger:
+	// tear the conn down; the SOCKS read errors and retries on the
+	// rebuilt session.
+	written     atomic.Bool
+	firstRead   atomic.Bool
+	watchdogRun atomic.Bool
+}
+
+const firstReadWindow = 20 * time.Second
+
+func (t *idleTrackedStrm) armWatchdog() {
+	if t.watchdogRun.Swap(true) {
+		return
+	}
+	go func() {
+		deadline := time.Now().Add(firstReadWindow)
+		for time.Now().Before(deadline) {
+			if t.firstRead.Load() {
+				return
+			}
+			if !t.written.Load() {
+				return // nothing written — no expectation of data
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if t.firstRead.Load() || !t.written.Load() {
+			return
+		}
+		flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
+		t.tc.mu.Lock()
+		if t.tc.conn != nil {
+			t.tc.conn.Close()
+		}
+		if t.tc.pConn != nil {
+			t.tc.pConn.Close()
+		}
+		t.tc.conn = nil
+		t.tc.pConn = nil
+		t.tc.rebuildAt.Store(time.Now().UnixNano())
+		t.tc.mu.Unlock()
+	}()
+}
+
+func (t *idleTrackedStrm) Write(b []byte) (int, error) {
+	n, err := t.Strm.Write(b)
+	if n > 0 {
+		t.written.Store(true)
+		t.armWatchdog()
+	}
+	return n, err
+}
+
+func (t *idleTrackedStrm) Read(b []byte) (int, error) {
+	n, err := t.Strm.Read(b)
+	if n > 0 {
+		t.firstRead.Store(true)
+	}
+	return n, err
 }
 
 func (t *idleTrackedStrm) Close() error {
