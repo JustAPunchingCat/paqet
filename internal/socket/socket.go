@@ -588,6 +588,16 @@ func (c *PacketConn) SendRST(remoteIP net.IP, remotePort int) error {
 
 // GetLastActivePort returns the most recent port this connection actually
 // wrote to, or 0 if nothing has been sent yet. Client role only.
+// LocalSrcPort returns the client's current local source port (the port
+// KCP writes go out from). Distinct from GetCurrentPort, which is the
+// hopped DESTINATION port.
+func (c *PacketConn) LocalSrcPort() int {
+	if c.sendHandle != nil {
+		return c.sendHandle.SrcPort()
+	}
+	return 0
+}
+
 func (c *PacketConn) GetLastActivePort() int {
 	if c.plugins != nil {
 		for _, pl := range c.plugins.plugins {

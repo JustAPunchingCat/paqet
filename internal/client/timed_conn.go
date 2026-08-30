@@ -300,7 +300,10 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	// be torn down: the server keys sessions by client ip:port, so after the
 	// source port changes the old session sits there retransmitting for the
 	// whole reaper timeout (2 min) — the field-proven spam source.
-	oldPort := tc.lastPort
+	// oldPort MUST be the client's LOCAL SOURCE port (what the server keys
+	// the session by), NOT the hopped destination port. tc.lastPort tracks
+	// the dest port — capture the real local src port from the send handle.
+	oldPort := tc.pConn.LocalSrcPort()
 	oldSrvPort := tc.pConn.GetLastActivePort()
 
 	newPort, err := tc.pConn.RotateLocalPort()
