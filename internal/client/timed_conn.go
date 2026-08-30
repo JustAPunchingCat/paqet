@@ -253,11 +253,9 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 		return fmt.Errorf("smux stream open timed out after 5s (server offline?)")
 	}
 	defer strm.Close()
-	defer strm.Close()
 
 	p := protocol.Proto{Type: protocol.PTCPF, TCPF: tc.rootCfg.Network.TCP.RF}
-	err = p.Write(strm)
-	if err != nil {
+	if err := p.Write(strm); err != nil {
 		return err
 	}
 	return nil
