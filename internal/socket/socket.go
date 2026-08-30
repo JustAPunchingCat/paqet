@@ -366,6 +366,49 @@ func (c *PacketConn) ReArmHandshake() {
 	}
 }
 
+// RotateLocalPort rebinds the client's local source port to a fresh random
+// ephemeral port (same port family as NewWithHopping's initial bind). This
+// creates a brand-new NAT mapping on the path — used to escape middleboxes
+// that throttle/blackhole the return path of a matured mapping.
+//
+// Returns the new port. Supported only on sources that can re-target their
+// capture (eBPF, which registers ports dynamically); pcap/afpacket capture is
+// bound to a static BPF filter on the original port and returns an error —
+// callers must treat rotation as unavailable and keep hopping server ports.
+func (c *PacketConn) RotateLocalPort() (int, error) {
+	if c.sendHandle == nil {
+		return 0, fmt.Errorf("no send handle")
+	}
+	newPort := int(RandInRange(32768, 65535))
+	if err := c.sendHandle.RebindSource(newPort); err != nil {
+		return 0, err
+	}
+	// Re-target capture BEFORE the first packet goes out on the new port so
+	// the handshake reply isn't missed. 2s grace keeps the old port alive for
+	// in-flight replies from the previous mapping.
+	if err := c.recvHandle.source.RebindPort(newPort, 2*time.Second); err != nil {
+		// Roll the send handle back so srcPort stays consistent with capture.
+		_ = c.sendHandle.RebindSource(c.cfg.Port)
+		return 0, err
+	}
+	c.cfg.Port = newPort
+	return newPort, nil
+}
+
+// SetOnHop registers a callback fired after every client-side hop (interval
+// or forced). Used by the client to rotate its local source port.
+func (c *PacketConn) SetOnHop(fn func(hopCount uint32)) {
+	if c.plugins == nil {
+		return
+	}
+	for _, pl := range c.plugins.plugins {
+		if hp, ok := pl.(*HoppingPlugin); ok {
+			hp.OnHop = fn
+			return
+		}
+	}
+}
+
 func (c *PacketConn) ForceHop() {
 	if c.plugins != nil {
 		for _, pl := range c.plugins.plugins {

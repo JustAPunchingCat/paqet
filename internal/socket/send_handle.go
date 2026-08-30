@@ -3,6 +3,7 @@ package socket
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"math/big"
 	"net"
 	"paqet/internal/conf"
@@ -1316,6 +1317,80 @@ func (h *SendHandle) ReArmHandshake() {
 		atomic.StoreUint32(&st.synAckSent, 0)
 		atomic.StoreUint32(&st.ackSent, 0)
 	}
+}
+
+// RebindSource switches this handle's local source port to newPort. All
+// per-port state is migrated: spoofStates keys are rewritten (client role:
+// old local port -> new), globalState (client role) keeps its seq/ts so the
+// fake-TCP conversation stays continuous, and the handshake latch bits are
+// cleared so the lazy 3WHS re-fires on the new tuple. Subsequent writes use
+// the new port immediately; inbound packets from the old port are still
+// accepted by the flow key rewrite below only until the peer migrates.
+func (h *SendHandle) RebindSource(newPort int) error {
+	if newPort <= 0 || newPort > 65535 {
+		return fmt.Errorf("invalid source port %d", newPort)
+	}
+	oldPort := h.srcPort
+	if uint16(newPort) == oldPort {
+		return nil
+	}
+
+	h.statesMu.Lock()
+	oldKeyPrefix := h.srcIPKey(int(oldPort))
+	h.srcPort = uint16(newPort)
+	newKeyPrefix := h.srcIPKey(newPort)
+	if h.role == "client" {
+		rewritten := make(map[string]*flowState, len(h.spoofStates))
+		for k, v := range h.spoofStates {
+			if strings.HasPrefix(k, oldKeyPrefix+"->") {
+				// Flow keyed by (oldLocalPort -> dstIP): keep the SAME
+				// flowState (seq/ack/TS continuity across the rebind) under
+				// the new key. Clear the handshake latches so the lazy 3WHS
+				// re-fires on the new tuple; hasRemote is left intact so the
+				// ack/TS bookkeeping survives the port switch.
+				dstPart := strings.TrimPrefix(k, oldKeyPrefix+"->")
+				rewritten[newKeyPrefix+"->"+dstPart] = v
+				atomic.StoreUint32(&v.synSent, 0)
+				atomic.StoreUint32(&v.synAckSent, 0)
+				atomic.StoreUint32(&v.ackSent, 0)
+			} else {
+				rewritten[k] = v
+			}
+		}
+		h.spoofStates = rewritten
+	} else {
+		// Server flows are keyed by client identity and unaffected.
+		for _, v := range h.spoofStates {
+			atomic.StoreUint32(&v.synSent, 0)
+			atomic.StoreUint32(&v.synAckSent, 0)
+			atomic.StoreUint32(&v.ackSent, 0)
+		}
+	}
+	h.statesMu.Unlock()
+
+	if h.role == "client" && h.globalState != nil {
+		h.globalState.mu.Lock()
+		atomic.StoreUint32(&h.globalState.synSent, 0)
+		atomic.StoreUint32(&h.globalState.synAckSent, 0)
+		atomic.StoreUint32(&h.globalState.ackSent, 0)
+		h.globalState.mu.Unlock()
+	}
+
+	flog.Debugf("send handle rebound: local port %d -> %d (handshake latches re-armed)", oldPort, newPort)
+	return nil
+}
+
+// srcIPKey is the IP half of a flow key for this handle's source address.
+func (h *SendHandle) srcIPKey(port int) string {
+	isIPv4 := h.srcIPv4 != nil
+	srcIP := h.srcIPv6
+	if isIPv4 {
+		srcIP = h.srcIPv4
+	}
+	if srcIP == nil {
+		srcIP = net.IPv4(0, 0, 0, 0)
+	}
+	return srcIP.String() + ":" + strconv.Itoa(port)
 }
 
 // ClearRemoteSync clears only the remote-sync bookkeeping (hasRemote + latch

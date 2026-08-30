@@ -21,6 +21,11 @@ type HoppingPlugin struct {
 	label          string
 	targetIP       net.IP
 	sendHandle     *SendHandle
+	// hopCount increments on every interval/forced hop (client only).
+	hopCount atomic.Uint32
+	// OnHop, when set (client only), fires after every hop. Used by the
+	// client to rotate its local source port per rotate_client_port.
+	OnHop func(hopCount uint32)
 }
 
 func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string, hs *conf.Handshake) (*HoppingPlugin, error) {
@@ -122,6 +127,10 @@ func (p *HoppingPlugin) loop() {
 					if p.isClient && p.sendHandle != nil {
 						p.sendHandle.ReArmHandshake()
 					}
+					if p.isClient && p.OnHop != nil {
+						n := p.hopCount.Add(1)
+						go p.OnHop(n)
+					}
 					if p.label != "" {
 						flog.Debugf("Hopping [%s]: interval hopped to port :%d", p.label, nextPort)
 					} else {
@@ -160,10 +169,17 @@ func (p *HoppingPlugin) ForceHop() {
 	}
 	// No ClearRemoteSync here either: same rationale as the interval hop —
 	// the flow key excludes the server port, state must survive hops.
-	if !p.lazyWarmup && p.targetIP != nil {
-		p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
+	if p.sendHandle != nil {
+		p.sendHandle.ReArmHandshake()
+		if !p.lazyWarmup && p.targetIP != nil {
+			p.sendHandle.PrewarmFlow(p.targetIP, uint16(newPort))
+		}
 	}
 	p.currentPort.Store(newPort)
+	if p.OnHop != nil {
+		n := p.hopCount.Add(1)
+		go p.OnHop(n)
+	}
 }
 
 func (p *HoppingPlugin) OnRead(data []byte, addr net.Addr) ([]byte, net.Addr, error) {

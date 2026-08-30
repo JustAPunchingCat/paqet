@@ -232,6 +232,42 @@ func (s *sharedEBPFSource) ReadPacketData() ([]byte, error) {
 	}
 }
 
+// RebindPort atomically swaps the captured local port: registers newPort and
+// unregisters the old one. Used by client local-port rotation — the XDP
+// program starts accepting server->client traffic to the new port on the next
+// received packet; the old port is kept registered for a grace period so
+// in-flight replies from the previous mapping are not dropped mid-switch.
+func (s *sharedEBPFSource) RebindPort(newPort int, gracePeriod time.Duration) error {
+	if newPort <= 0 || newPort > 65535 {
+		return fmt.Errorf("invalid port %d", newPort)
+	}
+	s.mgr.mu.Lock()
+	oldPorts := s.ports
+	if err := s.mgr.registerPorts([]uint16{uint16(newPort)}, s.ch); err != nil {
+		s.mgr.mu.Unlock()
+		return fmt.Errorf("failed to register port %d: %w", newPort, err)
+	}
+	s.mgr.mu.Unlock()
+
+	s.ports = append(s.ports, uint16(newPort))
+
+	// Release the old registration after the grace period. The lock copy
+	// avoids racing with a second rebind or Close.
+	go func(old []uint16) {
+		time.Sleep(gracePeriod)
+		s.mgr.mu.Lock()
+		defer s.mgr.mu.Unlock()
+		// Only unregister if this is still the active generation.
+		if len(s.ports) > 0 && len(old) > 0 && s.ports[0] == old[0] {
+			return // superseded by another rebind; Close will clean up
+		}
+		s.mgr.unregisterPorts(old)
+	}(oldPorts)
+
+	flog.Debugf("ebpf capture rebound to local port %d (old ports held %v for %v)", newPort, oldPorts, gracePeriod)
+	return nil
+}
+
 func (s *sharedEBPFSource) Close() {
 	managerMu.Lock()
 	defer managerMu.Unlock()

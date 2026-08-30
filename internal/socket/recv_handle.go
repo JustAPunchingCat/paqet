@@ -6,6 +6,7 @@ import (
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"sync"
+	"time"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
@@ -14,6 +15,10 @@ import (
 type PacketSource interface {
 	ReadPacketData() ([]byte, error)
 	Close()
+	// RebindPort swaps the captured local source port (client local-port
+	// rotation). Sources with static capture filters (pcap/afpacket) return
+	// an error; the caller must treat rotation as unavailable then.
+	RebindPort(newPort int, gracePeriod time.Duration) error
 }
 
 type ipMapping struct {

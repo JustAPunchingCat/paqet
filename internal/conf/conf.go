@@ -239,6 +239,13 @@ type Hopping struct {
 	Min        int      `yaml:"min"`         // Legacy: single range min
 	Max        int      `yaml:"max"`         // Legacy: single range max
 	Ports      []string `yaml:"ports"`       // New: list of ports or ranges ("80", "1000-2000")
+	// RotateClientPort: on the client, rebind the local source port every
+	// RotateEvery hops (0 = never). Combats middleboxes that throttle the
+	// server->client return path per-NAT-mapping: a new client port creates
+	// a fresh mapping with a fresh quota. The KCP/smux session survives
+	// (server tracks the client's current port per canonical identity).
+	RotateClientPort bool `yaml:"rotate_client_port"`
+	RotateEvery      int  `yaml:"rotate_every"` // hops between client-port rotations (default 1)
 }
 
 // IsEnabled reports whether port hopping is enabled. A nil Enabled pointer

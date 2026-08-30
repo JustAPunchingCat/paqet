@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"paqet/internal/conf"
 	"strings"
+	"time"
 )
 
 type afpacketSource struct {
@@ -86,4 +87,11 @@ func (s *afpacketSource) ReadPacketData() ([]byte, error) {
 
 func (s *afpacketSource) Close() {
 	s.handle.Close()
+}
+
+// RebindPort is unsupported on the afpacket source: its BPF capture filter is
+// compiled once against the original local port. Client local-port rotation
+// is therefore unavailable on this source.
+func (s *afpacketSource) RebindPort(newPort int, gracePeriod time.Duration) error {
+	return fmt.Errorf("afpacket source cannot rebind capture port (static BPF filter)")
 }

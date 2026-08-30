@@ -90,6 +90,22 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	}
 	tc.pConn = pConn
 	tc.lastPort = pConn.GetCurrentPort()
+
+	// Client local-port rotation: when hopping.rotate_client_port is set,
+	// rebind the local source port every rotate_every hops (default 1) so
+	// each NAT mapping gets a fresh return-path quota. No-op when disabled
+	// or when the capture source cannot rebind (pcap/afpacket).
+	if tc.srvCfg.Hopping.RotateClientPort {
+		every := tc.srvCfg.Hopping.RotateEvery
+		if every <= 0 {
+			every = 1
+		}
+		pConn.SetOnHop(func(n uint32) {
+			if n%uint32(every) == 0 {
+				tc.rotateLocalPortIfConfigured()
+			}
+		})
+	}
 	// Guard: close pConn on any error path so background goroutines and file
 	// descriptors are never orphaned when the server is offline or unreachable.
 	success := false
@@ -260,8 +276,30 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	}
 	flog.Warnf("RST from server %s — forcing port hop to escape the blocked tuple", udpAddr.String())
 	if tc.pConn != nil {
+		// ForceHop fires the OnHop callback, which already performs the
+		// client local-port rotation when rotate_client_port is enabled.
 		tc.pConn.ForceHop()
 	}
+}
+
+// rotateLocalPortIfConfigured rebinds the client's local source port when
+// hopping.rotate_client_port is enabled. A fresh client port creates a fresh
+// NAT mapping — the counter to middleboxes that throttle the return path of a
+// matured mapping. All KCP/smux streams ride the rebind automatically (they
+// share the one PacketConn); the fake 3WHS re-fires on the new tuple via the
+// handshake latch re-arm inside RebindSource. Failures are non-fatal: the
+// tunnel keeps hopping server ports without client rotation.
+func (tc *timedConn) rotateLocalPortIfConfigured() {
+	if !tc.srvCfg.Hopping.RotateClientPort || tc.pConn == nil {
+		return
+	}
+	newPort, err := tc.pConn.RotateLocalPort()
+	if err != nil {
+		flog.Debugf("client local-port rotation unavailable: %v (continuing with server-port hops only)", err)
+		return
+	}
+	tc.lastPort = newPort
+	flog.Infof("client source port rotated to %d (fresh NAT mapping)", newPort)
 }
 
 func (tc *timedConn) reconnect() {

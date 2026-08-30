@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"paqet/internal/conf"
 	"strings"
+	"time"
 
 	"github.com/gopacket/gopacket/pcap"
 )
@@ -79,4 +80,11 @@ func (s *PcapSource) ReadPacketData() ([]byte, error) {
 
 func (s *PcapSource) Close() {
 	s.handle.Close()
+}
+
+// RebindPort is unsupported on the pcap source: its BPF capture filter is
+// compiled once against the original local port. Client local-port rotation
+// is therefore unavailable on this source.
+func (s *PcapSource) RebindPort(newPort int, gracePeriod time.Duration) error {
+	return fmt.Errorf("pcap source cannot rebind capture port (static BPF filter)")
 }
