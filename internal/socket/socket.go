@@ -308,6 +308,28 @@ func (c *PacketConn) GetClientLastSeen(addr net.Addr) time.Time {
 // the given client IP, regardless of which client port it came from. Used by
 // the server's RST gate: a straggler goodbye-RST from an old client port must
 // not tear down a session that is alive on the client's current port.
+// GetClientLatestAddr returns the client's most recent real wire addr
+// (ip:port) for the given IP, or nil. The echo path uses the same map.
+func (c *PacketConn) GetClientLatestAddr(ip net.IP) *net.UDPAddr {
+	if v, ok := c.clientLatestAddr.Load(ip.String()); ok {
+		if a, ok2 := v.(*net.UDPAddr); ok2 {
+			return a
+		}
+	}
+	return nil
+}
+
+// GetClientLatestSrvPort returns the server port the client is currently
+// writing to (its active hop target), or 0.
+func (c *PacketConn) GetClientLatestSrvPort(ip net.IP) int {
+	if v, ok := c.clientLatestSrvPort.Load(ip.String()); ok {
+		if p, ok2 := v.(int); ok2 {
+			return p
+		}
+	}
+	return 0
+}
+
 func (c *PacketConn) GetClientLastSeenByIP(ip net.IP) time.Time {
 	if v, ok := c.clientIPSeen.Load(ip.String()); ok {
 		return time.Unix(0, v.(int64))

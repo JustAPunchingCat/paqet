@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"strings"
+	"time"
 
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
@@ -12,6 +14,15 @@ import (
 )
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
+	// Stale-session guard (field-proven, run 14:53): after a server
+	// restart, a client whose smux session predates the restart keeps
+	// sending data frames; the fresh smux session accepts them as a
+	// corrupted handshake and then nothing ever works — silently. A REAL
+	// client opens its first stream within seconds. Bound the first
+	// AcceptStrm: no stream within 20s of accept = stale desynced client
+	// → RST it (the client's OnRST rebuilds from scratch with a fresh
+	// smux handshake) instead of leaving a zombie session.
+	first := true
 	for {
 		select {
 		case <-ctx.Done():
@@ -19,7 +30,44 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			return
 		default:
 		}
-		strm, err := conn.AcceptStrm()
+		var strm tnet.Strm
+		var err error
+		if first {
+			acceptDone := make(chan struct{})
+			var acceptErr error
+			go func() {
+				strm, acceptErr = conn.AcceptStrm()
+				close(acceptDone)
+			}()
+			select {
+			case <-acceptDone:
+				if acceptErr != nil {
+					err = acceptErr
+					strm = nil
+				}
+			case <-time.After(20 * time.Second):
+				flog.Warnf("no stream within 20s from %s — stale/desynced session, RSTing client", conn.RemoteAddr())
+				if s.pConn != nil {
+					if udp, ok := conn.RemoteAddr().(*net.UDPAddr); ok && udp.IP != nil {
+						// RST must arrive at the client's CURRENT wire addr
+						// from the server port it currently targets — stale
+						// ports are dead ends (auto_rotate may have moved
+						// the client since this session was keyed).
+						dst := udp
+						if latest := s.pConn.GetClientLatestAddr(udp.IP); latest != nil {
+							dst = latest
+						}
+						srcPort := s.pConn.GetClientLatestSrvPort(udp.IP)
+						s.pConn.SendRSTFrom(dst.IP, dst.Port, srcPort)
+					}
+				}
+				conn.Close()
+				return
+			}
+			first = false
+		} else {
+			strm, err = conn.AcceptStrm()
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
