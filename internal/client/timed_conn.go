@@ -255,20 +255,27 @@ func (tc *timedConn) close() {
 // (one per retransmit) cannot churn ports.
 func (tc *timedConn) OnRST(addr net.Addr) {
 	const RST_TIMEOUT_INTERVAL = 3 * time.Second
+	// Field rule: an RST that triggers NO reaction is invisible — the
+	// 14:21 run had a real server-restart RST that never produced a log
+	// line. Every early return now says why.
 	last := tc.lastRSTHop.Load()
 	now := time.Now().UnixNano()
 	if last != 0 && now-last < int64(RST_TIMEOUT_INTERVAL) {
+		flog.Debugf("RST ignored: debounce (%dms since last)", (now-last)/int64(time.Millisecond))
 		return
 	}
 	if !tc.lastRSTHop.CompareAndSwap(last, now) {
+		flog.Debugf("RST ignored: lost debounce race")
 		return
 	}
 	udpAddr, ok := addr.(*net.UDPAddr)
 	if !ok || udpAddr.IP == nil {
+		flog.Debugf("RST ignored: addr is not *net.UDPAddr (%T)", addr)
 		return
 	}
 	if tc.remoteAddr == nil || tc.remoteAddr.IP == nil || !udpAddr.IP.Equal(tc.remoteAddr.IP) {
 		// RST from some other server (multi-server config) — ignore.
+		flog.Debugf("RST ignored: src %s != remote %s", udpAddr.IP, tc.remoteAddr.IP)
 		return
 	}
 	flog.Warnf("RST from server %s — forcing port hop + full conn rebuild (server session state is gone)", udpAddr.String())
