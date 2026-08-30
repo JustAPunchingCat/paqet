@@ -316,13 +316,24 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	tc.lastPort = newPort
 	flog.Infof("client source port rotated to %d (fresh NAT mapping)", newPort)
 
-	// Kill the orphaned session on the OLD client port immediately.
+	// Kill the orphaned session on the OLD client port. The goodbye is a
+	// single packet whose loss would let the orphan retransmit for the whole
+	// reaper window, so it is repeated a bounded 3 times (300ms apart) —
+	// event-driven, only at rotation, max 2 extra packets per hop. Not
+	// periodic traffic; stops with the rotation itself.
 	if oldSrvPort > 0 && tc.remoteAddr != nil && tc.remoteAddr.IP != nil {
-		if err := tc.pConn.SendRSTFrom(tc.remoteAddr.IP, oldSrvPort, oldPort); err != nil {
-			flog.Debugf("orphan-session goodbye from old port %d failed: %v", oldPort, err)
-		} else {
-			flog.Debugf("orphan-session goodbye sent from old port %d (server port %d)", oldPort, oldSrvPort)
-		}
+		go func() {
+			for i := 0; i < 3; i++ {
+				if i > 0 {
+					time.Sleep(300 * time.Millisecond)
+				}
+				if err := tc.pConn.SendRSTFrom(tc.remoteAddr.IP, oldSrvPort, oldPort); err != nil {
+					flog.Debugf("orphan-session goodbye %d/3 from old port %d failed: %v", i+1, oldPort, err)
+					return
+				}
+				flog.Debugf("orphan-session goodbye %d/3 sent from old port %d (server port %d)", i+1, oldPort, oldSrvPort)
+			}
+		}()
 	}
 }
 
