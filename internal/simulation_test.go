@@ -243,6 +243,12 @@ func roundTrip(t *testing.T, strm tnet.Strm, payload []byte, timeout time.Durati
 		got = append(got, buf[:n]...)
 	}
 	if !bytes.Equal(got, payload) {
+		for i := range got {
+			if i >= len(payload) || got[i] != payload[i] {
+				t.Fatalf("Echo mismatch at offset %d: got %02x want %02x (len %d/%d)",
+					i, got[i], payload[i], len(got), len(payload))
+			}
+		}
 		t.Fatalf("Echo mismatch: got %d bytes, expected %d", len(got), len(payload))
 	}
 	return got

@@ -68,14 +68,14 @@ type SendHandle struct {
 	ttl       uint8
 	startTime time.Time
 
-	tcpF          TCPF
-	role          string
-	ethPool       sync.Pool
-	ipv4Pool      sync.Pool
-	ipv6Pool      sync.Pool
-	tcpPool       sync.Pool
-	bufPool       sync.Pool
-	packetPool    sync.Pool
+	tcpF       TCPF
+	role       string
+	ethPool    sync.Pool
+	ipv4Pool   sync.Pool
+	ipv6Pool   sync.Pool
+	tcpPool    sync.Pool
+	bufPool    sync.Pool
+	packetPool sync.Pool
 
 	globalState *flowState
 	spoofStates map[string]*flowState
@@ -132,21 +132,21 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	ttl := uint8(randRange(60, 68))
 
 	sh := &SendHandle{
-		injector:      injector,
-		cfg:           cfg,
-		driver:        cfg.Driver,
-		srcPort:       uint16(cfg.Port),
-		role:          cfg.Role,
-		synOptions:    synOptions,
-		ackOptions:    ackOptions,
-		tcpF:          TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
-		time:          uint32(time.Now().UnixNano() / int64(time.Millisecond)),
-		tos:           tos,
-		ttl:           ttl,
-		startTime:     time.Now(),
-		globalState:   &flowState{ipId: randUint32(), seq: randUint32()},
-		spoofStates:   make(map[string]*flowState),
-		nameMapping:   make(map[string]string),
+		injector:    injector,
+		cfg:         cfg,
+		driver:      cfg.Driver,
+		srcPort:     uint16(cfg.Port),
+		role:        cfg.Role,
+		synOptions:  synOptions,
+		ackOptions:  ackOptions,
+		tcpF:        TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		time:        uint32(time.Now().UnixNano() / int64(time.Millisecond)),
+		tos:         tos,
+		ttl:         ttl,
+		startTime:   time.Now(),
+		globalState: &flowState{ipId: randUint32(), seq: randUint32()},
+		spoofStates: make(map[string]*flowState),
+		nameMapping: make(map[string]string),
 		ethPool: sync.Pool{
 			New: func() any {
 				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
@@ -1057,6 +1057,7 @@ func (h *SendHandle) RebindSource(newPort int) error {
 	flog.Debugf("send handle source port set to %d", newPort)
 	return nil
 }
+
 // srcIPKey is the IP half of a flow key for this handle's source address.
 func (h *SendHandle) srcIPKey(port int) string {
 	isIPv4 := h.srcIPv4 != nil
@@ -1070,3 +1071,57 @@ func (h *SendHandle) srcIPKey(port int) string {
 	return srcIP.String() + ":" + strconv.Itoa(port)
 }
 
+// NewTestingSendHandle builds a SendHandle with a nil injector — pair it
+// with InjectTestingInjector. Everything else (fingerprints, ports, pools)
+// is identical to NewSendHandle.
+func NewTestingSendHandle(cfg *conf.Network) (*SendHandle, error) {
+	tosChoices := []uint8{0x00, 0x10, 0x08}
+	sh := &SendHandle{
+		cfg:         cfg,
+		driver:      "testing",
+		srcPort:     uint16(cfg.Port),
+		role:        cfg.Role,
+		time:        uint32(time.Now().UnixMilli()),
+		startTime:   time.Now(),
+		globalState: &flowState{ipId: randUint32(), seq: randUint32()},
+		spoofStates: make(map[string]*flowState),
+		nameMapping: make(map[string]string),
+		tcpF:        TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		tos:         tosChoices[randRange(0, len(tosChoices)-1)],
+		ttl:         uint8(randRange(60, 68)),
+		ethPool: sync.Pool{New: func() any {
+			return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
+		}},
+		ipv4Pool: sync.Pool{New: func() any { return &layers.IPv4{} }},
+		ipv6Pool: sync.Pool{New: func() any { return &layers.IPv6{} }},
+		tcpPool:  sync.Pool{New: func() any { return &layers.TCP{} }},
+		bufPool: sync.Pool{New: func() any {
+			return gopacket.NewSerializeBuffer()
+		}},
+		packetPool: sync.Pool{New: func() any {
+			b := make([]byte, 65536)
+			return &b
+		}},
+	}
+	if cfg.IPv4.Addr != nil {
+		sh.srcIPv4 = cfg.IPv4.Addr.IP
+		sh.srcIPv4RHWA = cfg.IPv4.Router
+	}
+	if cfg.IPv6.Addr != nil {
+		sh.srcIPv6 = cfg.IPv6.Addr.IP
+		sh.srcIPv6RHWA = cfg.IPv6.Router
+	}
+	sh.synOptions = []layers.TCPOption{
+		{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}},
+		{OptionType: layers.TCPOptionKindSACKPermitted, OptionLength: 2},
+		{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{8}},
+	}
+	sh.ackOptions = []layers.TCPOption{
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+	}
+	return sh, nil
+}

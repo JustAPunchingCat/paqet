@@ -371,3 +371,9 @@ func (h *RecvHandle) Close() {
 		h.source.Close()
 	}
 }
+
+// NewTestingRecvHandle builds a RecvHandle with a nil source — pair it
+// with InjectTestingSource.
+func NewTestingRecvHandle(cfg *conf.Network, hopping *conf.Hopping, role string) (*RecvHandle, error) {
+	return &RecvHandle{role: role}, nil
+}
