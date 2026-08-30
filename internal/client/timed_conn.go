@@ -549,18 +549,22 @@ func (tc *timedConn) lockDiag() {
 	}
 }
 
-// callerTag identifies the lock acquisition site for holder tracking.
+// callerTag identifies the lock acquisition site: the first frame
+// INSIDE timed_conn.go above lockDiag (i.e. which teardown/rebuild
+// path took the lock). Falling back to the first external frame.
 func callerTag() string {
-	for i := 2; i < 10; i++ {
+	for i := 2; i < 12; i++ {
 		_, file, line, ok := runtime.Caller(i)
 		if !ok {
 			break
 		}
-		if !strings.Contains(file, "timed_conn.go") {
-			return file[strings.LastIndex(file, "/")+1:] + ":" + strconv.Itoa(line)
+		if strings.Contains(file, "timed_conn.go") {
+			return "timed_conn.go:" + strconv.Itoa(line)
 		}
 	}
-	return "timed_conn.go"
+	// No internal frame (shouldn't happen) — external caller.
+	_, file, line, _ := runtime.Caller(2)
+	return file[strings.LastIndex(file, "/")+1:] + ":" + strconv.Itoa(line)
 }
 
 func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
