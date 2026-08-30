@@ -249,3 +249,49 @@ func TestFastPathUnderFire(t *testing.T) {
 		t.Fatalf("tc.mu held %v under fast-path fire", time.Duration(h))
 	}
 }
+
+// TestInstallVsTeardownRace: the field-proven 18:59 wedge — the
+// rebuild goroutine installs the conn (reads tc.pConn.GetCurrentPort())
+// while OnRST teardown nils tc.pConn; the panic must not escape (it
+// unwound without unlocking tc.mu and wedged every waiter forever).
+func TestInstallVsTeardownRace(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		tc := newTestTimedConn(t, 0)
+		var wg sync.WaitGroup
+		// Rebuild storm — install path reads tc.pConn under tc.mu.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tc.rebuildMu.Lock()
+			conn, err := tc.newConn()
+			if err != nil {
+				tc.rebuildMu.Unlock()
+				return
+			}
+			installed := false
+			func() {
+				tc.lockDiag()
+				defer tc.unlockDiag()
+				tc.conn = conn
+				if tc.pConn != nil {
+					tc.lastPort = tc.pConn.GetCurrentPort()
+				}
+				installed = true
+			}()
+			tc.rebuildMu.Unlock()
+			_ = installed
+		}()
+		// Teardown racing the install — nils tc.pConn.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tc.OnRST(&net.UDPAddr{IP: net.ParseIP("10.0.0.1"), Port: 1})
+		}()
+		wg.Wait()
+		// Mutex must be free — no wedged holder.
+		if !tc.mu.TryLock() {
+			t.Fatalf("iter %d: tc.mu wedged — install panicked without unlocking", i)
+		}
+		tc.mu.Unlock()
+	}
+}

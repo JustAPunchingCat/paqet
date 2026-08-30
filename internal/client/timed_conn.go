@@ -603,11 +603,27 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		flog.Errorf("openAndSendProto: rebuild failed: %v", err)
 		return nil, err
 	}
-	// Install under tc.mu (brief).
-	tc.lockDiag()
-	tc.conn = conn
-	tc.lastPort = tc.pConn.GetCurrentPort()
-	tc.unlockDiag()
+	// Install under tc.mu (brief, PANIC-SAFE): the goroutine dump
+	// proved the 18:59 wedge — OnRST teardown nils tc.pConn while the
+	// rebuild goroutine is installing; tc.pConn.GetCurrentPort()
+	// panicked on the nil receiver and the panic unwound WITHOUT
+	// unlocking tc.mu (no defer) — the mutex stayed locked forever and
+	// every waiter (OnRST, idle loop, rotation, SOCKS) wedged behind
+	// a holder that no longer existed. Defer makes the unlock
+	// unconditional; the nil check makes the panic impossible.
+	installed := false
+	func() {
+		tc.lockDiag()
+		defer tc.unlockDiag()
+		tc.conn = conn
+		if tc.pConn != nil {
+			tc.lastPort = tc.pConn.GetCurrentPort()
+		}
+		installed = true
+	}()
+	if !installed {
+		return nil, fmt.Errorf("conn install failed")
+	}
 
 	// Open the first stream OUTSIDE tc.mu (up to 5s on a dead server).
 	strm, err := tc.boundedOpenStrm(conn)
