@@ -372,7 +372,15 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		key := hash.IPAddr(daddr.IP, uint16(daddr.Port))
 		if val, ok := c.clientPorts.Load(key); ok {
 			srcPort = val.(*clientPortEntry).port
+			flog.Tracef("echo reply: to client %s:%d via client port %d", daddr.IP, daddr.Port, srcPort)
+		} else {
+			flog.Tracef("echo reply: no clientPorts entry for %s:%d, using local %d", daddr.IP, daddr.Port, srcPort)
 		}
+	} else if c.cfg.Role == "client" && len(data) > 0 {
+		// DIAGNOSTIC: prove which local port every client write actually
+		// carries. A post-rotation write still on the old port shows up here
+		// as srcPort != the freshly rotated one.
+		flog.Tracef("writeto role=client srcPort=%d len=%d dst=%s", srcPort, len(data), addr)
 	}
 
 	// Cast again because plugins might return a generic net.Addr
@@ -419,6 +427,8 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 	if err := c.sendHandle.RebindSource(newPort); err != nil {
 		return 0, err
 	}
+	flog.Tracef("rotate: WriteTo cfg.Port %d -> %d; sendHandle.srcPort now %d",
+		c.cfg.Port, newPort, c.sendHandle.SrcPort())
 	// Re-target capture BEFORE the first packet goes out on the new port so
 	// the handshake reply isn't missed. 2s grace keeps the old port alive for
 	// in-flight replies from the previous mapping.

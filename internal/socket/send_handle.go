@@ -999,6 +999,12 @@ func (h *SendHandle) getFlowState(srcIP net.IP, srcPort int, dstIP net.IP, dstPo
 		clear(h.spoofStates)
 	}
 
+	// DIAGNOSTIC: minting a NEW flow state means a fresh random seq universe
+	// — if this fires mid-stream after a hop/rotation, some caller is using a
+	// srcPort that no longer matches the migrated keys (the split-brain
+	// signature from the field logs).
+	flog.Tracef("flowstate NEW key=%s total=%d", key, len(h.spoofStates)+1)
+
 	state := &flowState{
 		ipId:   randUint32(),
 		baseTS: randUint32(),
@@ -1325,6 +1331,11 @@ func (h *SendHandle) ReArmHandshake() {
 		atomic.StoreUint32(&st.synAckSent, 0)
 		atomic.StoreUint32(&st.ackSent, 0)
 	}
+}
+
+// SrcPort returns the handle's current local source port (diagnostics).
+func (h *SendHandle) SrcPort() int {
+	return int(h.srcPort)
 }
 
 // RebindSource switches this handle's local source port to newPort. All

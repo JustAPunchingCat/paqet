@@ -573,6 +573,12 @@ func (m *ebpfManager) dispatch() {
 
 			flog.Tracef("ebpf dispatch: port=%d listener=%v len=%d", port, ok, len(record.RawSample))
 
+			if !ok {
+				// DIAGNOSTIC: packet on a port we don't listen on — a missed
+				// rebind would show up here as return traffic vanishing.
+				flog.Tracef("ebpf dispatch DROP: port=%d not registered", port)
+			}
+
 			if ok {
 				// Copy data because the ringbuf memory might be reused
 				data := make([]byte, len(record.RawSample))
