@@ -98,9 +98,14 @@ int xdp_main(struct xdp_md *ctx)
         }
         if (!ip_match) return XDP_PASS;
 
-        // Ringbuf only the current registered port; silently drop stale ports.
-        if (map_has(&allowed_ports, &dest)) port_match = 1;
-        if (map_has(&allowed_ports, &source)) port_match = 1;
+        // Port-agnostic: consume EVERY packet to/from the server IP and let
+        // the Go dispatch layer (listeners map) decide. The old port gate
+        // here dropped server traffic whenever the client's allowed_ports
+        // set didn't contain the packet's ports — which is exactly what
+        // killed inbound traffic after a server-port hop when the client's
+        // registered port set went stale. The server IP is the identity;
+        // ports change per hop and must never gate the client's capture.
+        port_match = 1;
     } else {
         // Server: strictly match destination port + destination IP to avoid
         // blocking local outgoing traffic.
