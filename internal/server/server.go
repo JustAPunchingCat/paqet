@@ -168,6 +168,18 @@ func (s *Server) reapStale(ctx context.Context, deadlink time.Duration) {
 				}
 				last := s.pConn.GetClientLastSeen(conn.RemoteAddr())
 				if last.IsZero() {
+					// No inbound record for this client port at all:
+					// either the entry expired or the client never
+					// wrote to it after accept. A live session ALWAYS
+					// produces inbound; a session with no inbound
+					// record is an orphan (client rotated away) —
+					// field runs 17:09/17:18: orphan KCP sessions
+					// retransmit to dead client ports for minutes
+					// because kcp-go v5 has no deadlink and their
+					// own retransmits count as 'activity'. Reap them.
+					flog.Warnf("Client %s has no inbound record — closing orphaned session", conn.RemoteAddr())
+					conn.Close()
+					s.conns.Delete(key)
 					return true
 				}
 				if last.Before(cutoff) {
