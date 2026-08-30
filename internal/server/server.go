@@ -204,33 +204,6 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			}
 		}
 
-		// SESSION SUPERSESSION: a client has exactly one active NAT mapping
-		// at a time. A new session from the same client IP on a different
-		// port means the client rotated (or rebound) — every older session
-		// from that IP is definitionally orphaned. Close them here, with no
-		// dependence on any wire goodbye: this is loss-proof by construction
-		// (the accept itself is the signal). Goodbyes and the reaper remain
-		// as fast-path/backstop layers only.
-		if udpNew, ok := conn.RemoteAddr().(*net.UDPAddr); ok && udpNew.IP != nil {
-			s.conns.Range(func(k, v any) bool {
-				existing, ok2 := v.(tnet.Conn)
-				if !ok2 {
-					return true
-				}
-				udpOld, ok3 := existing.RemoteAddr().(*net.UDPAddr)
-				if !ok3 || udpOld.IP == nil || !udpOld.IP.Equal(udpNew.IP) {
-					return true
-				}
-				if udpOld.Port == udpNew.Port {
-					return true
-				}
-				flog.Debugf("session supersession: %s replaced by %s — closing orphaned session", udpOld.String(), udpNew.String())
-				existing.Close()
-				s.conns.Delete(k)
-				return true
-			})
-		}
-
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), localInfo)
 
 		s.conns.Store(conn.RemoteAddr().String(), conn)
