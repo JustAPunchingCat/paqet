@@ -554,7 +554,7 @@ func (tc *timedConn) lockDiag() {
 // a comment line — the previous holder had already released).
 func (tc *timedConn) unlockDiag() {
 	tc.muHolder.Store("")
-	tc.unlockDiag()
+	tc.mu.Unlock()
 }
 
 // callerTag identifies the lock acquisition site: the first frame
