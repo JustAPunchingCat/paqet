@@ -441,7 +441,6 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		}
 		flog.Tracef("echo reply: to client %s from server port %d", daddr, srcPort)
 	} else if c.cfg.Role == "client" && len(data) > 0 {
-	} else if c.cfg.Role == "client" && len(data) > 0 {
 		// DIAGNOSTIC: prove which local port every client write actually
 		// carries. A post-rotation write still on the old port shows up here
 		// as srcPort != the freshly rotated one.
@@ -454,6 +453,12 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
+
+	// Outbound timestamp: lastSend must reflect ACTUAL sends. It used to
+	// live in backgroundReader (inbound), which made any send/recv
+	// liveness comparison meaningless — both counters moved on received
+	// packets only.
+	c.lastSend.Store(time.Now().UnixNano())
 
 	return len(data), nil
 }

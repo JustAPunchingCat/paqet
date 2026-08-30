@@ -441,7 +441,7 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 }
 
 func (tc *timedConn) idleCheckLoop() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -450,6 +450,35 @@ func (tc *timedConn) idleCheckLoop() {
 			return
 		case <-ticker.C:
 			tc.mu.Lock()
+			// --- AutoRotate: return-path liveness self-healing ---
+			// The middlebox on our path kills the RETURN direction of a
+			// tunnel tuple ~15s after creation while the forward direction
+			// stays hot (field-proven via XDP consumed counters: server
+			// keeps receiving, client XDP consumed frozen). A fresh client
+			// source port revives the path instantly — the only thing that
+			// ever worked in the field. When auto_rotate is on, watch the
+			// wire: if we are actively sending but nothing has been
+			// received for AutoRotateAfter seconds, rotate NOW instead of
+			// waiting for the next hop tick.
+			if tc.srvCfg.Hopping.AutoRotate && tc.pConn != nil && tc.conn != nil {
+				after := tc.srvCfg.Hopping.AutoRotateAfter
+				if after <= 0 {
+					after = 5
+				}
+				sendN := tc.pConn.LastSendNano()
+				recvN := tc.pConn.LastRecvNano()
+				now := time.Now().UnixNano()
+				sending := sendN > 0 && now-sendN < int64(after)*int64(time.Second)
+				deaf := recvN == 0 || now-recvN > int64(after)*int64(time.Second)
+				if sending && deaf {
+					flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
+					// rotateLocalPortIfConfigured takes tc.mu itself —
+					// release, rotate, re-take (loop re-locks at top).
+					tc.mu.Unlock()
+					tc.rotateLocalPortIfConfigured()
+					tc.mu.Lock()
+				}
+			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
 				tc.sendGoodbyeRST()
 				tc.conn.Close()

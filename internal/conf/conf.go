@@ -245,6 +245,15 @@ type Hopping struct {
 	// (server tracks the client's current port per canonical identity).
 	RotateClientPort bool `yaml:"rotate_client_port"`
 	RotateEvery      int  `yaml:"rotate_every"` // hops between client-port rotations (default 1)
+	// AutoRotate: client-side self-healing — if the tunnel keeps SENDING
+	// but nothing comes back for DeadAfter seconds (return path of this
+	// tuple judged dead by a middlebox), rotate the local source port
+	// immediately instead of waiting for the next hop tick. Event-driven,
+	// zero extra packets: uses existing send/recv counters only.
+	AutoRotate bool `yaml:"auto_rotate"`
+	// AutoRotateAfter: seconds of silence (while sending) before the
+	// auto-rotate fires. Default 5.
+	AutoRotateAfter int `yaml:"auto_rotate_after"`
 }
 
 // IsEnabled reports whether port hopping is enabled. A nil Enabled pointer
