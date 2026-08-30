@@ -213,43 +213,13 @@ func (c *Client) newStrm(serverIdx int) (tnet.Strm, *timedConn, error) {
 }
 
 func (c *Client) MarkServerStale(serverIdx int) {
-	// auto_rotate: on stream failure, rotate the current connection to a
-	// fresh port instead of tearing down every connection. The rotation is
-	// rate-limited (5s) and skipped while streams are live, so a dead or
-	// blocked port recovers on the next request without killing sibling
-	// connections. Falls back to the full teardown when auto_rotate is off.
-	if c.IsAutoRotate(serverIdx) {
-		c.RotateServerConn(serverIdx)
-		return
-	}
+	// On stream failure, mark every connection to this server dead: the
+	// next request rebuilds on a fresh port. Live timedConns are reaped by
+	// idleCheckLoop once their streams close.
 	if serverIdx >= 0 && serverIdx < len(c.iters) && c.iters[serverIdx] != nil {
 		for _, tc := range c.iters[serverIdx].Items {
 			tc.markDead()
 		}
-	}
-}
-
-func (c *Client) IsAutoRotate(serverIdx int) bool {
-	if c.cfg == nil {
-		return false
-	}
-	if serverIdx >= 0 && serverIdx < len(c.cfg.Servers) {
-		return c.cfg.Servers[serverIdx].Hopping.AutoRotate || c.cfg.Hopping.AutoRotate
-	}
-	return c.cfg.Hopping.AutoRotate
-}
-
-func (c *Client) RotateServerConn(serverIdx int) {
-	if serverIdx < 0 || serverIdx >= len(c.iters) {
-		return
-	}
-	iter := c.iters[serverIdx]
-	if iter == nil || len(iter.Items) == 0 {
-		return
-	}
-	tc := iter.Peek()
-	if tc != nil {
-		go tc.reconnect()
 	}
 }
 
