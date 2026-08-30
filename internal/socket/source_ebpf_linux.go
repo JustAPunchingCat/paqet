@@ -242,13 +242,14 @@ func (s *sharedEBPFSource) RebindPort(newPort int, gracePeriod time.Duration) er
 	if newPort <= 0 || newPort > 65535 {
 		return fmt.Errorf("invalid port %d", newPort)
 	}
-	s.mgr.mu.Lock()
+	// NOTE: do NOT hold m.mu across this call — registerPorts takes m.mu
+	// itself and sync.Mutex is not reentrant. Holding it here self-deadlocks
+	// the rotation goroutine (field-proven: 'hop dispatched' logged, then
+	// nothing; dispatch frozen; subsequent hops stop).
 	oldPorts := s.ports
 	if err := s.mgr.registerPorts([]uint16{uint16(newPort)}, s.ch); err != nil {
-		s.mgr.mu.Unlock()
 		return fmt.Errorf("failed to register port %d: %w", newPort, err)
 	}
-	s.mgr.mu.Unlock()
 
 	s.ports = append(s.ports, uint16(newPort))
 
