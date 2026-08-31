@@ -10,6 +10,7 @@ type Transport struct {
 	Conn     int    `yaml:"conn"`
 	TCPBuf   int    `yaml:"tcpbuf"`
 	UDPBuf   int    `yaml:"udpbuf"`
+	SockBuf  int    `yaml:"sockbuf"`
 	KCP      *KCP   `yaml:"kcp"`
 	QUIC     *QUIC  `yaml:"quic"`
 	UDP      *UDP   `yaml:"udp"`
@@ -31,6 +32,9 @@ func (t *Transport) setDefaults() {
 	}
 	if t.UDPBuf < 2*1024 {
 		t.UDPBuf = 2 * 1024
+	}
+	if t.SockBuf == 0 {
+		t.SockBuf = 8 * 1024 * 1024 // 8MB socket buffer for destination conns
 	}
 
 	switch t.Protocol {

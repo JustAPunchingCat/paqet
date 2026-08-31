@@ -36,6 +36,12 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
+		// Fix ENOBUFS ("no buffer space available") under high throughput
+		// (speedtest etc.): the kernel-default SO_SNDBUF/SO_RCVBUF is too
+		// small for the tunnel's bursty relay, and the zero-copy relay
+		// path fails instead of back-pressuring. Raise both explicitly.
+		tcpConn.SetWriteBuffer(s.cfg.Transport.SockBuf)
+		tcpConn.SetReadBuffer(s.cfg.Transport.SockBuf)
 	}
 	defer func() {
 		conn.Close()
