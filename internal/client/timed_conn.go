@@ -949,10 +949,10 @@ type idleTrackedStrm struct {
 	written     atomic.Bool
 	firstRead   atomic.Bool
 	watchdogRun atomic.Bool
-	// watchdogStrikes: consecutive no-read strikes for this stream. Strike 1
-	// rotates the port (preserving the session + siblings); strike 2 — still
-	// no read after a real rotation — rebuilds the conn (desync confirmed).
-	watchdogStrikes atomic.Int32
+	// No strike ladder: this watchdog ROTATES only, it never rebuilds.
+	// Finding a new port and closing the session are two separate tasks —
+	// the destructive rebuild belongs to the conn-level auto_rotate (30s of
+	// continuous "sending but deaf"), never to a per-stream no-read timer.
 }
 
 // firstReadWindow / watchdogPollInterval / rotateCooldown are vars (not
@@ -973,15 +973,15 @@ func (t *idleTrackedStrm) armWatchdog() {
 		return
 	}
 	go func() {
-		// Two-strike ladder. "written but no read" is AMBIGUOUS: it can be a
-		// DPI-blocked return path (transient — a fresh client port usually
-		// escapes it, and rotation PRESERVES the session + every sibling
-		// stream) or a genuinely desynced smux session (server restart, no
-		// RST — only a full rebuild recovers). Rebuilding on the FIRST
-		// no-read killed sibling streams: field run — SSH died under a
-		// website burst even though it had survived 14 min of rotation.
-		// So: rotate first, rebuild only on a SECOND consecutive no-read
-		// after an actual rotation.
+		// Rotation-only watchdog. "written but no read" is AMBIGUOUS: it can
+		// be a DPI-blocked return path (transient — a fresh client port
+		// usually escapes it, and rotation PRESERVES the session + every
+		// sibling stream) or a genuinely desynced smux session (server
+		// restart — which is caught separately by the FIN/RST goodbye →
+		// OnRST rebuild, and by the conn-level auto_rotate rebuild after 30s
+		// of continuous deafness). A per-stream rebuild here killed SSH under
+		// a heavy speedtest (field-proven) even though the tunnel was merely
+		// congested — so this watchdog ONLY rotates, never rebuilds.
 		for {
 			deadline := time.Now().Add(firstReadWindow)
 			for time.Now().Before(deadline) {
@@ -996,24 +996,15 @@ func (t *idleTrackedStrm) armWatchdog() {
 			if t.firstRead.Load() || !t.written.Load() {
 				return
 			}
-			// Rotation unavailable (disabled) → the desync explanation is
-			// the only one left; rebuild as before.
-			if t.tc.srvCfg == nil || !t.tc.srvCfg.Hopping.RotateClientPort {
-				flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
-				t.tc.rebuildConn()
-				return
-			}
+			// Rotation-only: finding a new port and closing the session are two
+			// separate tasks. Rotate the source port (preserving the session and
+			// every sibling stream); never rebuild here — the destructive rebuild
+			// is the conn-level auto_rotate's job, gated independently.
 			if !t.tc.rotateLocalPortIfConfigured() {
-				// Cooldown / transient failure — not a real rotation for
-				// this episode, so do NOT count a strike. Re-arm and retry.
+				// Rotation disabled/cooldown — retry on the next window.
 				continue
 			}
 			t.firstRead.Store(false) // a post-rotation read clears us
-			if t.watchdogStrikes.Add(1) >= 2 {
-				flog.Warnf("stream %d: written but no inbound for %v after rotation — session desynced, rebuilding conn", t.SID(), firstReadWindow)
-				t.tc.rebuildConn()
-				return
-			}
 			flog.Warnf("stream %d: written but no inbound for %v — rotated local port (session preserved)", t.SID(), firstReadWindow)
 		}
 	}()

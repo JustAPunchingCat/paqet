@@ -421,16 +421,17 @@ func TestWatchdogRotatesBeforeRebuild(t *testing.T) {
 		t.Fatal("first no-read strike REBUILT the conn — sibling SSH would have died")
 	}
 
-	// Strike 2 (still no read after a real rotation): rebuild must fire.
-	waitFor(func() bool {
-		tc.lockDiag()
-		nilNow := tc.conn == nil
-		tc.unlockDiag()
-		return nilNow
-	}, "rebuild after second consecutive no-read")
+	// Rotation-only: after a second consecutive no-read, the watchdog must
+	// rotate AGAIN — never rebuild. The destructive rebuild belongs to the
+	// conn-level auto_rotate, not this per-stream watchdog (field-proven: a
+	// per-stream rebuild here killed sibling SSH under a heavy speedtest).
+	waitFor(func() bool { return atomic.LoadInt32(&rotates) >= 2 }, "second rotation (rotation-only, no rebuild)")
 
-	if got := atomic.LoadInt32(&rotates); got < 2 {
-		t.Fatalf("expected >=2 rotations before rebuild, got %d", got)
+	tc.lockDiag()
+	connAlive2 := tc.conn != nil
+	tc.unlockDiag()
+	if !connAlive2 {
+		t.Fatal("second no-read strike REBUILT the conn — sibling SSH would have died")
 	}
 }
 
