@@ -841,7 +841,7 @@ func (tc *timedConn) idleCheckLoop() {
 			if tc.srvCfg.Hopping.AutoRotate && tc.pConn != nil && tc.conn != nil {
 				after := tc.srvCfg.Hopping.AutoRotateAfter
 				if after <= 0 {
-					after = 3
+					after = 10
 				}
 				sendN := tc.pConn.LastSendNano()
 				recvN := tc.pConn.LastRecvNano()
