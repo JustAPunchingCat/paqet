@@ -254,6 +254,11 @@ type Hopping struct {
 	// AutoRotateAfter: seconds of silence (while sending) before the
 	// auto-rotate fires. Default 5.
 	AutoRotateAfter int `yaml:"auto_rotate_after"`
+	// RotateGraceSeconds: how long a rotated-away source port stays registered
+	// after a rebind, so in-flight server->client data still addressed to the
+	// previous port is captured instead of dropped (and retransmitted).
+	// Receive-only — no extra wire packets. Client-only. Default 10.
+	RotateGraceSeconds int `yaml:"rotate_grace_seconds"`
 }
 
 // IsEnabled reports whether port hopping is enabled. A nil Enabled pointer

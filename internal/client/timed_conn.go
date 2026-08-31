@@ -549,7 +549,8 @@ func (tc *timedConn) rotateLocalPortIfConfigured() bool {
 	if tc.rotatePortFn != nil {
 		newPort, err = tc.rotatePortFn()
 	} else {
-		newPort, err = tc.pConn.RotateLocalPort()
+		grace := time.Duration(tc.srvCfg.Hopping.RotateGraceSeconds) * time.Second
+		newPort, err = tc.pConn.RotateLocalPort(grace)
 	}
 	if err != nil {
 		flog.Warnf("client local-port rotation FAILED: %v (continuing with server-port hops only)", err)

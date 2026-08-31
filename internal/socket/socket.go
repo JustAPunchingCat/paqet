@@ -517,7 +517,7 @@ func (c *PacketConn) ReArmHandshake() {
 // capture (eBPF, which registers ports dynamically); pcap/afpacket capture is
 // bound to a static BPF filter on the original port and returns an error —
 // callers must treat rotation as unavailable and keep hopping server ports.
-func (c *PacketConn) RotateLocalPort() (int, error) {
+func (c *PacketConn) RotateLocalPort(grace time.Duration) (int, error) {
 	if c.sendHandle == nil {
 		return 0, fmt.Errorf("no send handle")
 	}
@@ -525,7 +525,6 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 		return 0, fmt.Errorf("no capture source")
 	}
 	newPort := int(RandInRange(32768, 65535))
-	grace := time.Duration(c.cfg.RotateGraceSeconds) * time.Second
 	if grace <= 0 {
 		grace = 10 * time.Second
 	}

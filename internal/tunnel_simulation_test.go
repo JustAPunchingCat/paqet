@@ -472,7 +472,7 @@ func TestTunnel_RotationMidStream(t *testing.T) {
 
 	roundTrip(t, strm, []byte("warm"), 5*time.Second)
 
-	newPort, err := st.clientConn.RotateLocalPort()
+	newPort, err := st.clientConn.RotateLocalPort(2*time.Second)
 	if err != nil {
 		t.Fatalf("RotateLocalPort: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestTunnel_RotationMidStream(t *testing.T) {
 	}
 	roundTrip(t, strm, payload, 45*time.Second)
 
-	if _, err := st.clientConn.RotateLocalPort(); err != nil {
+	if _, err := st.clientConn.RotateLocalPort(2*time.Second); err != nil {
 		t.Fatalf("RotateLocalPort #2: %v", err)
 	}
 	roundTrip(t, strm, []byte("alive after second rotation"), 15*time.Second)
@@ -507,7 +507,7 @@ func TestTunnel_MultipleRotationsWithNewStreams(t *testing.T) {
 	roundTrip(t, strm0, []byte("warm"), 5*time.Second)
 
 	for i := 0; i < 5; i++ {
-		if _, err := st.clientConn.RotateLocalPort(); err != nil {
+		if _, err := st.clientConn.RotateLocalPort(2*time.Second); err != nil {
 			t.Fatalf("rotation %d: %v", i, err)
 		}
 		strm, err := conn.OpenStrm()
@@ -541,7 +541,7 @@ func TestTunnel_ReplySourcePortMatchesHop(t *testing.T) {
 	}
 	roundTrip(t, strm, []byte("pre-hop"), 5*time.Second)
 
-	if _, err := st.clientConn.RotateLocalPort(); err != nil {
+	if _, err := st.clientConn.RotateLocalPort(2*time.Second); err != nil {
 		t.Fatalf("RotateLocalPort: %v", err)
 	}
 
