@@ -85,6 +85,22 @@ servers:
       rotate_every: 1           # Client-port rotation cadence in hops (default 1).
                                 # 1 = rotate on every hop (strongest); 3 =
                                 # rotate every 3rd hop.
+      auto_rotate: false        # Self-heal: if actively SENDING but receiving
+                                # nothing for auto_rotate_after seconds, rotate
+                                # the local source port immediately instead of
+                                # waiting for the next hop tick (a rotation
+                                # preserves the KCP+smux session, so open
+                                # streams survive it). A SECOND consecutive
+                                # silent interval means the session itself is
+                                # desynced (not the tuple) — then the conn is
+                                # torn down and rebuilt, which DOES drop open
+                                # streams. Recommended: true when
+                                # rotate_client_port is true.
+      auto_rotate_after: 15     # Seconds of silence (while still sending)
+                                # before auto_rotate fires (default 15). 2-3s
+                                # is too aggressive: TLS/SSH handshakes have
+                                # 2-3s quiet gaps and would be torn down
+                                # mid-transfer (field run 15:06).
       ports:                    # List of single ports or ranges
         - "80"
         - "20000-45000"   # Recommended: 20000-45000
@@ -121,7 +137,10 @@ servers:
                        # Requires at least 2 protocol sections configured.
                        # Server must also use "auto" to accept all protocols.
       conn: 4          # Number of connections (1-256, default: 4, power-of-2 recommended)
-      
+      # sockbuf: 8388608   # SO_SNDBUF/SO_RCVBUF for destination TCP conns (default 8MB).
+                        # Fixes ENOBUFS ("no buffer space available") on
+                        # high-throughput relays (speedtest etc.).
+
       # tcpbuf: 8192   # TCP buffer size in bytes
       # udpbuf: 4096   # UDP buffer size in bytes
 

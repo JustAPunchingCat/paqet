@@ -88,7 +88,10 @@ network:
 transport:
   protocol: "kcp"  # Transport protocol: "kcp", "quic", "udp", "auto" (listen on all)
   conn: 1          # Number of connections (1-256, default: 1)
-  
+  # sockbuf: 8388608   # SO_SNDBUF/SO_RCVBUF for destination TCP conns (default 8MB).
+                    # Fixes ENOBUFS ("no buffer space available") on
+                    # high-throughput relays.
+
   # tcpbuf: 8192   # TCP buffer size in bytes
   # udpbuf: 4096   # UDP buffer size in bytes
 
