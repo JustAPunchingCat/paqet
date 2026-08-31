@@ -32,6 +32,11 @@ type timedConn struct {
 	activeStreams int
 	lastIdle      time.Time
 	lastRSTHop    atomic.Int64
+	// lastRSTClosedHop: debounce for the bare-RST (closed destination port)
+	// path, which hops WITHOUT tearing down the session. Independent of
+	// lastRSTHop (the goodbye-FIN rebuild path) — a closed port and a goodbye
+	// are different signals and must not suppress each other.
+	lastRSTClosedHop atomic.Int64
 	// deafSinceNano: when the current "sending but deaf" episode began.
 	// Rotation cadence scales with auto_rotate_after (fast port-hunting),
 	// but the full conn rebuild — which kills every stream on this conn —
@@ -96,6 +101,7 @@ func newTimedConn(ctx context.Context, rootCfg *conf.Conf, srvCfg *conf.ServerCo
 	// a forced hop to a fresh port is the capture-proven recovery.
 	if tc.pConn != nil {
 		tc.pConn.OnRST = tc.OnRST
+		tc.pConn.OnRSTClosed = tc.OnRSTClosed
 	}
 
 	go tc.idleCheckLoop()
@@ -151,8 +157,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	// RST, tunnel wedged in a kernel-RST loop until manual restart).
 	if tc.pConn != nil {
 		tc.pConn.OnRST = nil
+		tc.pConn.OnRSTClosed = nil
 	}
 	pConn.OnRST = tc.OnRST
+	pConn.OnRSTClosed = tc.OnRSTClosed
 	tc.pConn = pConn
 	tc.lastPort = pConn.GetCurrentPort()
 
@@ -429,6 +437,39 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 	}
 	if deadPConn != nil {
 		deadPConn.Close()
+	}
+}
+
+// OnRSTClosed reacts to a bare RST from a CLOSED/BLOCKED destination port
+// (the server's OS rejecting a packet to a port it isn't listening on). Unlike
+// OnRST — which fires on a paqet goodbye FIN and rebuilds the whole conn — this
+// ONLY hops to the next destination port. The session and all its streams
+// survive: finding a new port and closing a session are two separate tasks.
+func (tc *timedConn) OnRSTClosed(addr net.Addr) {
+	const rstClosedDebounce = 1 * time.Second
+	last := tc.lastRSTClosedHop.Load()
+	now := time.Now().UnixNano()
+	if last != 0 && now-last < int64(rstClosedDebounce) {
+		flog.Debugf("RST(closed port) ignored: debounce (%dms since last)", (now-last)/int64(time.Millisecond))
+		return
+	}
+	if !tc.lastRSTClosedHop.CompareAndSwap(last, now) {
+		flog.Debugf("RST(closed port) ignored: lost debounce race")
+		return
+	}
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok || udpAddr.IP == nil {
+		flog.Debugf("RST(closed port) ignored: addr is not *net.UDPAddr (%T)", addr)
+		return
+	}
+	remote := tc.remoteAddr
+	if remote == nil || remote.IP == nil || !udpAddr.IP.Equal(remote.IP) {
+		flog.Debugf("RST(closed port) ignored: src %s != remote %v", udpAddr.IP, remote)
+		return
+	}
+	flog.Infof("RST from closed port %s — hopping to next destination port (session kept)", udpAddr.String())
+	if pConn := tc.pConn; pConn != nil {
+		pConn.ForceHop()
 	}
 }
 

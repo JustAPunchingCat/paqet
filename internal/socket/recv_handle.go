@@ -311,23 +311,33 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, int, bool, error) {
 		flog.Tracef("recv %s:%d -> %s:%d flags=0x%02x syn=%v ack=%v rst=%v payload=%d",
 			srcIP, srcPort, dstIP, dstPort, tcpFlags, isSYN, isACK, isRST, len(data)-transStart-tcpLen)
 
-		// On clients, RST signifies the server's OS rejected our packet (e.g. server restarted and lost flow state).
-		// Returning ErrClosed forcefully terminates the KCP session and triggers an immediate reconnect,
-		// preventing the client from hanging for 30s while KCP DeadLink times out.
-		// On servers, we ignore RSTs since PacketConn is shared across all clients.
-		// RST: client OS rejected our packet (server restarted, lost flow state).
-		// FIN: paqet goodbye signal we use instead of RST to bypass ISP RST-drop rules.
-		// On the CLIENT: treat both RST and FIN as fatal → trigger immediate reconnect.
-		// On the SERVER: only treat them as fatal if the packet has no payload
-		//   (a real goodbye FIN has no data; data packets never carry FIN in paqet).
-		//   This prevents a stale FIN from a dead previous client session from killing
-		//   the current live session.
-		isGoodbye := isRST || isFIN
-		if isGoodbye {
-			if h.role == "server" && len(payload) > 0 {
-				// Data packet with FIN bit — not a goodbye, ignore the flag.
-				isGoodbye = false
+		// FIN is the paqet goodbye signal (used instead of RST to bypass ISP
+		// RST-drop rules): the peer's session is genuinely gone → ErrRST → rebuild.
+		// A bare RST (no FIN/ACK) is the OS rejecting a packet to a CLOSED or
+		// BLOCKED port. On the client that means "this destination port is bad,
+		// hop to another" (ErrRSTClosed), NOT "session gone". Finding a new port
+		// and closing a session are two separate tasks and must not be coupled:
+		// field-proven when hopping to a closed port 9000 returned an RST and the
+		// client tore down a healthy session instead of just hopping on.
+		var isClosedPort bool
+		isGoodbye := false
+		if h.role == "client" {
+			// Client: FIN → goodbye (rebuild). Bare RST → closed port (hop).
+			isGoodbye = isFIN
+			isClosedPort = isRST && !isFIN
+		} else {
+			// Server: a payload-less FIN/RST from a client means that client is
+			// gone (or its OS rejected a packet) → close the stale session.
+			// Data packets never carry FIN/RST in paqet.
+			isGoodbye = (isRST || isFIN) && len(payload) == 0
+		}
+		if isClosedPort {
+			flog.Debugf("[trace] RST (closed port) from %s:%d (client role=%s) — returning ErrRSTClosed", srcIP, srcPort, h.role)
+			addr := &net.UDPAddr{
+				IP:   srcIP,
+				Port: srcPort,
 			}
+			return nil, addr, dstPort, false, ErrRSTClosed
 		}
 		if isGoodbye {
 			flog.Debugf("[trace] GOODBYE/RST frame from %s:%d (client role=%s) — returning ErrRST", srcIP, srcPort, h.role)

@@ -19,6 +19,13 @@ import (
 
 var ErrRST = errors.New("connection reset by peer")
 
+// ErrRSTClosed is a bare TCP RST (no FIN/ACK) — the peer's OS rejecting a
+// packet to a CLOSED/BLOCKED destination port. It is distinct from a paqet
+// goodbye (FIN, which maps to ErrRST). On the client it means "hop to another
+// destination port", NOT "the session is gone": finding a new port and closing
+// a session are two separate tasks and must never be coupled.
+var ErrRSTClosed = errors.New("connection reset: port closed")
+
 type processedPacket struct {
 	data   []byte
 	addr   net.Addr
@@ -75,6 +82,10 @@ type PacketConn struct {
 	closeOnce  sync.Once
 
 	OnRST func(addr net.Addr)
+
+	// OnRSTClosed fires on a bare RST (closed/blocked destination port). The
+	// client hops to another destination port WITHOUT tearing down the session.
+	OnRSTClosed func(addr net.Addr)
 
 	// connID is a stable per-connection identifier stamped into every
 	// outbound packet by the client and read back by the server. It is
@@ -344,6 +355,13 @@ func (c *PacketConn) backgroundReader() {
 				flog.Debugf("[trace] ErrRST surfaced — dispatching OnRST from %s (handler set: %v)", addr, c.OnRST != nil)
 				if c.OnRST != nil && addr != nil {
 					c.OnRST(addr)
+				}
+				continue
+			}
+			if err == ErrRSTClosed {
+				flog.Debugf("[trace] ErrRSTClosed surfaced — dispatching OnRSTClosed from %s (handler set: %v)", addr, c.OnRSTClosed != nil)
+				if c.OnRSTClosed != nil && addr != nil {
+					c.OnRSTClosed(addr)
 				}
 				continue
 			}
