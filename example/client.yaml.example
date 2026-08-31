@@ -86,21 +86,16 @@ servers:
                                 # 1 = rotate on every hop (strongest); 3 =
                                 # rotate every 3rd hop.
       auto_rotate: false        # Self-heal: if actively SENDING but receiving
-                                # nothing for auto_rotate_after seconds, rotate
-                                # the local source port immediately instead of
-                                # waiting for the next hop tick (a rotation
-                                # preserves the KCP+smux session, so open
-                                # streams survive it). A SECOND consecutive
-                                # silent interval means the session itself is
-                                # desynced (not the tuple) — then the conn is
-                                # torn down and rebuilt, which DOES drop open
-                                # streams. Recommended: true when
-                                # rotate_client_port is true.
-      auto_rotate_after: 15     # Seconds of silence (while still sending)
-                                # before auto_rotate fires (default 15). 2-3s
-                                # is too aggressive: TLS/SSH handshakes have
-                                # 2-3s quiet gaps and would be torn down
-                                # mid-transfer (field run 15:06).
+                                # nothing for auto_rotate_after seconds, hunt
+                                # for a clean path — try a new DESTINATION port
+                                # first (preserving the KCP+smux session, so
+                                # open streams survive), and rotate the SOURCE
+                                # port only after rotate_every destination
+                                # tries. Non-destructive: never rebuilds.
+                                # Recommended: true when rotate_client_port is
+                                # true.
+      auto_rotate_after: 3      # Seconds of silence (while still sending)
+                                # before auto_rotate fires (default 3).
       rotate_grace_seconds: 10  # Hold a rotated-away source port registered
                                 # this long (seconds) after rebind so in-flight
                                 # server->client data still addressed to the old
