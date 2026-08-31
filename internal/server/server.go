@@ -184,9 +184,7 @@ func (s *Server) reapStale(ctx context.Context, deadlink time.Duration) {
 				}
 				if last.Before(cutoff) {
 					flog.Warnf("Client %s silent for %s, closing stale session", conn.RemoteAddr(), deadlink)
-					if udp, ok := conn.RemoteAddr().(*net.UDPAddr); ok {
-						s.pConn.ClearClientCanonical(udp.IP)
-					}
+					s.pConn.ClearClient(conn.RemoteAddr())
 					conn.Close()
 					s.conns.Delete(key)
 				}
@@ -223,13 +221,30 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			}
 		}
 
+		// Parked-goodbye match: a goodbye parked under the WIRE addr before
+		// this accept landed. Under per-conn identity the canonical key and
+		// the wire key differ, so check both.
+		matched := false
 		if t, ok := s.pendingGoodbyes.Load(conn.RemoteAddr().String()); ok {
 			if ts, ok2 := t.(time.Time); ok2 && time.Since(ts) < 5*time.Second {
-				flog.Debugf("connection from %s matches a parked goodbye — closing immediately", conn.RemoteAddr())
-				conn.Close()
+				matched = true
 				s.pendingGoodbyes.Delete(conn.RemoteAddr().String())
-				continue
 			}
+		}
+		if !matched {
+			if latest := s.pConn.GetClientLatestAddr(conn.RemoteAddr()); latest != nil {
+				if t, ok := s.pendingGoodbyes.Load(latest.String()); ok {
+					if ts, ok2 := t.(time.Time); ok2 && time.Since(ts) < 5*time.Second {
+						matched = true
+						s.pendingGoodbyes.Delete(latest.String())
+					}
+				}
+			}
+		}
+		if matched {
+			flog.Debugf("connection from %s matches a parked goodbye — closing immediately", conn.RemoteAddr())
+			conn.Close()
+			continue
 		}
 
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), localInfo)
@@ -258,13 +273,9 @@ func (s *Server) handleRST(addr net.Addr) {
 	if addr == nil {
 		return
 	}
-	// Sessions are keyed per client ip:port. A goodbye arriving on a given
-	// client port can ONLY refer to the session on that same port — the
-	// migrated session lives on a different port and is a different conns
-	// entry. So honor the goodbye immediately: this is how the client tells
-	// us its old-port session is orphaned by a local-port rotation (without
-	// it, the orphan retransmits for the whole reaper timeout — field-proven
-	// wire spam).
+	// Sessions are keyed by canonical identity (IP:connID); a goodbye
+	// arrives on the client's WIRE addr (IP:rotating-port). Fast path only
+	// matches when the client never rotated (rare).
 	if v, ok := s.conns.Load(addr.String()); ok {
 		if conn, ok := v.(tnet.Conn); ok {
 			flog.Debugf("Received RST from client %s, forcibly closing KCP session", addr)
@@ -273,31 +284,29 @@ func (s *Server) handleRST(addr net.Addr) {
 		}
 		return
 	}
-	// The conns MAP is keyed by the addr the session was ACCEPTED on.
-	// kcp-go updates the session's RemoteAddr when the client migrates
-	// ports (local-port rotation), so a session accepted as :36010 may
-	// now be speaking from :49801 — the map key is stale, the CONN's
-	// RemoteAddr is fresh. Field run 17:09: a goodbye from the client's
-	// current port missed the map, got parked, and the orphaned session
-	// echo-flooded the dead port for minutes. Scan by the conn's LIVE
-	// RemoteAddr instead.
+	// Resolve the goodbye's wire addr back to its conn: scan sessions and
+	// match on each conn's LATEST real wire addr (mailbox), not the
+	// canonical RemoteAddr (which is synthetic under per-conn identity).
 	var killConns []tnet.Conn
 	s.conns.Range(func(k, v any) bool {
-		if c, ok := v.(tnet.Conn); ok && c.RemoteAddr().String() == addr.String() {
+		c, ok := v.(tnet.Conn)
+		if !ok {
+			return true
+		}
+		if latest := s.pConn.GetClientLatestAddr(c.RemoteAddr()); latest != nil && latest.String() == addr.String() {
 			killConns = append(killConns, c)
 			s.conns.Delete(k)
 		}
 		return true
 	})
 	for _, c := range killConns {
-		flog.Debugf("Received RST from client %s — closing migrated KCP session (stale map key)", addr)
+		flog.Debugf("Received RST from client %s — closing KCP session", addr)
 		c.Close()
-		if len(killConns) > 0 {
-			return
-		}
 	}
-	// Goodbye for a port with no live session — the accept of the migrated
-	// session may not have landed yet. Park it briefly.
+	if len(killConns) > 0 {
+		return
+	}
+	// Goodbye for an identity with no live session — park it briefly.
 	flog.Debugf("Goodbye from unknown client %s — parking (session may be mid-accept)", addr)
 	s.pendingGoodbyes.Store(addr.String(), time.Now())
 }

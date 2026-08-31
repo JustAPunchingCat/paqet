@@ -79,6 +79,16 @@ func newPacketConn(ctx context.Context, connCfg *conf.Network, sendHandle *SendH
 		numWorkers: 2,
 	}
 
+	// Assign a stable per-connection ID (client only), mirroring
+	// NewWithHopping — the testing harness MUST carry one too or the
+	// server-side strip/session-keying silently no-ops.
+	if connCfg.Role == "client" {
+		conn.connID = CryptoRandUint16()
+		if conn.connID == 0 {
+			conn.connID = 1
+		}
+	}
+
 	conn.workersWg.Add(conn.numWorkers)
 	for i := 0; i < conn.numWorkers; i++ {
 		conn.workerChs[i] = make(chan rawJob, 4096)

@@ -201,6 +201,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	} else if obfsCfg.Padding.Enabled {
 		overhead = 2 + obfsCfg.Padding.Max
 	}
+	// Per-conn ID (2 bytes) is stamped before obfs on every client write and
+	// rides inside the wrapper, so it adds to the payload the transport sees.
+	// Client-only: the server's return path carries no conn ID.
+	overhead += 2
 
 	switch tc.srvCfg.Transport.Protocol {
 	case "kcp":
