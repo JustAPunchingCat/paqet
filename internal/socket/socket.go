@@ -554,7 +554,7 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 
 // SetOnHop registers a callback fired after every client-side hop (interval
 // or forced). Used by the client to rotate its local source port.
-func (c *PacketConn) SetOnHop(fn func(hopCount uint32)) {
+func (c *PacketConn) SetOnHop(fn func(hopCount uint32, full bool)) {
 	if c.plugins == nil {
 		return
 	}

@@ -21,9 +21,12 @@ type HoppingPlugin struct {
 	sendHandle     *SendHandle
 	// hopCount increments on every interval/forced hop (client only).
 	hopCount atomic.Uint32
-	// OnHop, when set (client only), fires after every hop. Used by the
-	// client to rotate its local source port per rotate_client_port.
-	OnHop func(hopCount uint32)
+	// OnHop, when set (client only), fires after every hop. `full` is true for
+	// the interval timer hop (proactive full rotation — the client rotates its
+	// source port too) and false for a forced hop (RST/deaf recovery — the
+	// client hunts a clean destination port first; source rotates only after
+	// rotate_every bad-DST tries).
+	OnHop func(hopCount uint32, full bool)
 }
 
 func NewHoppingPlugin(cfg *conf.Hopping, isClient bool, label string) (*HoppingPlugin, error) {
@@ -101,8 +104,8 @@ func (p *HoppingPlugin) loop() {
 				if p.isClient {
 					n := p.hopCount.Add(1)
 					if p.OnHop != nil {
-						flog.Infof("hop %d dispatched to rotation hook", n)
-						go p.OnHop(n)
+						flog.Infof("hop %d dispatched to rotation hook (interval full)", n)
+						go p.OnHop(n, true)
 					} else {
 						flog.Warnf("hop %d: OnHop hook is NIL — rotate_client_port cannot fire", n)
 					}
@@ -140,8 +143,8 @@ func (p *HoppingPlugin) ForceHop() {
 	p.currentPort.Store(newPort)
 	n := p.hopCount.Add(1)
 	if p.OnHop != nil {
-		flog.Infof("hop %d dispatched to rotation hook", n)
-		go p.OnHop(n)
+		flog.Infof("hop %d dispatched to rotation hook (forced)", n)
+		go p.OnHop(n, false)
 	} else {
 		flog.Warnf("hop %d: OnHop hook is NIL — rotate_client_port cannot fire", n)
 	}

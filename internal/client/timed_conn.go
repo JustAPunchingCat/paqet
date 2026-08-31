@@ -37,6 +37,10 @@ type timedConn struct {
 	// lastRSTHop (the goodbye-FIN rebuild path) — a closed port and a goodbye
 	// are different signals and must not suppress each other.
 	lastRSTClosedHop atomic.Int64
+	// badDstTries: consecutive bad-DST attempts (RST or deaf recovery hops)
+	// on the current source port. Drives the dst-first hunt: the source port
+	// rotates only after rotate_every bad-DST tries fail to revive inbound.
+	badDstTries atomic.Int64
 	// deafSinceNano: when the current "sending but deaf" episode began.
 	// Rotation cadence scales with auto_rotate_after (fast port-hunting),
 	// but the full conn rebuild — which kills every stream on this conn —
@@ -173,9 +177,25 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		if every <= 0 {
 			every = 1
 		}
-		pConn.SetOnHop(func(n uint32) {
-			if n%uint32(every) == 0 {
-				tc.rotateLocalPortIfConfigured()
+		pConn.SetOnHop(func(n uint32, full bool) {
+			if full {
+				// interval hop → proactive full rotation: fresh SRC + DST
+				// every tick keeps the NAT mapping from maturing (and being
+				// throttled) even on a clean, never-deaf path. A fresh SRC
+				// restarts the dst-first hunt counter.
+				if tc.rotateLocalPortIfConfigured() {
+					tc.badDstTries.Store(0)
+				}
+				return
+			}
+			// forced hop (RST/deaf recovery) → dst-first hunt: rotate SRC
+			// only after rotate_every consecutive bad-DST tries. A skipped
+			// rotation (cooldown/idle) leaves the counter >= every so the
+			// next forced hop retries it.
+			if tc.badDstTries.Add(1) >= int64(every) {
+				if tc.rotateLocalPortIfConfigured() {
+					tc.badDstTries.Store(0)
+				}
 			}
 		})
 	} else {
@@ -878,19 +898,25 @@ func (tc *timedConn) idleCheckLoop() {
 					// before the next rotation is even considered.
 					if la := tc.lastAutoRotateAt.Load(); la == 0 || now-la >= int64(after)*int64(time.Second) {
 						tc.lastAutoRotateAt.Store(now)
-						flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
-						// rotateLocalPortIfConfigured takes tc.mu itself —
-						// release, rotate, re-take (loop re-locks at top).
+						flog.Infof("auto_rotate: sending but no inbound for %ds — trying a new destination port (dst-first)", after)
+						// dst-first hunt: hop to a fresh destination port; the
+						// OnHop forced branch rotates the source port only after
+						// rotate_every consecutive bad-DST tries.
 						tc.unlockDiag()
-						tc.rotateLocalPortIfConfigured()
+						if tc.pConn != nil {
+							tc.pConn.ForceHop()
+						}
 						tc.lockDiag()
 					}
 				} else if tc.pConn != nil {
 					// Not (sending && deaf): the deaf episode is over —
 					// either inbound is flowing again (recovered) or we
 					// went idle. Clear the window so the next episode
-					// restarts the rebuild countdown from zero.
+					// restarts the rebuild countdown from zero, and reset
+					// the dst-first hunt counter so a recovered port doesn't
+					// carry stale bad-DST tries into the next episode.
 					tc.deafSinceNano.Store(0)
+					tc.badDstTries.Store(0)
 				}
 			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
