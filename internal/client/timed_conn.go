@@ -524,7 +524,10 @@ func (tc *timedConn) rotateLocalPortIfConfigured() bool {
 	// session (whose KCP retransmit timer spams the wire until the 45s
 	// reaper) AND churns the DPI with a burst of fresh NAT mappings. A
 	// website-open burst must not rotate N times in a row — one rotation
-	// per rotateCooldown, others skip and retry later.
+	// per rotateCooldown, others skip and retry later. rotateCooldown is
+	// set to the middlebox maturity window (~15s): any faster and no fresh
+	// mapping ever matures, so the return path stays throttled forever and
+	// the rotation storm is self-sustaining.
 	if !tc.lastLocalRotate.IsZero() && time.Since(tc.lastLocalRotate) < rotateCooldown {
 		flog.Debugf("hop: rotation cooldown active — skipping local-port rotation")
 		return false
@@ -961,7 +964,19 @@ type idleTrackedStrm struct {
 // production defaults are unchanged.
 var firstReadWindow = 20 * time.Second
 var watchdogPollInterval = 500 * time.Millisecond
-var rotateCooldown = 5 * time.Second
+
+// rotateCooldown: hard floor between client source-port rotations. The DPI /
+// middlebox throttles the RETURN path of a FRESH NAT mapping until it matures
+// (~10-15s, field-measured: only "warm" tuples alive >10-15s without a hop
+// carry full throughput). Rotating faster than maturity keeps EVERY mapping
+// permanently cold — the tunnel looks dead and the rotation storm feeds
+// itself (each "fresh NAT mapping" re-enters the cold window, so no inbound
+// ever arrives and every detector fires again). 15s gives a fresh mapping its
+// full maturity window before the next rotation is even considered. "Fast
+// recovery" and "no churn" are the SAME knob here: rotate as fast as the
+// middlebox permits (15s), and no faster — 5s was below the maturity floor,
+// so it churned without ever recovering.
+var rotateCooldown = 15 * time.Second
 
 // autoRotateRebuildAfter: fixed window of continuous "sending but deaf"
 // before the full conn rebuild fires. Decoupled from auto_rotate_after so a
