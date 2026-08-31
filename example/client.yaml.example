@@ -12,6 +12,11 @@ network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
   driver: "ebpf"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
+  rotate_grace_seconds: 10                  # Hold a rotated-away source port registered
+                                            # this long (seconds) after rebind so in-flight
+                                            # server->client data still addressed to the old
+                                            # port is captured, not dropped + retransmitted.
+                                            # Receive-only: no extra wire packets. Default 10.
 
   # IPv4 configuration
   ipv4:

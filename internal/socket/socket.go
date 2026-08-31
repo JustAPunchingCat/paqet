@@ -525,6 +525,10 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 		return 0, fmt.Errorf("no capture source")
 	}
 	newPort := int(RandInRange(32768, 65535))
+	grace := time.Duration(c.cfg.RotateGraceSeconds) * time.Second
+	if grace <= 0 {
+		grace = 10 * time.Second
+	}
 
 	// Re-target capture FIRST: it is the step that can fail (BPF map, source
 	// capabilities). If it fails, nothing has been touched yet — the send
@@ -535,14 +539,14 @@ func (c *PacketConn) RotateLocalPort() (int, error) {
 	// old one, and the rollback's key-rewrite minted a fresh random seq
 	// universe mid-stream (the split-brain seq jump seen in the field).
 	flog.Debugf("rotate: step 1 — capture rebind to %d starting", newPort)
-	if err := c.recvHandle.source.RebindPort(newPort, 2*time.Second); err != nil {
+	if err := c.recvHandle.source.RebindPort(newPort, grace); err != nil {
 		return 0, fmt.Errorf("capture rebind to port %d failed: %w", newPort, err)
 	}
 	flog.Debugf("rotate: step 2 — capture on %d, rebinding send handle", newPort)
 	if err := c.sendHandle.RebindSource(newPort); err != nil {
 		// Capture already listens on newPort; roll ONLY the capture back and
 		// report loudly. Never leave the halves split.
-		if rbErr := c.recvHandle.source.RebindPort(int(c.cfg.Port), 2*time.Second); rbErr != nil {
+		if rbErr := c.recvHandle.source.RebindPort(int(c.cfg.Port), grace); rbErr != nil {
 			flog.Errorf("rotation capture rollback failed: %v (capture on %d, send handle on %d — MISMATCHED)", rbErr, newPort, c.cfg.Port)
 		}
 		return 0, fmt.Errorf("capture rebind to port %d failed: %w", newPort, err)

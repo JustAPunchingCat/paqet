@@ -59,6 +59,11 @@ type Network struct {
 	// drop ALL packets to/from the server regardless of port, instead of leaking
 	// stale-port packets to the kernel (which emits an RST).
 	ServerIPs []net.IP `yaml:"-"`
+	// RotateGraceSeconds holds a rotated-away source port registered for this
+	// long after the rebind, so in-flight server→client data still addressed
+	// to the previous port is captured instead of dropped (and retransmitted).
+	// Receive-only: no extra wire packets. Defaults to 10.
+	RotateGraceSeconds int `yaml:"rotate_grace_seconds"`
 }
 
 func (n *Network) setDefaults(role string) {
@@ -67,6 +72,9 @@ func (n *Network) setDefaults(role string) {
 	n.TCP.setDefaults()
 	if n.Driver == "" {
 		n.Driver = "pcap"
+	}
+	if n.RotateGraceSeconds <= 0 {
+		n.RotateGraceSeconds = 10
 	}
 }
 
