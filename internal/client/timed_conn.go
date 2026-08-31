@@ -42,6 +42,13 @@ type timedConn struct {
 	// during TLS handshakes — field-proven mid-curl kills).
 	rebuildAt        atomic.Int64
 	lastAutoRotateAt atomic.Int64
+	// lastLocalRotate: last successful client local-port rotation (cooldown
+	// gate, guarded by tc.mu). Rapid rotation orphans server sessions (each
+	// spams KCP retransmits until the 45s reaper) and churns the DPI with a
+	// burst of fresh NAT mappings — cap at one rotation per rotateCooldown.
+	lastLocalRotate time.Time
+	// rotatePortFn: test seam overriding the real RebindSource path.
+	rotatePortFn func() (int, error)
 	// closeJobs: teardown closes are executed on a dedicated goroutine.
 	// conn/pConn Close() contends the eBPF managerMu with hopping
 	// rebinds; doing that inline (on the idle loop, under tc.mu, or on
@@ -429,7 +436,7 @@ func (tc *timedConn) OnRST(addr net.Addr) {
 // share the one PacketConn); the fake 3WHS re-fires on the new tuple via the
 // handshake latch re-arm inside RebindSource. Failures are non-fatal: the
 // tunnel keeps hopping server ports without client rotation.
-func (tc *timedConn) rotateLocalPortIfConfigured() {
+func (tc *timedConn) rotateLocalPortIfConfigured() bool {
 	// tc.mu is held for the WHOLE rotation: the idle reaper (idleCheckLoop)
 	// nulls tc.conn/tc.pConn under the same lock, and a rotation running
 	// concurrently dereferenced a nulled pConn — field-proven SIGSEGV
@@ -441,13 +448,22 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	defer tc.unlockDiag()
 
 	if tc.pConn == nil {
-		return
+		return false
 	}
 	if !tc.srvCfg.Hopping.RotateClientPort {
 		// DIAGNOSTIC: rotation configured-off — say so once per hop so a
 		// silently-dead rotation config is visible in field logs.
 		flog.Debugf("hop: rotate_client_port disabled — keeping local port %d", tc.lastPort)
-		return
+		return false
+	}
+	// Cooldown: rotating more often than this orphans the previous server
+	// session (whose KCP retransmit timer spams the wire until the 45s
+	// reaper) AND churns the DPI with a burst of fresh NAT mappings. A
+	// website-open burst must not rotate N times in a row — one rotation
+	// per rotateCooldown, others skip and retry later.
+	if !tc.lastLocalRotate.IsZero() && time.Since(tc.lastLocalRotate) < rotateCooldown {
+		flog.Debugf("hop: rotation cooldown active — skipping local-port rotation")
+		return false
 	}
 	// Idle tunnel: rotating a conn the idle reaper is about to tear down
 	// races the reaper (field-proven 'bad file descriptor' goodbye) and
@@ -455,7 +471,7 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	idle := tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 30*time.Second
 	if idle {
 		flog.Debugf("hop: tunnel idle — skipping local-port rotation (next write rotates)")
-		return
+		return false
 	}
 	// The server keys sessions by client ip:port. After the source port
 	// changes, the OLD server session is orphaned and its own KCP
@@ -464,13 +480,21 @@ func (tc *timedConn) rotateLocalPortIfConfigured() {
 	// the same IP closes same-IP older sessions) — no goodbye packets, the
 	// tunnel stays fully asymmetric.
 	flog.Debugf("rotate: rotating local source port")
-	newPort, err := tc.pConn.RotateLocalPort()
+	var newPort int
+	var err error
+	if tc.rotatePortFn != nil {
+		newPort, err = tc.rotatePortFn()
+	} else {
+		newPort, err = tc.pConn.RotateLocalPort()
+	}
 	if err != nil {
 		flog.Warnf("client local-port rotation FAILED: %v (continuing with server-port hops only)", err)
-		return
+		return false
 	}
+	tc.lastLocalRotate = time.Now()
 	tc.lastPort = newPort
 	flog.Infof("client source port rotated to %d (fresh NAT mapping)", newPort)
+	return true
 }
 
 func (tc *timedConn) reconnect() {
@@ -843,40 +867,85 @@ type idleTrackedStrm struct {
 	written     atomic.Bool
 	firstRead   atomic.Bool
 	watchdogRun atomic.Bool
+	// watchdogStrikes: consecutive no-read strikes for this stream. Strike 1
+	// rotates the port (preserving the session + siblings); strike 2 — still
+	// no read after a real rotation — rebuilds the conn (desync confirmed).
+	watchdogStrikes atomic.Int32
 }
 
-const firstReadWindow = 20 * time.Second
+// firstReadWindow / watchdogPollInterval / rotateCooldown are vars (not
+// consts) so the sim gate can shrink them for a fast watchdog test; the
+// production defaults are unchanged.
+var firstReadWindow = 20 * time.Second
+var watchdogPollInterval = 500 * time.Millisecond
+var rotateCooldown = 5 * time.Second
 
 func (t *idleTrackedStrm) armWatchdog() {
 	if t.watchdogRun.Swap(true) {
 		return
 	}
 	go func() {
-		deadline := time.Now().Add(firstReadWindow)
-		for time.Now().Before(deadline) {
-			if t.firstRead.Load() {
+		// Two-strike ladder. "written but no read" is AMBIGUOUS: it can be a
+		// DPI-blocked return path (transient — a fresh client port usually
+		// escapes it, and rotation PRESERVES the session + every sibling
+		// stream) or a genuinely desynced smux session (server restart, no
+		// RST — only a full rebuild recovers). Rebuilding on the FIRST
+		// no-read killed sibling streams: field run — SSH died under a
+		// website burst even though it had survived 14 min of rotation.
+		// So: rotate first, rebuild only on a SECOND consecutive no-read
+		// after an actual rotation.
+		for {
+			deadline := time.Now().Add(firstReadWindow)
+			for time.Now().Before(deadline) {
+				if t.firstRead.Load() {
+					return
+				}
+				if !t.written.Load() {
+					return // nothing written — no expectation of data
+				}
+				time.Sleep(watchdogPollInterval)
+			}
+			if t.firstRead.Load() || !t.written.Load() {
 				return
 			}
-			if !t.written.Load() {
-				return // nothing written — no expectation of data
+			// Rotation unavailable (disabled) → the desync explanation is
+			// the only one left; rebuild as before.
+			if t.tc.srvCfg == nil || !t.tc.srvCfg.Hopping.RotateClientPort {
+				flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
+				t.tc.rebuildConn()
+				return
 			}
-			time.Sleep(500 * time.Millisecond)
+			if !t.tc.rotateLocalPortIfConfigured() {
+				// Cooldown / transient failure — not a real rotation for
+				// this episode, so do NOT count a strike. Re-arm and retry.
+				continue
+			}
+			t.firstRead.Store(false) // a post-rotation read clears us
+			if t.watchdogStrikes.Add(1) >= 2 {
+				flog.Warnf("stream %d: written but no inbound for %v after rotation — session desynced, rebuilding conn", t.SID(), firstReadWindow)
+				t.tc.rebuildConn()
+				return
+			}
+			flog.Warnf("stream %d: written but no inbound for %v — rotated local port (session preserved)", t.SID(), firstReadWindow)
 		}
-		if t.firstRead.Load() || !t.written.Load() {
-			return
-		}
-		flog.Warnf("stream %d: written but no inbound for %v — session desynced, rebuilding conn", t.SID(), firstReadWindow)
-		flog.Infof("watchdog teardown: acquiring tc.mu...")
-		t.tc.lockDiag()
-		deadConn := t.tc.conn
-		deadPConn := t.tc.pConn
-		t.tc.conn = nil
-		t.tc.pConn = nil
-		t.tc.rebuildAt.Store(time.Now().UnixNano())
-		flog.Infof("watchdog teardown: complete — closing outside lock, next stream open rebuilds")
-		t.tc.unlockDiag()
-		t.tc.deferClose(deadConn, deadPConn)
 	}()
+}
+
+// rebuildConn tears the conn down so the next stream open rebuilds KCP+smux
+// from scratch. Destructive: drops every open stream (including long-lived
+// SSH), so it is the LAST resort after port rotation has failed to recover.
+// Called OUTSIDE tc.mu.
+func (tc *timedConn) rebuildConn() {
+	flog.Infof("watchdog teardown: acquiring tc.mu...")
+	tc.lockDiag()
+	deadConn := tc.conn
+	deadPConn := tc.pConn
+	tc.conn = nil
+	tc.pConn = nil
+	tc.rebuildAt.Store(time.Now().UnixNano())
+	flog.Infof("watchdog teardown: complete — closing outside lock, next stream open rebuilds")
+	tc.unlockDiag()
+	tc.deferClose(deadConn, deadPConn)
 }
 
 func (t *idleTrackedStrm) Write(b []byte) (int, error) {

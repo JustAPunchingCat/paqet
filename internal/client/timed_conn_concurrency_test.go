@@ -357,6 +357,83 @@ func TestRebuildPathNoSelfDeadlock(t *testing.T) {
 	}
 }
 
+// TestWatchdogRotatesBeforeRebuild: the field-proven SSH-death shape —
+// a stream written-but-no-read is AMBIGUOUS (DPI-blocked return path vs
+// desynced smux). The old watchdog rebuilt the WHOLE conn on the FIRST
+// no-read, dropping every sibling stream (field run: SSH died under a
+// website burst after surviving 14 min of rotation). The fix must rotate
+// first (preserve session + siblings) and rebuild only on a SECOND
+// consecutive no-read after a real rotation.
+func TestWatchdogRotatesBeforeRebuild(t *testing.T) {
+	// Shrink the windows for a fast test; restore on exit.
+	oldWindow, oldPoll, oldCooldown := firstReadWindow, watchdogPollInterval, rotateCooldown
+	firstReadWindow = 100 * time.Millisecond
+	watchdogPollInterval = 20 * time.Millisecond
+	rotateCooldown = 40 * time.Millisecond
+	defer func() {
+		firstReadWindow, watchdogPollInterval, rotateCooldown = oldWindow, oldPoll, oldCooldown
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Manual harness: NO closer goroutine — deferClose enqueues into the
+	// buffered closeJobs (never drained), so the zero-value pConn is never
+	// actually Close()'d (its nil cancel func would panic). The watchdog
+	// DECISION is what's under test, not the close.
+	tc := &timedConn{
+		ctx:       ctx,
+		rootCfg:   &conf.Conf{},
+		srvCfg:    &conf.ServerConfig{Hopping: conf.Hopping{RotateClientPort: true}},
+		conn:      &fakeConn{},
+		pConn:     &socket.PacketConn{},
+		lastIdle:  time.Now(),
+		closeJobs: make(chan func(), 64),
+	}
+	var rotates int32
+	tc.rotatePortFn = func() (int, error) {
+		atomic.AddInt32(&rotates, 1)
+		return 4242, nil
+	}
+
+	strm := &idleTrackedStrm{Strm: &fakeStrm{}, tc: tc}
+	strm.Write([]byte("hello")) // arms the watchdog (written, never read)
+
+	waitFor := func(cond func() bool, what string) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if cond() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timeout waiting for %s", what)
+	}
+
+	// Strike 1: rotation must have happened AND the conn must still be
+	// alive (the old code rebuilt here — this assertion catches the bug).
+	waitFor(func() bool { return atomic.LoadInt32(&rotates) >= 1 }, "first rotation")
+	tc.lockDiag()
+	connAlive := tc.conn != nil
+	tc.unlockDiag()
+	if !connAlive {
+		t.Fatal("first no-read strike REBUILT the conn — sibling SSH would have died")
+	}
+
+	// Strike 2 (still no read after a real rotation): rebuild must fire.
+	waitFor(func() bool {
+		tc.lockDiag()
+		nilNow := tc.conn == nil
+		tc.unlockDiag()
+		return nilNow
+	}, "rebuild after second consecutive no-read")
+
+	if got := atomic.LoadInt32(&rotates); got < 2 {
+		t.Fatalf("expected >=2 rotations before rebuild, got %d", got)
+	}
+}
+
 // TestIdleLoopAutoRotateNoSelfDeadlock: the 19:32 wedge — idleCheckLoop's
 // tick body re-locked tc.mu immediately before `continue`, so the lock
 // stayed held into the NEXT tick, where the loop's own lockDiag()
