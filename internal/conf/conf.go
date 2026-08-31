@@ -252,7 +252,9 @@ type Hopping struct {
 	// zero extra packets: uses existing send/recv counters only.
 	AutoRotate bool `yaml:"auto_rotate"`
 	// AutoRotateAfter: seconds of silence (while sending) before the
-	// auto-rotate fires. Default 10.
+	// auto-rotate fires. Default 15 (the middlebox "cold" window — a fresh
+	// NAT mapping's return path is throttled ~10-15s until it matures, so a
+	// lower threshold abandons fresh ports before they warm and churns).
 	AutoRotateAfter int `yaml:"auto_rotate_after"`
 	// RotateGraceSeconds: how long a rotated-away source port stays registered
 	// after a rebind, so in-flight server->client data still addressed to the

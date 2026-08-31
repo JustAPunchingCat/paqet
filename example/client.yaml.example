@@ -94,12 +94,12 @@ servers:
                                 # tries. Non-destructive: never rebuilds.
                                 # Recommended: true when rotate_client_port is
                                 # true.
-      auto_rotate_after: 10     # Seconds of silence (while still sending)
-                                # before auto_rotate fires (default 10). Keep
-                                # >=5s: the rotation transition itself (~2-3s
-                                # for the server to re-learn the new tuple)
-                                # looks "deaf", so a lower threshold re-fires
-                                # auto_rotate on its own transition and churns.
+      auto_rotate_after: 15     # Seconds of silence (while still sending)
+                                # before auto_rotate fires (default 15). Must be
+                                # >= the middlebox "cold" window (~10-15s): a
+                                # fresh NAT mapping's return path is throttled
+                                # until it matures, so a lower threshold abandons
+                                # fresh ports before they warm and churns.
       rotate_grace_seconds: 10  # Hold a rotated-away source port registered
                                 # this long (seconds) after rebind so in-flight
                                 # server->client data still addressed to the old

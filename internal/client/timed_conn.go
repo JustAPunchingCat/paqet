@@ -844,7 +844,7 @@ func (tc *timedConn) idleCheckLoop() {
 			if tc.srvCfg.Hopping.AutoRotate && tc.pConn != nil && tc.conn != nil {
 				after := tc.srvCfg.Hopping.AutoRotateAfter
 				if after <= 0 {
-					after = 10
+					after = 15
 				}
 				sendN := tc.pConn.LastSendNano()
 				recvN := tc.pConn.LastRecvNano()
@@ -1011,6 +1011,21 @@ func (t *idleTrackedStrm) armWatchdog() {
 			}
 			if t.firstRead.Load() || !t.written.Load() {
 				return
+			}
+			// "written but no app-level read" is AMBIGUOUS. A healthy asymmetric
+			// stream (upload: the client writes, the remote never writes back at
+			// the app layer — the speedtest upload phase is the field-proven false
+			// positive) looks identical to a desynced session. Distinguish on the
+			// WIRE: if the connection is still receiving inbound (KCP ACKs for our
+			// own upload), the port is demonstrably working and this stream's
+			// silence is just asymmetric traffic — rotating would abandon a healthy
+			// port, violating "stick to a working port until interval". Only rotate
+			// when the connection is ALSO deaf; that case is the conn-level
+			// auto_rotate's job, so re-arm and wait out the next window.
+			if p := t.tc.pConn; p != nil {
+				if recvN := p.LastRecvNano(); recvN != 0 && time.Now().UnixNano()-recvN < int64(firstReadWindow) {
+					continue
+				}
 			}
 			// Rotation-only: finding a new port and closing the session are two
 			// separate tasks. Rotate the source port (preserving the session and
