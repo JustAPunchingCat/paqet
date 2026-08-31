@@ -32,11 +32,14 @@ type timedConn struct {
 	activeStreams int
 	lastIdle      time.Time
 	lastRSTHop    atomic.Int64
-	// consecutiveAutoRotates counts auto_rotate firings with no recovery
-	// between them: 2 in a row means port rotation isn't fixing the deafness
-	// — the SESSION is desynced (e.g. server restarted and never RST'd us);
-	// only a full conn rebuild (fresh smux handshake) recovers then.
-	autoRotateRun atomic.Int64
+	// deafSinceNano: when the current "sending but deaf" episode began.
+	// Rotation cadence scales with auto_rotate_after (fast port-hunting),
+	// but the full conn rebuild — which kills every stream on this conn —
+	// is gated by a FIXED autoRotateRebuildAfter of continuous deafness.
+	// (Previously autoRotateRun rebuilt ~1s after a rotation because "deaf"
+	// is measured against the pre-rotation LastRecvNano, which a rotation
+	// never resets — field-proven slow-DPI return paths got killed early.)
+	deafSinceNano atomic.Int64
 	// rebuildAt: when the conn was last torn down for a rebuild. auto_rotate
 	// must not judge a newborn session (streams may be silent for seconds
 	// during TLS handshakes — field-proven mid-curl kills).
@@ -650,6 +653,11 @@ func (tc *timedConn) openAndSendProto(p *protocol.Proto) (tnet.Strm, error) {
 		tc.lockDiag()
 		defer tc.unlockDiag()
 		tc.conn = conn
+		// Fresh rebuild: stamp rebuildAt so auto_rotate grants the newborn
+		// conn its 15s footing — recvN==0 must not read as "deaf" and fire
+		// an immediate rotation (field-proven: first SSH try rotated 12ms
+		// after connect, before the server could answer).
+		tc.rebuildAt.Store(time.Now().UnixNano())
 		if tc.pConn != nil {
 			tc.lastPort = tc.pConn.GetCurrentPort()
 		}
@@ -789,19 +797,25 @@ func (tc *timedConn) idleCheckLoop() {
 						tc.unlockDiag()
 						continue
 					}
-					// A rotation that is followed by silence again means
-					// the problem is NOT the tuple: the session itself is
-					// desynced (field-proven: server restarted, never sent
-					// an RST, kept accepting our KCP packets into a fresh
-					// session whose smux never negotiated — wire alive,
-					// streams dead). Escalate: two consecutive deaf
-					// auto-rotates without recovery → full conn teardown;
-					// the next stream open rebuilds KCP+smux from scratch.
-					tc.lastAutoRotateAt.Store(time.Now().UnixNano())
-					run := tc.autoRotateRun.Add(1)
-					if run >= 2 {
-						flog.Infof("auto_rotate: deaf again after rotation (%d consecutive) — session desynced, rebuilding conn", run)
-						tc.autoRotateRun.Store(0)
+					// DECOUPLED rotation vs rebuild. Rotation cadence
+					// scales with `after` (fast port-hunting under a DPI
+					// that blocks ports at random), but the full conn
+					// rebuild — which kills EVERY stream on this conn —
+					// is gated by a FIXED autoRotateRebuildAfter of
+					// continuous deafness. Field-proven: `run >= 2` fired
+					// ~1s after a rotation because "deaf" is measured
+					// against the pre-rotation LastRecvNano (a rotation
+					// never resets it), so a slow DPI return path was
+					// killed before it could recover. Track the deaf
+					// episode start separately from the rotation cadence.
+					deafSince := tc.deafSinceNano.Load()
+					if deafSince == 0 {
+						tc.deafSinceNano.Store(now)
+						deafSince = now
+					}
+					if now-deafSince >= int64(autoRotateRebuildAfter) {
+						flog.Infof("auto_rotate: deaf for %v — session desynced, rebuilding conn", autoRotateRebuildAfter)
+						tc.deafSinceNano.Store(0)
 						// Grab what needs closing, release tc.mu, THEN
 						// close. Field run 16:40: conn.Close()/pConn.Close()
 						// executed while holding tc.mu blocked FOREVER
@@ -818,23 +832,24 @@ func (tc *timedConn) idleCheckLoop() {
 						tc.deferClose(deadConn, deadPConn)
 						continue
 					}
-					flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
-					// rotateLocalPortIfConfigured takes tc.mu itself —
-					// release, rotate, re-take (loop re-locks at top).
-					tc.unlockDiag()
-					tc.rotateLocalPortIfConfigured()
-					tc.lockDiag()
-				} else if tc.pConn != nil {
-					// Wire received something — but only count it as
-					// RECOVERY if the inbound arrived AFTER our last
-					// auto-rotate. The desynced-session zombie echoes
-					// KCP ACKs constantly (field run 19:42: 63B replies
-					// kept resetting the escalation counter, so the
-					// rebuild never fired); those arrive at the OLD
-					// rotate timestamp and must not clear the run.
-					if r := tc.pConn.LastRecvNano(); r != 0 && r > tc.lastAutoRotateAt.Load() {
-						tc.autoRotateRun.Store(0)
+					// Rotate once per `after` window (not every tick), so a
+					// fresh port gets its full window to produce inbound
+					// before the next rotation is even considered.
+					if la := tc.lastAutoRotateAt.Load(); la == 0 || now-la >= int64(after)*int64(time.Second) {
+						tc.lastAutoRotateAt.Store(now)
+						flog.Infof("auto_rotate: sending but no inbound for %ds — rotating local port now", after)
+						// rotateLocalPortIfConfigured takes tc.mu itself —
+						// release, rotate, re-take (loop re-locks at top).
+						tc.unlockDiag()
+						tc.rotateLocalPortIfConfigured()
+						tc.lockDiag()
 					}
+				} else if tc.pConn != nil {
+					// Not (sending && deaf): the deaf episode is over —
+					// either inbound is flowing again (recovered) or we
+					// went idle. Clear the window so the next episode
+					// restarts the rebuild countdown from zero.
+					tc.deafSinceNano.Store(0)
 				}
 			}
 			if tc.conn != nil && tc.activeStreams == 0 && !tc.lastIdle.IsZero() && time.Since(tc.lastIdle) > 60*time.Second {
@@ -879,6 +894,12 @@ type idleTrackedStrm struct {
 var firstReadWindow = 20 * time.Second
 var watchdogPollInterval = 500 * time.Millisecond
 var rotateCooldown = 5 * time.Second
+
+// autoRotateRebuildAfter: fixed window of continuous "sending but deaf"
+// before the full conn rebuild fires. Decoupled from auto_rotate_after so a
+// small rotation cadence (fast port-hunting under random DPI port-blocking)
+// does NOT speed up the session-killing rebuild.
+var autoRotateRebuildAfter = 30 * time.Second
 
 func (t *idleTrackedStrm) armWatchdog() {
 	if t.watchdogRun.Swap(true) {
