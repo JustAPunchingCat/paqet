@@ -46,6 +46,8 @@ type Network struct {
 	IPv6             Addr           `yaml:"ipv6"`
 	PCAP             PCAP           `yaml:"pcap"`
 	TCP              TCP            `yaml:"tcp"`
+	// Netfilter: Windows-only kernel-RST suppressor (see netfilter.go).
+	Netfilter        Netfilter      `yaml:"netfilter"`
 	Interface        *net.Interface `yaml:"-"`
 	Port             int            `yaml:"-"`
 	Transport        *Transport     `yaml:"-"`
@@ -65,6 +67,7 @@ func (n *Network) setDefaults(role string) {
 	n.Role = role
 	n.PCAP.setDefaults(role)
 	n.TCP.setDefaults()
+	n.Netfilter.setDefaults(role)
 	if n.Driver == "" {
 		n.Driver = "pcap"
 	}

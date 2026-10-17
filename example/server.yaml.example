@@ -42,6 +42,21 @@ network:
   driver: "ebpf"    # Driver: "pcap" (default), "afpacket" (Linux only, faster), "ebpf" (Linux XDP, fastest),"ebpf-generic"
   # guid: "\Device\NPF_{...}"                # Windows only (Npcap).
 
+  # Windows only: kernel-RST suppressor.
+  # The pcap driver is capture-only, so the Windows kernel still sees every
+  # fake-TCP segment addressed to a tunnel port and answers it with an RST.
+  # The client reads that bare RST as "closed destination port" and hops
+  # forever, so the tunnel never stabilises. paqet launches netfilter.exe
+  # (WinDivert) with a filter derived from listen.addr plus every hopping
+  # range, dropping those outbound RSTs before they leave the host — the
+  # Windows equivalent of the iptables RST-drop rule documented at the bottom
+  # of this file. Auto-enabled on Windows in server mode; no-op everywhere else.
+  # netfilter.exe is NOT bundled with paqet: install WinDivert yourself and
+  # point netfilter.path at your own copy. Requires Administrator privileges.
+  netfilter:
+    enabled: true                                   # default: true on Windows server mode
+    path: 'C:\windows\system32\netfilter.exe'       # default
+
   # IPv4 configuration
   ipv4:
     addr: "10.0.0.100:9999"                  # CHANGE ME: Server IPv4 and port (port must match listen.addr)
@@ -177,6 +192,12 @@ transport:
 # If using driver: "pcap" or "afpacket", you MUST configure iptables on the server to prevent 
 # kernel interference (TCP RST packets).
 # If using driver: "ebpf", these rules are NOT required because XDP uses XDP_DROP.
+#
+# Windows has no iptables — the pcap driver there is capture-only, so the
+# kernel always generates RSTs. paqet handles it automatically via the
+# network.netfilter block above: it launches netfilter.exe (WinDivert) with
+# the generated filter and supervises it for the server's lifetime, so the
+# RSTs never leave the host. Nothing manual is required on Windows.
 #
 # sudo iptables -t raw -A PREROUTING -p tcp --dport 9999 -j NOTRACK
 # sudo iptables -t raw -A OUTPUT -p tcp --sport 9999 -j NOTRACK  

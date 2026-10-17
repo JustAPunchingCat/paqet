@@ -106,6 +106,14 @@ func (s *Server) Start() error {
 	}
 	flog.Infof("Server started - listening for packets on %s", listenInfo)
 
+	// Windows only: the pcap driver is capture-only, so the OS kernel still
+	// sees every fake-TCP segment addressed to a tunnel port and answers it
+	// with an RST. netfilter.exe (WinDivert) drops those outbound RSTs before
+	// they leave the host — the Windows equivalent of the iptables RST-drop
+	// rule the Linux pcap/afpacket path needs. No-op elsewhere.
+	nfProc := startServerNetfilter(s.cfg)
+	defer nfProc.Stop()
+
 	s.wg.Go(func() {
 		s.listen(ctx, listener)
 	})
