@@ -31,14 +31,14 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4);
+    __uint(max_entries, 64); // one entry per unique upstream server IP (4 was too small)
     __type(key, __u32);
     __type(value, __u8);
 } allowed_ips_v4 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4);
+    __uint(max_entries, 64); // one entry per unique upstream server IP (4 was too small)
     __type(key, struct in6_addr);
     __type(value, __u8);
 } allowed_ips_v6 SEC(".maps");

@@ -166,7 +166,7 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 				}
 				if err := mgr.addIPv4(v4); err != nil {
 					s.Close()
-					return nil, err
+					return nil, fmt.Errorf("register server IP %s in eBPF allowed_ips_v4 (map full — raise its max_entries): %w", v4, err)
 				}
 			} else {
 				if s.ipv6 == nil {
@@ -174,7 +174,7 @@ func newEBPFSource(cfg *conf.Network, hopping *conf.Hopping) (PacketSource, erro
 				}
 				if err := mgr.addIPv6(sip); err != nil {
 					s.Close()
-					return nil, err
+					return nil, fmt.Errorf("register server IP %s in eBPF allowed_ips_v6 (map full — raise its max_entries): %w", sip, err)
 				}
 			}
 		}
