@@ -52,7 +52,13 @@ type timedConn struct {
 	// rebuildAt: when the conn was last torn down for a rebuild. auto_rotate
 	// must not judge a newborn session (streams may be silent for seconds
 	// during TLS handshakes — field-proven mid-curl kills).
-	rebuildAt        atomic.Int64
+	rebuildAt atomic.Int64
+	// bornAt: when the CURRENT PacketConn was created. auto_rotate measures
+	// "no inbound yet" silence from here. Without it, recvN == 0 means "deaf
+	// since the epoch", so every freshly created conn fired a forced hop on
+	// the first idle tick — one second after startup, before the peer (or a
+	// 10s UDP handshake) could possibly answer.
+	bornAt           atomic.Int64
 	lastAutoRotateAt atomic.Int64
 	// lastLocalRotate: last successful client local-port rotation (cooldown
 	// gate, guarded by tc.mu). Rapid rotation orphans server sessions (each
@@ -167,6 +173,10 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	pConn.OnRSTClosed = tc.OnRSTClosed
 	tc.pConn = pConn
 	tc.lastPort = pConn.GetCurrentPort()
+	// Mark this PacketConn's birth: auto_rotate measures "never received
+	// anything" silence from here so a brand-new conn is not declared deaf
+	// on its first idle tick.
+	tc.bornAt.Store(time.Now().UnixNano())
 
 	// Client local-port rotation: when hopping.rotate_client_port is set,
 	// rebind the local source port every rotate_every hops (default 1) so
@@ -850,7 +860,18 @@ func (tc *timedConn) idleCheckLoop() {
 				recvN := tc.pConn.LastRecvNano()
 				now := time.Now().UnixNano()
 				sending := sendN > 0 && now-sendN < int64(after)*int64(time.Second)
-				deaf := recvN == 0 || now-recvN > int64(after)*int64(time.Second)
+				// Deafness must be measured from a real baseline. recvN == 0
+				// means "no inbound YET", not "silent for `after` seconds" —
+				// treating it as deaf fired auto_rotate on a conn that was
+				// one second old (field: 'sending but no inbound for 15s' at
+				// 11:16:10.949 for a conn created at 11:16:09.951, once per
+				// conn, each forcing a hop that tore down the in-flight UDP
+				// handshake). Measure from the PacketConn's birth instead.
+				deafRef := recvN
+				if deafRef == 0 {
+					deafRef = tc.bornAt.Load()
+				}
+				deaf := deafRef == 0 || now-deafRef > int64(after)*int64(time.Second)
 				if sending && deaf {
 					if rb := tc.rebuildAt.Load(); rb != 0 && time.Now().UnixNano()-rb < int64(15*time.Second) {
 						// Fresh rebuild — give the new session its footing.

@@ -485,3 +485,81 @@ func TestIdleLoopAutoRotateNoSelfDeadlock(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestAutoRotateStartupGrace: a conn that was just created and has not
+// received anything yet must NOT be judged deaf. recvN == 0 means "no inbound
+// YET", not "silent for auto_rotate_after". The old clause fired auto_rotate
+// one second after startup (field: conn created 11:16:09.951, 'sending but no
+// inbound for 15s' at 11:16:10.949, once per conn, each forcing a hop that
+// tore down the in-flight UDP handshake).
+func TestAutoRotateStartupGrace(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tc := &timedConn{
+		ctx:       ctx,
+		rootCfg:   &conf.Conf{},
+		srvCfg:    &conf.ServerConfig{Hopping: conf.Hopping{AutoRotate: true, AutoRotateAfter: 15}},
+		conn:      &fakeConn{},
+		pConn:     &socket.PacketConn{},
+		lastIdle:  time.Now(),
+		closeJobs: make(chan func(), 64),
+	}
+	go func() {
+		for job := range tc.closeJobs {
+			job()
+		}
+	}()
+
+	now := time.Now().UnixNano()
+	tc.pConn.SetActivityForTest(now, 0) // sending, but never received anything
+	tc.bornAt.Store(now)                // brand-new PacketConn
+
+	go tc.idleCheckLoop()
+
+	// The first idle tick lands ~1s after creation; run several so a
+	// regression cannot hide behind tick alignment.
+	time.Sleep(3200 * time.Millisecond)
+
+	if la := tc.lastAutoRotateAt.Load(); la != 0 {
+		t.Fatalf("auto_rotate fired on a conn created %v ago (startup misfire)", time.Since(time.Unix(0, now)))
+	}
+}
+
+// TestAutoRotateFiresWhenTrulyDeaf: the startup grace must not blind the
+// detector. A conn that has existed longer than auto_rotate_after and still
+// has never received a packet IS deaf and must rotate.
+func TestAutoRotateFiresWhenTrulyDeaf(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tc := &timedConn{
+		ctx:       ctx,
+		rootCfg:   &conf.Conf{},
+		srvCfg:    &conf.ServerConfig{Hopping: conf.Hopping{AutoRotate: true, AutoRotateAfter: 15}},
+		conn:      &fakeConn{},
+		pConn:     &socket.PacketConn{},
+		lastIdle:  time.Now(),
+		closeJobs: make(chan func(), 64),
+	}
+	go func() {
+		for job := range tc.closeJobs {
+			job()
+		}
+	}()
+
+	now := time.Now().UnixNano()
+	tc.pConn.SetActivityForTest(now, 0)
+	tc.bornAt.Store(now - int64(60*time.Second)) // born a minute ago, still silent
+
+	go tc.idleCheckLoop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if tc.lastAutoRotateAt.Load() != 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("auto_rotate never fired on a conn that has been deaf for a minute")
+}
